@@ -1,0 +1,164 @@
+# Form-field alias map: canonical profile key -> label synonyms seen on job portals.
+# Matching (Plan 4 form agent): normalize the field's label / accessible name / name / id / placeholder
+# (lowercase, strip punctuation, collapse whitespace, drop "*", "(required)", "(optional)"),
+# then exact match on aliases, then token match. Only exact/token matches may AUTO_FILL;
+# anything weaker goes to the model as a suggestion and is marked FILL_AND_REVIEW.
+# `formats` lists how the value may need to be rendered for the field (chosen by input type / pattern / maxlength).
+# Contains no personal data — values come from storage/profiles/profile.yaml.
+
+version: 1
+
+fields:
+  full_name:
+    profile: identity.full_name
+    aliases: [full name, name, your name, candidate name, applicant name, legal name, full legal name, name as per documents, complete name]
+  first_name:
+    profile: identity.first_name
+    aliases: [first name, given name, forename, fname, first]
+  middle_name:
+    profile: null            # leave blank; never invent
+    aliases: [middle name, middle initial]
+  last_name:
+    profile: identity.last_name
+    aliases: [last name, surname, family name, lname, last]
+  preferred_name:
+    profile: identity.first_name
+    aliases: [preferred name, preferred first name, nickname, what should we call you]
+  email:
+    profile: identity.email
+    aliases: [email, e mail, email address, email id, mail id, work email, personal email, contact email, primary email]
+  confirm_email:
+    profile: identity.email
+    aliases: [confirm email, re enter email, retype email, verify email]
+  phone:
+    profile: identity.phone_national
+    aliases: [phone, phone number, mobile, mobile number, mobile no, cell, cell phone, contact number, contact no, telephone, tel, whatsapp number, primary phone]
+    formats:
+      national: "<10-digit number>"
+      e164: "+91<10-digit number>"
+      international_spaced: "+91 XXXXX XXXXX"
+      dashed: "+91-<10-digit number>"
+    rule: "If a separate country-code control exists, select India (+91) there and use `national`; if the field has no code selector use `e164` unless its pattern/placeholder shows another format."
+  phone_country_code:
+    profile: identity.phone_country_code
+    aliases: [country code, dial code, phone country, calling code, isd code]
+    options_match: ["+91", "India (+91)", "IN +91", "91", "India"]
+  address_line1:
+    profile: identity.address.line1
+    aliases: [address, address line 1, street address, street, address 1, house no, flat house no building, residential address, current address, permanent address]
+  address_line2:
+    profile: identity.address.line2
+    aliases: [address line 2, address 2, locality, area, landmark, apartment suite]
+  city:
+    profile: identity.address.city
+    aliases: [city, town, city town, current city, city of residence, location city]
+  state:
+    profile: identity.address.state
+    aliases: [state, province, region, state province, state region]
+    options_match: [Maharashtra, MH, IN-MH]
+  postal_code:
+    profile: identity.address.postal_code
+    aliases: [pin code, pincode, pin, zip, zip code, postal code, postcode]
+  country:
+    profile: identity.address.country
+    aliases: [country, country of residence, current country, nation]
+    options_match: [India, IN, IND, Republic of India]
+  location:
+    profile: identity.location_display
+    aliases: [location, current location, where are you located, based in, your location]
+    formats: {city_country: "<City>, <Country>", city_state_country: "<City>, <State>, <Country>"}
+  linkedin:
+    profile: links.linkedin
+    aliases: [linkedin, linkedin url, linkedin profile, linkedin profile url, linkedin link]
+  github:
+    profile: links.github
+    aliases: [github, github url, github profile, git hub, code repository, github link]
+  portfolio:
+    profile: links.portfolio
+    aliases: [portfolio, portfolio url, website, personal website, personal site, blog, homepage, other website, url]
+  other_links:
+    profile: [links.portfolio, links.github]
+    aliases: [other links, additional links, links, social profiles]
+  current_company:
+    profile: current_employment.employer
+    aliases: [current company, current employer, company, employer, present company, organization, organisation, current organization]
+  current_title:
+    profile: current_employment.title
+    aliases: [current title, job title, current job title, current role, designation, current designation, position, headline]
+  total_experience:
+    profile: current_employment.total_experience_years
+    aliases: [total experience, years of experience, total years of experience, work experience years, experience in years, how many years of experience, relevant experience]
+    formats: {years_decimal: "4.3", years_int: "4", years_months: "4 years 3 months", range_option: "4-5 years"}
+    rule: "Recompute from company_start at fill time. For dropdowns pick the band containing the value. 'Relevant experience' in AI/GenAI specifically = 1.5 years → FILL_AND_REVIEW."
+  highest_degree:
+    profile: education[0].degree
+    aliases: [highest qualification, highest degree, education level, degree, qualification]
+    options_match: ["M.Tech", "M.Tech.", "Master of Technology", "Masters", "Master's Degree", "Post Graduate", "MTech", "ME/M.Tech"]
+  university:
+    profile: education[0].institution
+    aliases: [university, college, institution, school, institute, university name]
+  field_of_study:
+    profile: education[0].field
+    aliases: [field of study, major, specialization, specialisation, discipline, branch, stream]
+  graduation_year:
+    profile: education[0].end
+    aliases: [graduation year, year of passing, passing year, year of completion, graduation date, end date]
+  languages:
+    profile: languages
+    aliases: [languages, languages known, languages spoken, language proficiency]
+  resume:
+    profile: artifact.resume
+    aliases: [resume, cv, resume cv, upload resume, attach resume, curriculum vitae, resume upload]
+  cover_letter:
+    profile: artifact.cover_letter
+    aliases: [cover letter, covering letter, motivation letter, letter of motivation, upload cover letter]
+  cover_letter_text:
+    profile: artifact.cover_letter_text
+    aliases: [why do you want to work here, why this role, why are you interested, tell us about yourself, additional information, message to hiring manager, anything else]
+    decision: FILL_AND_REVIEW
+
+  # ---- never auto-filled: answer library or user only ----
+  notice_period:
+    profile: answer_library.notice_period
+    aliases: [notice period, notice, availability, when can you start, earliest start date, joining time, days to join]
+    decision: FILL_AND_REVIEW
+  current_ctc:
+    profile: answer_library.current_ctc_inr_lpa
+    aliases: [current ctc, current salary, current compensation, present ctc, current package, annual ctc]
+    decision: FILL_AND_REVIEW
+  expected_ctc:
+    profile: answer_library.expected_ctc_inr_lpa
+    aliases: [expected ctc, expected salary, salary expectation, desired salary, expected compensation, desired pay]
+    decision: FILL_AND_REVIEW
+  relocation:
+    profile: answer_library.willing_to_relocate
+    aliases: [willing to relocate, open to relocation, relocate, relocation]
+    decision: ASK_USER
+  work_authorization:
+    profile: answer_library.work_authorization_india
+    aliases: [work authorization, authorized to work, legally authorized, right to work, eligible to work, work permit]
+    decision: USER_ONLY
+  sponsorship:
+    profile: answer_library.requires_sponsorship
+    aliases: [sponsorship, visa sponsorship, require sponsorship, need visa]
+    decision: USER_ONLY
+  date_of_birth:
+    profile: answer_library.date_of_birth
+    aliases: [date of birth, dob, birth date, birthday]
+    decision: USER_ONLY
+  demographics:
+    profile: null
+    aliases: [gender, race, ethnicity, veteran, disability, pronouns, sexual orientation, caste, religion, marital status]
+    decision: USER_ONLY
+  declarations:
+    profile: null
+    aliases: [i agree, i certify, terms, privacy policy, consent, declaration, acknowledge, i confirm]
+    decision: USER_ONLY
+  referral_source:
+    profile: answer_library.how_did_you_hear
+    aliases: [how did you hear about us, source, where did you find this job, referral source, how did you find us]
+    decision: FILL_AND_REVIEW
+  referral_name:
+    profile: null            # never invent a referral
+    aliases: [referred by, referrer name, employee referral, referral name]
+    decision: ASK_USER
