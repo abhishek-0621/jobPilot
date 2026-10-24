@@ -1,10 +1,10 @@
 """Search preferences and company boards; storage/ overrides committed examples."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 from jobpilot.config import AppConfig
 
@@ -25,7 +25,7 @@ class SearchPreferences(BaseModel):
 class CompanyBoard(BaseModel):
     name: str
     source: Literal["greenhouse", "lever"]
-    token: str
+    token: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 
 
 def _pick(cfg: AppConfig, override: str, default: str) -> Path:

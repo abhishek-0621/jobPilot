@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -116,7 +117,7 @@ async def test_discover_handler_enqueues_extract_only_for_new(
         first_event = ev.event_id
         details = json.loads(ev.redacted_details_json)
         assert details["counts"] == {"fetched": 3, "kept": 2, "new": 2,
-                                     "duplicates": 0, "reseen": 0}
+                                     "duplicates": 0, "reseen": 0, "skipped": 0}
         assert details["source_status"] == out.source_status
 
     # second run: same postings re-seen, plus a cross-posted duplicate of the lever job
@@ -132,7 +133,40 @@ async def test_discover_handler_enqueues_extract_only_for_new(
         [ev] = [e for e in list_events(s, "run_1")
                 if e.action == "discovery_run" and e.event_id != first_event]
         counts = json.loads(ev.redacted_details_json)["counts"]
-        assert counts == {"fetched": 3, "kept": 3, "new": 0, "duplicates": 1, "reseen": 2}
+        assert counts == {"fetched": 3, "kept": 3, "new": 0, "duplicates": 1, "reseen": 2,
+                          "skipped": 0}
+
+
+class BadPostingSource:
+    source = "greenhouse"
+
+    async def list_postings(self, board: CompanyBoard) -> list[RawPosting]:
+        base = dict(source="greenhouse", company="Example AI", title="AI Engineer",
+                    location="Bengaluru", description_html="<p>x</p>",
+                    application_url=None, posted_at=None)
+        return [
+            RawPosting(source_job_id="bad", canonical_url="ftp://example.com/x", **base),
+            RawPosting(source_job_id="ok", canonical_url="https://example.com/ok", **base),
+        ]
+
+
+async def test_bad_posting_skipped(factory: sessionmaker[Session]) -> None:
+    ctx = _ctx({"greenhouse": BadPostingSource()}, [GH])
+    out = await DiscoverAgent().run(_inp(), ctx)
+    assert [li.source_job_id for li in out.listings] == ["ok"]
+    assert out.skipped == 1 and out.fetched == 2
+    task = TaskRow(task_id="task_1", kind="DISCOVER", entity_type="run", entity_id="run_1",
+                   status="RUNNING", attempts=1)
+    with factory() as s:
+        discover_handler(s, task, out)
+        [ev] = [e for e in list_events(s, "run_1") if e.action == "discovery_run"]
+        assert json.loads(ev.redacted_details_json)["counts"]["skipped"] == 1
+
+
+@pytest.mark.parametrize("token", ["a/b", "", "x" * 65, "a b", "../x"])
+def test_company_board_token_validated(token: str) -> None:
+    with pytest.raises(ValidationError):
+        CompanyBoard(name="X", source="greenhouse", token=token)
 
 
 def test_extract_task_kind() -> None:

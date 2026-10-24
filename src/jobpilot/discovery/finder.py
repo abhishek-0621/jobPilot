@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,6 +34,7 @@ class DiscoverOutput(AgentOutput):
     listings: list[JobListing]
     source_status: dict[str, str]  # "<source>:<token>" -> "ok" | error code
     fetched: int = 0  # raw postings returned by sources, before prefilter
+    skipped: int = 0  # postings that failed conversion to a JobListing
 
 
 def _to_listing(p: RawPosting, task_id: str, now: datetime) -> JobListing:
@@ -59,7 +61,7 @@ class DiscoverAgent:
         clock: Callable[[], datetime] = ctx.tools["clock"]
         status: dict[str, str] = {}
         listings: list[JobListing] = []
-        fetched = 0
+        fetched = skipped = 0
         for board in companies:
             if len(listings) >= prefs.max_jobs_per_run:
                 break
@@ -79,10 +81,15 @@ class DiscoverAgent:
                 if len(listings) >= prefs.max_jobs_per_run:
                     break
                 keep, _reason = prefilter(p, prefs)
-                if keep:
+                if not keep:
+                    continue
+                try:
                     listings.append(_to_listing(p, ctx.task_id, clock()))
+                except (ValidationError, ValueError):
+                    skipped += 1
         return DiscoverOutput(task_id=ctx.task_id, created_at=clock(), run_id=inp.entity_id,
-                              listings=listings, source_status=status, fetched=fetched)
+                              listings=listings, source_status=status, fetched=fetched,
+                              skipped=skipped)
 
 
 def discover_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
@@ -98,7 +105,8 @@ def discover_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         row, created = upsert_job(s, listing)
         if created:
             new += 1
-            assert row.status == JobStatus.DISCOVERED.value
+            if row.status != JobStatus.DISCOVERED.value:
+                raise OutputRejected("new job is not in DISCOVERED state")
             follow.append((TaskKind.EXTRACT, "job", row.job_id))
         elif known:
             reseen += 1
@@ -108,7 +116,8 @@ def discover_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         s, entity_type="run", entity_id=out.run_id, actor=_ACTOR, action="discovery_run",
         outcome="ok",
         details={"counts": {"fetched": out.fetched, "kept": len(out.listings), "new": new,
-                            "duplicates": duplicates, "reseen": reseen},
+                            "duplicates": duplicates, "reseen": reseen,
+                            "skipped": out.skipped},
                  "source_status": out.source_status},
     )
     return follow
