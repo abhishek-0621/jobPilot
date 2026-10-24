@@ -25,7 +25,13 @@ class AppConfig(BaseModel):
     storage_path: Path = Path("storage")
     dry_run: bool = True
     ollama_url: str = "http://127.0.0.1:11434"
+    browser_headless: bool = False
+    field_aliases_path: Path = Path("config/field_aliases.yaml")
     model_routes: dict[str, ModelRoute]
+
+    @property
+    def browser_state_dir(self) -> Path:
+        return self.storage_path / "browser_state"
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -37,4 +43,5 @@ def load_config(config_dir: Path = Path("config")) -> AppConfig:
     app_path = config_dir / "app.yaml"
     app = _read_yaml(app_path) if app_path.exists() else {}
     routes = _read_yaml(config_dir / "model_routes.yaml").get("routes", {})
+    app.setdefault("field_aliases_path", config_dir / "field_aliases.yaml")
     return AppConfig(**app, model_routes=routes)

@@ -10,7 +10,8 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.contracts.models import is_http_url
+from jobpilot.contracts.enums import FieldDecision
+from jobpilot.contracts.models import FieldAnswer, is_http_url
 from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import AnswerLibraryRow, DocumentArtifactRow, FormFieldAnswerRow, JobRow
 from jobpilot.ids import new_id
@@ -20,19 +21,65 @@ from jobpilot.profile.importer import _DEFAULT_DECISION, _decision_defaults, act
 from jobpilot.util.hashing import canonical_json
 
 
-def set_answer(s: Session, application_id: str, field_id: str, value: Any, *,
-               actor: str) -> None:
-    row = s.execute(select(FormFieldAnswerRow).where(
+def _answer_row(s: Session, application_id: str, field_id: str) -> FormFieldAnswerRow | None:
+    return s.execute(select(FormFieldAnswerRow).where(
         FormFieldAnswerRow.application_id == application_id,
         FormFieldAnswerRow.field_id == field_id,
     )).scalar_one_or_none()
+
+
+def set_answer(s: Session, application_id: str, field_id: str, value: Any, *,
+               actor: str, source_fact_id: str | None = None,
+               decision: FieldDecision | None = None, rationale: str | None = None,
+               confidence: float | None = None) -> None:
+    """Change one stored answer (value, plus optional provenance/decision overrides)."""
+    row = _answer_row(s, application_id, field_id)
     if row is None:
         raise LookupError(f"unknown field {field_id} on {application_id}")
     row.proposed_value_json = canonical_json(value)
+    if source_fact_id is not None:
+        row.source_fact_id = source_fact_id
+    if decision is not None:
+        row.decision = FieldDecision(decision).value
+    if rationale is not None:
+        row.rationale = rationale[:500]
+    if confidence is not None:
+        row.confidence = confidence
     record_event(s, entity_type="application", entity_id=application_id, actor=actor,
                  action="answer_changed", outcome="ok", details={"field_id": field_id})
     s.flush()
     ApprovalService(s).invalidate_application(application_id, reason="answer_changed")
+
+
+def upsert_answer_initial(s: Session, application_id: str, answer: FieldAnswer, *,
+                          required: bool, options: list[str], actor: str) -> None:
+    """Insert a first-time answer row. Only allowed while nothing about the application
+    has been approved and the field has no row yet (so nothing needs invalidating)."""
+    if _answer_row(s, application_id, answer.field_id) is not None:
+        raise ValueError(f"field {answer.field_id} already has an answer")
+    if ApprovalService(s).active_approval_for(application_id) is not None:
+        raise ValueError(f"application {application_id} has an active approval")
+    s.add(FormFieldAnswerRow(
+        application_id=application_id, field_id=answer.field_id, label=answer.label,
+        field_type=answer.field_type, proposed_value_json=canonical_json(answer.proposed_value),
+        decision=answer.decision.value, source_fact_id=answer.source_fact_id,
+        confidence=answer.confidence, rationale=answer.rationale[:500],
+        required=required, options_json=canonical_json(options)))
+    record_event(s, entity_type="application", entity_id=application_id, actor=actor,
+                 action="answer_created", outcome="ok", details={"field_id": answer.field_id})
+    s.flush()
+
+
+def remove_answer(s: Session, application_id: str, field_id: str, *, actor: str) -> None:
+    """Drop the answer of a field that no longer exists on the form."""
+    row = _answer_row(s, application_id, field_id)
+    if row is None:
+        raise LookupError(f"unknown field {field_id} on {application_id}")
+    s.delete(row)
+    record_event(s, entity_type="application", entity_id=application_id, actor=actor,
+                 action="answer_removed", outcome="ok", details={"field_id": field_id})
+    s.flush()
+    ApprovalService(s).invalidate_application(application_id, reason="answer_removed")
 
 
 def set_artifact(s: Session, application_id: str,

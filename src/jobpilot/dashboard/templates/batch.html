@@ -7,13 +7,23 @@
 <form hx-post="/ui/batches/{{ batch.batch_id }}/approve" hx-target="#approve-result" hx-swap="innerHTML" method="post" action="/ui/batches/{{ batch.batch_id }}/approve">
 <input type="hidden" name="content_hash" value="{{ batch.content_hash }}">
 <input type="hidden" name="version" value="{{ batch.version }}">
-<div class="table-wrap"><table><thead><tr><th></th><th>Company</th><th>Role</th><th>Status</th><th>Item hash</th></tr></thead><tbody>
+<div class="table-wrap"><table><thead><tr><th></th><th>Company / role</th><th>Status</th><th>Documents</th><th>Answers</th><th>Warnings</th><th>Evidence</th><th>Item hash</th></tr></thead><tbody>
 {% for r in rows %}<tr>
-<td>{% if r.item.selected %}✓{% elif r.app and r.app.status == "READY_FOR_REVIEW" %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" checked aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
-<td>{{ r.job.company if r.job else "" }}</td><td>{% if r.job %}<a href="{{ r.job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ r.job.title }}</a>{% endif %}</td>
-<td>{{ r.app.status if r.app else "" }}</td><td class="mono">{{ r.item.item_hash }}</td></tr>{% endfor %}
+<td>{% if r.item.selected and not r.changed %}✓{% elif r.app %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" {% if r.changed or r.app.status != "READY_FOR_REVIEW" %}disabled{% else %}checked{% endif %} aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
+<td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/jobs/{{ r.job.job_id }}">{{ r.job.title }}</a> · <a href="{{ r.job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">portal</a>{% endif %}
+{% if r.changed %}<br><span class="warn">Changed since batch was built — rebuild batch</span>{% endif %}</td>
+<td>{{ r.app.status if r.app else "" }}</td>
+<td>{% if r.app and r.app.resume_artifact_id %}<a href="/artifacts/{{ r.app.resume_artifact_id }}" target="_blank" rel="noopener noreferrer">Resume</a>{% else %}<span class="muted">No resume</span>{% endif %}<br>{% if r.app and r.app.cover_letter_artifact_id %}<a href="/artifacts/{{ r.app.cover_letter_artifact_id }}" target="_blank" rel="noopener noreferrer">Cover letter</a>{% else %}<span class="muted">No cover letter</span>{% endif %}</td>
+<td><details><summary>{% for d, n in r.summary %}{{ d }} {{ n }}{% if not loop.last %} · {% endif %}{% else %}No answers{% endfor %}</summary>
+<table><thead><tr><th>Field</th><th>Decision</th><th>Value</th><th>Source</th></tr></thead><tbody>
+{% for a in r.answers %}<tr><td>{{ a.label }}</td><td>{{ a.decision }}</td><td>{{ a.display }}</td><td class="mono">{{ a.source or "—" }}</td></tr>{% endfor %}
+</tbody></table></details></td>
+<td>{% if r.review_count %}<span class="warn">{{ r.review_count }} to review</span>{% endif %}{% if r.suggested_count %}<span class="warn">{{ r.suggested_count }} model-suggested</span>{% endif %}</td>
+<td>{% if r.shot %}<a href="/artifacts/{{ r.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Screenshot</a>{% else %}<span class="muted">None</span>{% endif %}</td>
+<td class="mono" title="{{ r.item.item_hash }}">{{ r.item.item_hash[:16] }}</td></tr>{% endfor %}
 </tbody></table></div>
 {% if batch.status in ("READY_FOR_REVIEW", "PARTIALLY_APPROVED") %}<p><button type="submit">Approve selected</button></p>{% endif %}
 </form>
+{% if pending or any_changed %}<form method="post" action="/ui/batches/{{ batch.batch_id }}/rebuild"><button type="submit">Rebuild batch</button> <span class="muted">Re-freezes the applications that are still ready for review.</span></form>{% endif %}
 <div id="approve-result"></div>
 {% endblock %}

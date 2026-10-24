@@ -201,3 +201,13 @@ def test_candidate_years_merges_overlapping_roles(db_session: Session) -> None:
 def test_candidate_years_malformed_dates_raise_value_error(db_session: Session) -> None:
     with pytest.raises(ValueError):
         _years_for(db_session, [["soon", "present"]], datetime(2026, 1, 1, tzinfo=UTC))
+
+
+def test_import_uses_configured_aliases_path(db_session: Session, tmp_path: Path) -> None:
+    aliases = tmp_path / "field_aliases.yaml"
+    aliases.write_text("fields:\n  notice:\n    profile: answer_library.notice_period\n"
+                       "    decision: ASK_USER\n", encoding="utf-8")
+    import_profile(db_session, load_profile_file(FIXTURE), aliases_path=aliases)
+    rows = db_session.execute(select(AnswerLibraryRow)).scalars().all()
+    by_key = {r.question_key: r.decision_default for r in rows}
+    assert by_key == {"notice_period": "ASK_USER", "preferred_cities": "FILL_AND_REVIEW"}

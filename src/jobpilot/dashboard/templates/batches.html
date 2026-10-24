@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Batches{% endblock %}
+{% block content %}
+<h1>Batches awaiting approval</h1>
+{% if rows %}
+<div class="table-wrap"><table><thead><tr><th>Batch</th><th>Version</th><th>Status</th><th>Applications</th><th>Approved</th></tr></thead><tbody>
+{% for r in rows %}<tr><td><a href="/ui/batches/{{ r.batch.batch_id }}" class="mono">{{ r.batch.batch_id }}</a></td><td>{{ r.batch.version }}</td><td>{{ r.batch.status }}</td><td>{{ r.total }}</td><td>{{ r.approved }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">No batches are waiting for review.</p>{% endif %}
+{% endblock %}

@@ -28,6 +28,7 @@ from jobpilot.orchestrator.engine import (
     Handler,
     OutputRejected,
     TaskInput,
+    TaskKind,
 )
 from jobpilot.orchestrator.state_machine import transition
 from jobpilot.profile.schema import ProfileFile
@@ -229,5 +230,5 @@ def make_cover_letter_handler(storage_path: Path) -> Handler:
                                actor=_ACTOR)
         transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=_ACTOR,
                    reason="documents_ready")
-        return []
+        return [(TaskKind.PREPARE_FORM, "application", app.application_id)]
     return cover_letter_handler

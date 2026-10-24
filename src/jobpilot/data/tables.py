@@ -100,6 +100,7 @@ class ApplicationRow(Base):
     content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
     confirmation_reference: Mapped[str | None] = mapped_column(String, nullable=True)
+    form_snapshot_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class DocumentArtifactRow(Base):
@@ -130,6 +131,8 @@ class FormFieldAnswerRow(Base):
     confidence: Mapped[float] = mapped_column(Float)
     rationale: Mapped[str] = mapped_column(String(500))
     validation_errors_json: Mapped[str] = mapped_column(Text, default="[]")
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    options_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class ApprovalBatchRow(Base):

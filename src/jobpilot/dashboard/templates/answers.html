@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Form answers{% endblock %}
+{% block content %}
+<h1>Form answers{% if job %} · {{ job.title }} · {{ job.company }}{% endif %}</h1>
+<p><strong>{{ app.status }}</strong> · <a href="/ui/applications/{{ app.application_id }}">Application</a></p>
+{% if editable_status %}<form method="post" action="/ui/applications/{{ app.application_id }}/reread"><button type="submit">Re-read form</button></form>{% endif %}
+{% if missing %}<p>Required and still unanswered: {% for r in rows if r.field_id in missing %}{{ r.label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+{% if not rows %}<p class="muted">The form has not been read yet.</p>{% else %}
+<form method="post" action="/ui/applications/{{ app.application_id }}/answers">
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Decision</th><th>Value</th><th>Source</th><th>Rationale</th></tr></thead><tbody>
+{% for r in rows %}<tr>
+<td>{{ r.label }}{% if r.required %} <span class="muted">(required)</span>{% endif %}</td>
+<td><span class="badge">{{ r.decision }}</span></td>
+<td>{% set name = "v:" ~ r.field_id %}
+{% if r.editable and editable_status %}
+  {% if r.declaration %}
+  <input type="hidden" name="seen:{{ r.field_id }}" value="1">
+  <label><input type="checkbox" name="{{ name }}" value="on" {% if r.value is sameas true %}checked{% endif %}> {{ r.label }}</label>
+  {% elif r.field_type == "checkbox" %}
+  <input type="hidden" name="seen:{{ r.field_id }}" value="1">
+  <label><input type="checkbox" name="{{ name }}" value="on" {% if r.value is sameas true %}checked{% endif %}> {{ r.options[0] if r.options else r.label }}</label>
+  {% elif r.options %}
+  <select name="{{ name }}" aria-label="{{ r.label }}"{% if r.field_type == "checkbox_group" %} multiple{% endif %}>
+    {% if r.field_type != "checkbox_group" %}<option value="">—</option>{% endif %}
+    {% for o in r.options %}<option value="{{ o }}" {% if o == r.value or (r.value is iterable and r.value is not string and o in r.value) %}selected{% endif %}>{{ o }}</option>{% endfor %}
+  </select>
+  {% elif r.field_type == "textarea" %}
+  <textarea name="{{ name }}" aria-label="{{ r.label }}">{{ r.value if r.value is not none else "" }}</textarea>
+  {% else %}
+  <input type="text" name="{{ name }}" aria-label="{{ r.label }}" value="{{ r.value if r.value is not none else "" }}">
+  {% endif %}
+  {% if r.decision == "USER_ONLY" %}<br><span class="muted">You are answering this yourself</span>{% endif %}
+{% else %}{{ r.display }}{% endif %}</td>
+<td><span class="mono">{{ r.source or "—" }}</span></td>
+<td class="muted">{{ r.rationale }}</td>
+</tr>{% endfor %}
+</tbody></table></div>
+{% if editable_status %}<button type="submit">Save answers</button>{% else %}<p class="muted">Answers can be changed while the application needs your input or failed validation.</p>{% endif %}
+</form>
+{% endif %}
+{% endblock %}

@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from jobpilot.contracts.enums import PortalCapability
-from jobpilot.contracts.models import Contract, FieldAnswer, JobListing, SubmitResult
+from jobpilot.contracts.models import Contract, FieldAnswer, SubmitResult
 from jobpilot.util.hashing import content_hash
 
 PortalCapabilities = frozenset[PortalCapability]
@@ -14,11 +14,13 @@ class FormField(Contract):
     field_type: str
     required: bool
     options: list[str] = []
+    help_text: str = ""
 
 
 class FormSnapshot(Contract):
     url: str
     fields: list[FormField]
+    warnings: list[str] = []
 
 
 class FillReport(Contract):
@@ -47,10 +49,10 @@ class PortalAdapter(Protocol):
     name: str
 
     async def capabilities(self) -> PortalCapabilities: ...
-    async def open_job(self, job: JobListing) -> None: ...
+    async def open_job(self, url: str) -> None: ...
     async def inspect_form(self) -> FormSnapshot: ...
     async def fill_fields(self, answers: list[FieldAnswer]) -> FillReport: ...
-    async def validate_form(self) -> ValidationReport: ...
+    async def validate_form(self, expected: dict[str, Any] | None = None) -> ValidationReport: ...
     async def submit(self, approved_application: ApprovedApplication) -> SubmitResult: ...
     async def verify_submission(self) -> SubmissionEvidence: ...
     async def find_existing_submission(self, idempotency_key: str) -> SubmitResult | None: ...

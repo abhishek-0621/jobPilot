@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Captcha fixture</title></head>
+<body>
+<form id="application_form" onsubmit="return false">
+  <input type="text" id="first_name">
+  <div class="g-recaptcha" data-sitekey="test-sitekey"></div>
+  <button type="submit" onclick="window.__submitted = true; event.preventDefault();">Submit</button>
+</form>
+</body></html>

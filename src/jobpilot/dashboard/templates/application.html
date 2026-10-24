@@ -5,6 +5,7 @@
 <p><strong>{{ app.status }}</strong>{% if job %} · <a href="/ui/jobs/{{ job.job_id }}">Job</a> · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}{% endif %}</p>
 <p><button type="button" hx-post="/ui/applications/{{ app.application_id }}/regenerate" hx-target="#regen-result" hx-swap="innerHTML">Regenerate documents</button></p>
 <div id="regen-result"></div>
+<p><a href="/ui/applications/{{ app.application_id }}/answers">Form answers</a></p>
 <h2>Resume</h2>
 {% if resume %}
 <p class="muted">Version {{ resume.version }}{% if docx %} · <a href="/artifacts/{{ docx.artifact_id }}" download>Download DOCX</a>{% endif %} · <a href="/artifacts/{{ resume.artifact_id }}" target="_blank" rel="noopener noreferrer">Open PDF</a></p>

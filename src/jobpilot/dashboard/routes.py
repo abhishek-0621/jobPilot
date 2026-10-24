@@ -14,15 +14,20 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from jobpilot.agents.form_prep import answer_rows, unresolved_required
 from jobpilot.api.actions import (
+    ANSWERABLE_STATUSES,
     ActionConflict,
     approve_and_queue,
     regenerate_documents,
+    reread_form,
+    save_user_answers,
     select_job,
     start_discovery,
     start_tailor,
+    user_editable,
 )
-from jobpilot.contracts.enums import JobStatus
+from jobpilot.contracts.enums import ApplicationStatus, BatchStatus, FieldDecision, JobStatus
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import set_library_answer
 from jobpilot.data.repositories import (
@@ -39,18 +44,21 @@ from jobpilot.data.tables import (
     AnswerLibraryRow,
     ApplicationRow,
     ApprovalBatchRow,
+    BatchItemRow,
     CandidateFactRow,
     CandidateProfileRow,
     DocumentArtifactRow,
+    FormFieldAnswerRow,
     JobRow,
     MatchAssessmentRow,
     OutreachDraftRow,
 )
+from jobpilot.forms.classify import classify_sensitive
+from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
 
-FIELD_ALIASES_PATH = Path(__file__).resolve().parents[3] / "config" / "field_aliases.yaml"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
 NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
 UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
@@ -104,9 +112,9 @@ def _page(request: Request, s: Session, name: str, ctx: dict[str, Any]) -> HTMLR
                                       {**ctx, "profile_banner": _profile_banner(s)})
 
 
-def _library_fields() -> list[dict[str, str]]:
+def _library_fields(aliases_path: Path) -> list[dict[str, str]]:
     """Answer-library keys from field_aliases.yaml with their decision."""
-    data = yaml.safe_load(FIELD_ALIASES_PATH.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(aliases_path.read_text(encoding="utf-8")) or {}
     out: list[dict[str, str]] = []
     for name, spec in (data.get("fields") or {}).items():
         profile = spec.get("profile")
@@ -307,6 +315,83 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
         "events": list(reversed(list_events(s, application_id)))})
 
 
+def _display(value: Any) -> str:
+    if value is None or value == "" or value == []:
+        return "—"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, list):
+        return ", ".join(map(str, value))
+    return str(value)
+
+
+@router.get("/ui/applications/{application_id}/answers", response_class=HTMLResponse)
+def answers_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    rows = []
+    for r in answer_rows(s, application_id):
+        value = json.loads(r.proposed_value_json)
+        rows.append({
+            "field_id": r.field_id, "label": r.label, "field_type": r.field_type,
+            "decision": r.decision, "value": value, "display": _display(value),
+            "source": r.source_fact_id, "rationale": r.rationale, "required": r.required,
+            "options": json.loads(r.options_json),
+            "editable": user_editable(r.decision, r.field_type),
+            "declaration": r.field_type == "checkbox"
+            and classify_sensitive(r.label, "", []) == "declaration"})
+    return _page(request, s, "answers.html", {
+        "app": app, "job": s.get(JobRow, app.job_id), "rows": rows,
+        "missing": unresolved_required(s, application_id),
+        "editable_status": app.status in ANSWERABLE_STATUSES})
+
+
+@router.post("/ui/applications/{application_id}/answers")
+async def save_answers_ui(request: Request, application_id: str, s: Db,
+                          orch: Orch) -> RedirectResponse:
+    form = await request.form()
+    values: dict[str, Any] = {}
+    for r in answer_rows(s, application_id):
+        if not user_editable(r.decision, r.field_type):
+            continue
+        name, old = f"v:{r.field_id}", json.loads(r.proposed_value_json)
+        if r.field_type == "checkbox":
+            if form.get(f"seen:{r.field_id}") is None:
+                continue
+            ticked = form.get(name) == "on"
+            if ticked != (old is True) and (ticked or old is not None):
+                values[r.field_id] = ticked
+        elif r.field_type == "checkbox_group":
+            picked = [v for v in form.getlist(name) if isinstance(v, str)]
+            if picked and picked != old:
+                values[r.field_id] = picked
+        else:
+            raw = form.get(name)
+            text = raw.strip() if isinstance(raw, str) else ""
+            if text and text != old:
+                values[r.field_id] = text
+    try:
+        save_user_answers(s, orch, application_id, values)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/reread")
+def reread_ui(application_id: str, s: Db, orch: Orch) -> RedirectResponse:
+    try:
+        reread_form(s, orch, application_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
+
+
 @router.post("/ui/applications/{application_id}/regenerate", response_class=HTMLResponse)
 def regenerate_ui(request: Request, application_id: str, s: Db) -> HTMLResponse:
     try:
@@ -337,17 +422,84 @@ def build_batch(s: Db) -> RedirectResponse:
     return RedirectResponse(f"/ui/batches/{batch_id}", status_code=303)
 
 
+CHANGED_STATUSES = (ApplicationStatus.READY_FOR_REVIEW.value, ApplicationStatus.APPROVED.value)
+
+
+def _is_model_suggested(a: FormFieldAnswerRow) -> bool:
+    return a.rationale == MODEL_SUGGESTED_RATIONALE
+
+
+@router.get("/ui/batches", response_class=HTMLResponse)
+def batches_page(request: Request, s: Db) -> HTMLResponse:
+    batches = pending_batches(s)
+    counts: dict[tuple[str, int], list[int]] = {}
+    for item in s.execute(select(BatchItemRow).where(
+            BatchItemRow.batch_id.in_([b.batch_id for b in batches]))).scalars():
+        c = counts.setdefault((item.batch_id, item.version), [0, 0])
+        c[0] += 1
+        c[1] += 1 if item.selected else 0
+    return _page(request, s, "batches.html", {"rows": [
+        {"batch": b, "total": counts.get((b.batch_id, b.version), [0, 0])[0],
+         "approved": counts.get((b.batch_id, b.version), [0, 0])[1]} for b in batches]})
+
+
 @router.get("/ui/batches/{batch_id}", response_class=HTMLResponse)
 def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
     batch = latest_batch(s, batch_id)
     if batch is None:
         raise HTTPException(404, "batch not found")
+    items = batch_items(s, batch.batch_id, batch.version)
+    app_ids = [i.application_id for i in items]
+    apps = {a.application_id: a for a in s.execute(
+        select(ApplicationRow).where(ApplicationRow.application_id.in_(app_ids))).scalars()}
+    jobs_by_id = {j.job_id: j for j in s.execute(select(JobRow).where(
+        JobRow.job_id.in_([a.job_id for a in apps.values()]))).scalars()}
+    shots: dict[str, DocumentArtifactRow] = {}
+    for art in s.execute(select(DocumentArtifactRow).where(
+            DocumentArtifactRow.application_id.in_(app_ids),
+            DocumentArtifactRow.type == "form_screenshot")
+            .order_by(DocumentArtifactRow.version)).scalars():
+        shots[art.application_id] = art  # ascending, so the last one is the latest
+    answers: dict[str, list[FormFieldAnswerRow]] = {}
+    for a in s.execute(select(FormFieldAnswerRow).where(
+            FormFieldAnswerRow.application_id.in_(app_ids))
+            .order_by(FormFieldAnswerRow.field_id)).scalars():
+        answers.setdefault(a.application_id, []).append(a)
+    svc = ApprovalService(s)
     rows = []
-    for item in batch_items(s, batch.batch_id, batch.version):
-        app = s.get(ApplicationRow, item.application_id)
-        job = s.get(JobRow, app.job_id) if app is not None else None
-        rows.append({"item": item, "app": app, "job": job})
-    return _page(request, s, "batch.html", {"batch": batch, "rows": rows})
+    for item in items:
+        app = apps.get(item.application_id)
+        job = jobs_by_id.get(app.job_id) if app is not None else None
+        mine = answers.get(item.application_id, [])
+        summary: dict[str, int] = {}
+        for a in mine:
+            summary[a.decision] = summary.get(a.decision, 0) + 1
+        changed = app is None or app.status not in CHANGED_STATUSES \
+            or svc.application_hash(item.application_id) != item.item_hash
+        rows.append({
+            "item": item, "app": app, "job": job, "changed": changed,
+            "shot": shots.get(item.application_id), "summary": sorted(summary.items()),
+            "answers": [{"label": a.label, "decision": a.decision, "source": a.source_fact_id,
+                         "display": _display(json.loads(a.proposed_value_json))} for a in mine],
+            "review_count": summary.get(FieldDecision.FILL_AND_REVIEW.value, 0),
+            "suggested_count": sum(1 for a in mine if _is_model_suggested(a))})
+    pending = batch.status in (BatchStatus.READY_FOR_REVIEW.value,
+                               BatchStatus.PARTIALLY_APPROVED.value)
+    return _page(request, s, "batch.html", {
+        "batch": batch, "rows": rows, "pending": pending,
+        "any_changed": any(r["changed"] for r in rows)})
+
+
+@router.post("/ui/batches/{batch_id}/rebuild")
+def rebuild(batch_id: str, s: Db) -> RedirectResponse:
+    try:
+        batch = ApprovalService(s).rebuild_batch(batch_id, only_ready=True)
+    except ValueError as e:
+        s.rollback()
+        raise HTTPException(422, str(e)) from e
+    new_id_ = batch.batch_id
+    s.commit()
+    return RedirectResponse(f"/ui/batches/{new_id_}", status_code=303)
 
 
 def _message(request: Request, text: str, status: int, ok: bool = False) -> HTMLResponse:
@@ -373,7 +525,7 @@ def approve(
                              "simulated submission queued.", 200, ok=True)
 
 
-def _profile_context(s: Session) -> dict[str, Any]:
+def _profile_context(s: Session, aliases_path: Path) -> dict[str, Any]:
     try:
         version, facts = active_profile(s)
     except LookupError:
@@ -384,7 +536,8 @@ def _profile_context(s: Session) -> dict[str, Any]:
     answers = {a.question_key: json.loads(a.value_json) for a in s.execute(
         select(AnswerLibraryRow).where(AnswerLibraryRow.profile_version == version)).scalars()}
     fields = [{**f, "value": answers.get(f["key"]),
-               "editable": f["decision"] in EDITABLE_DECISIONS} for f in _library_fields()]
+               "editable": f["decision"] in EDITABLE_DECISIONS}
+              for f in _library_fields(aliases_path)]
     prof = s.get(CandidateProfileRow, (PROFILE_ID, version))
     prefs = json.loads(prof.preferences_json) if prof is not None else {}
     return {"version": version, "sections": sections, "fields": fields,
@@ -393,7 +546,8 @@ def _profile_context(s: Session) -> dict[str, Any]:
 
 @router.get("/ui/profile", response_class=HTMLResponse)
 def profile(request: Request, s: Db) -> HTMLResponse:
-    return _page(request, s, "profile.html", _profile_context(s))
+    ctx = _profile_context(s, request.app.state.field_aliases_path)
+    return _page(request, s, "profile.html", ctx)
 
 
 @router.post("/ui/profile/facts/{fact_id}/verify", response_class=HTMLResponse)
@@ -429,7 +583,7 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
         active_profile(s)
     except LookupError as e:
         raise HTTPException(404, str(e)) from e
-    for f in _library_fields():
+    for f in _library_fields(request.app.state.field_aliases_path):
         if f["decision"] not in EDITABLE_DECISIONS:
             continue
         key = f["key"]
