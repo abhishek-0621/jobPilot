@@ -26,3 +26,8 @@ def test_loads_routes() -> None:
 def test_new_id_prefix_and_unique() -> None:
     a, b = new_id("job"), new_id("job")
     assert a.startswith("job_") and a != b
+
+
+def test_rejects_unknown_config_key(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        load_config(write_min_config(tmp_path, dry_runn=False))
