@@ -19,7 +19,8 @@ def next_version(s: Session, application_id: str, type_: str) -> int:
 
 
 def write_artifact(s: Session, application_id: str, type_: str, path: Path,
-                   source_fact_ids: list[str], *, root: Path) -> DocumentArtifactRow:
+                   source_fact_ids: list[str], *, root: Path,
+                   profile_version: int | None = None) -> DocumentArtifactRow:
     """Record ``path`` (must live under ``root``; stored relative to it). Flushes only."""
     resolved, base = path.resolve(), root.resolve()
     if not resolved.is_relative_to(base):
@@ -30,7 +31,8 @@ def write_artifact(s: Session, application_id: str, type_: str, path: Path,
         path=resolved.relative_to(base).as_posix(),
         content_hash="sha256:" + hashlib.sha256(data).hexdigest(),
         version=next_version(s, application_id, type_),
-        source_fact_ids_json=canonical_json(list(dict.fromkeys(source_fact_ids))))
+        source_fact_ids_json=canonical_json(list(dict.fromkeys(source_fact_ids))),
+        profile_version=profile_version)
     s.add(row)
     s.flush()
     return row

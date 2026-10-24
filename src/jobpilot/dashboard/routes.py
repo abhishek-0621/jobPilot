@@ -286,12 +286,16 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
         raise HTTPException(404, "application not found")
     job = s.get(JobRow, app.job_id)
     letter_txt = _latest_artifact(s, application_id, "cover_letter_text")
-    evidence = []
-    if letter_txt is not None:
-        for fid in json.loads(letter_txt.source_fact_ids_json):
-            f = s.get(CandidateFactRow, fid)
-            evidence.append({"fact_id": fid, "value": f.value if f else "(removed)"})
-    facts = {f.fact_id: f.value for f in s.execute(select(CandidateFactRow)).scalars()}
+    try:
+        facts = {f.fact_id: f.value for f in active_profile(s)[1]}
+    except LookupError:
+        facts = {}
+    try:
+        cited = json.loads(letter_txt.source_fact_ids_json) if letter_txt else []
+    except ValueError:
+        cited = []
+    evidence = [{"fact_id": fid, "value": facts.get(fid, "(removed)")}
+                for fid in (cited if isinstance(cited, list) else []) if isinstance(fid, str)]
     return _page(request, s, "application.html", {
         "app": app, "job": job,
         "resume": _latest_artifact(s, application_id, "resume"),

@@ -82,8 +82,13 @@ def test_reimport_invalidates_artifact_citing_changed_fact(
         import_profile(s, load_profile_file(FIXTURE))
         cited = _approved_app(s)
         (other,) = seed_ready_apps(s, 1)
-        _artifact(s, cited, "resume", "artifacts/a/resume_v1.pdf", ["fact_exp_002"])
-        _artifact(s, other, "resume", "artifacts/b/resume_v1.pdf", ["fact_exp_001"])
+        for app_id, fact in ((cited, "fact_exp_002"), (other, "fact_exp_001")):
+            app = s.get(ApplicationRow, app_id)
+            assert app is not None
+            app.resume_artifact_id = _artifact(s, app_id, "resume",
+                                               f"artifacts/{app_id}/resume_v2.pdf", [fact])
+        # a superseded artifact citing the changed fact does not make `other` stale
+        _artifact(s, other, "resume", "artifacts/old/resume_v1.pdf", ["fact_exp_002"])
         s.commit()
         import_profile(s, edited(fact_exp_002="Reduced latency by 40 percent"))
         s.commit()

@@ -71,7 +71,7 @@ def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-def seed_cl(factory: sessionmaker[Session]) -> None:  # noqa: F811
+def seed_cl(factory: sessionmaker[Session], resume_version: int | None = 1) -> None:  # noqa: F811
     seed(factory, status="DOCUMENTS_PENDING")
     with factory() as s:
         s.add(JobRow(job_id="job_2", source="lever", source_job_id="2",
@@ -79,6 +79,13 @@ def seed_cl(factory: sessionmaker[Session]) -> None:  # noqa: F811
                      title="ML Engineer", location="Pune", work_mode="remote",
                      description_text="d", extracted_json="{}", status="MATCHED",
                      first_seen_at=T0, last_seen_at=T0))
+        s.add(DocumentArtifactRow(artifact_id="art_resume", application_id=APP,
+                                  type="resume", path="artifacts/app_1/resume_v1.pdf",
+                                  content_hash="x", profile_version=resume_version,
+                                  source_fact_ids_json='["fact_exp_001"]'))
+        app = s.get(ApplicationRow, APP)
+        assert app is not None
+        app.resume_artifact_id = "art_resume"
         s.commit()
 
 
@@ -194,7 +201,8 @@ async def test_application_moves_to_form_in_progress(
         assert task is not None and task.status == TaskStatus.SUCCEEDED
         app = s.get(ApplicationRow, APP)
         assert app is not None and app.status == "FORM_IN_PROGRESS"
-        rows = s.execute(select(DocumentArtifactRow).order_by(
+        rows = s.execute(select(DocumentArtifactRow).where(
+            DocumentArtifactRow.type != "resume").order_by(
             DocumentArtifactRow.type)).scalars().all()
         assert [(r.type, r.version) for r in rows] == [("cover_letter", 1),
                                                          ("cover_letter_text", 1)]
@@ -269,3 +277,23 @@ async def test_invented_employer_or_number_rejected(
         with pytest.raises(OutputRejected, match="cover_letter_invalid"):
             await run_agent(factory, cfg, gw)
         assert code in gw.calls[1]["messages"][1]["content"]
+
+
+@pytest.mark.parametrize("resume_version,letter_version", [(None, 1), (1, 0)])
+async def test_cover_letter_with_stale_versions_requeues_tailor(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+    resume_version: int | None, letter_version: int,
+) -> None:
+    seed_cl(factory, resume_version=resume_version)
+    out = await run_agent(factory, cfg, SeqGateway(GOOD))
+    out = out.model_copy(update={"profile_version": letter_version})
+    task = TaskRow(task_id="t_cl", kind="COVER_LETTER", entity_type="application",
+                   entity_id=APP, status="RUNNING", attempts=1)
+    with factory() as s:
+        follow = make_cover_letter_handler(cfg.storage_path)(s, task, out)
+        s.commit()
+        assert follow == [(TaskKind.TAILOR, "application", APP)]
+        app = s.get(ApplicationRow, APP)
+        assert app is not None and app.status == "DOCUMENTS_PENDING"
+        assert app.cover_letter_artifact_id is None
+        assert [a.type for a in s.execute(select(DocumentArtifactRow)).scalars()] == ["resume"]

@@ -113,6 +113,7 @@ class DocumentArtifactRow(Base):
     content_hash: Mapped[str] = mapped_column(String)
     version: Mapped[int] = mapped_column(Integer, default=1)
     source_fact_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class FormFieldAnswerRow(Base):

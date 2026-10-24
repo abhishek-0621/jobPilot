@@ -18,6 +18,7 @@ from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
 from jobpilot.data.repositories import list_events
 from jobpilot.data.tables import (
     ApplicationRow,
+    AuditEventRow,
     CandidateFactRow,
     DocumentArtifactRow,
     JobRow,
@@ -351,3 +352,50 @@ def test_skill_group_name_comes_from_fact_field() -> None:
     [row] = tailor_mod._fact_rows(1, facts)
     assert row.field == "languages"
     assert tailor_mod._verified_skills(facts) == ["Python", "SQL"]
+
+
+def _stale_setup(factory: sessionmaker[Session], kind: str) -> TaskRow:
+    """App in DOCUMENTS_PENDING whose current resume (v1) cites fact_exp_002, a RUNNING
+    ``kind`` task, then a re-import that changes fact_exp_002 (profile v2)."""
+    from jobpilot.profile.schema import ProfileFile
+    from tests.unit.test_profile import edited
+
+    seed(factory, status="DOCUMENTS_PENDING")
+    with factory() as s:
+        s.add(DocumentArtifactRow(artifact_id="art_old", application_id=APP, type="resume",
+                                  path="artifacts/app_1/resume_v1.pdf", content_hash="x",
+                                  source_fact_ids_json='["fact_exp_002"]', profile_version=1))
+        app = s.get(ApplicationRow, APP)
+        assert app is not None
+        app.resume_artifact_id = "art_old"
+        task = TaskRow(task_id="t_run", kind=kind, entity_type="application",
+                       entity_id=APP, status="RUNNING", attempts=1)
+        s.add(task)
+        s.commit()
+        pf: ProfileFile = edited(fact_exp_002="Reduced latency by 40 percent")
+        import_profile(s, pf)
+        s.commit()
+        ev = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "documents_stale")).scalar_one()
+        assert ev.outcome == "deferred_to_handler"
+        return task
+
+
+async def test_tailor_handler_drops_output_from_old_profile_version(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_render: list[ResumeDoc],
+) -> None:
+    task = _stale_setup(factory, "TAILOR")
+    plan = await run_agent(factory, cfg, FakeGateway())
+    plan = plan.model_copy(update={"profile_version": 1})  # facts loaded before re-import
+    with factory() as s:
+        follow = make_tailor_handler(cfg.storage_path)(s, task, plan)
+        s.commit()
+        assert follow == [(TaskKind.TAILOR, "application", APP)]
+        app = s.get(ApplicationRow, APP)
+        assert app is not None and app.status == "DOCUMENTS_PENDING"
+        assert app.resume_artifact_id == "art_old"
+        types = [a.type for a in s.execute(select(DocumentArtifactRow)).scalars()]
+        assert types == ["resume"]
+        outcomes = [e.outcome for e in s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "documents_stale")).scalars()]
+        assert outcomes == ["deferred_to_handler", "requeued"]

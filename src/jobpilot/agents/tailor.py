@@ -22,6 +22,7 @@ from jobpilot.documents.model import Bullet, ResumeDoc, base_resume, split_skill
 from jobpilot.documents.render import fit_one_page, render_resume_docx
 from jobpilot.documents.validate import validate_rewrite
 from jobpilot.llm.prompts import build_messages
+from jobpilot.orchestrator.documents_flow import stale_follow_up
 from jobpilot.orchestrator.engine import (
     AgentContext,
     FollowUp,
@@ -253,6 +254,9 @@ def make_tailor_handler(storage_path: Path) -> Handler:
         app = get_application(s, out.application_id)
         if app.status not in TAILORABLE:
             raise OutputRejected("not_tailorable")
+        stale = stale_follow_up(s, task, app.application_id, [out.profile_version], _ACTOR)
+        if stale is not None:
+            return stale
         verified = {f.fact_id for f in s.query(CandidateFactRow).filter(
             CandidateFactRow.profile_version == out.profile_version,
             CandidateFactRow.verified_by_user.is_(True))}
@@ -271,11 +275,14 @@ def make_tailor_handler(storage_path: Path) -> Handler:
                              encoding="utf-8")
         ids = out.used_fact_ids
         pdf_row = store.write_artifact(s, app.application_id, "resume", pdf, ids,
-                                       root=storage_path)
+                                       root=storage_path,
+                                       profile_version=out.profile_version)
         store.write_artifact(s, app.application_id, "resume_docx", docx, ids,
-                             root=storage_path)
+                             root=storage_path,
+                             profile_version=out.profile_version)
         store.write_artifact(s, app.application_id, "resume_diff", diff_path, ids,
-                             root=storage_path)
+                             root=storage_path,
+                             profile_version=out.profile_version)
         mutations.set_artifact(s, app.application_id, "resume", pdf_row.artifact_id,
                                actor=_ACTOR)
         return [(TaskKind.COVER_LETTER, "application", app.application_id)]

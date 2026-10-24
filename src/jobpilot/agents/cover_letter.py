@@ -21,6 +21,7 @@ from jobpilot.documents.model import split_skills
 from jobpilot.documents.render import DocRenderError, html_to_pdf, render_cover_letter_html
 from jobpilot.documents.validate import validate_cover_letter, validate_rewrite
 from jobpilot.llm.prompts import build_messages
+from jobpilot.orchestrator.documents_flow import current_artifact_version, stale_follow_up
 from jobpilot.orchestrator.engine import (
     AgentContext,
     FollowUp,
@@ -189,6 +190,12 @@ def make_cover_letter_handler(storage_path: Path) -> Handler:
         app = get_application(s, out.application_id)
         if app.status != ApplicationStatus.DOCUMENTS_PENDING.value:
             raise OutputRejected("not_documents_pending")
+        stale = stale_follow_up(
+            s, task, app.application_id,
+            [out.profile_version, current_artifact_version(s, app.resume_artifact_id)],
+            _ACTOR)
+        if stale is not None:
+            return stale
         verified = {f.fact_id for f in s.query(CandidateFactRow).filter(
             CandidateFactRow.profile_version == out.profile_version,
             CandidateFactRow.verified_by_user.is_(True))}
@@ -202,9 +209,11 @@ def make_cover_letter_handler(storage_path: Path) -> Handler:
                 raise OutputRejected("artifact_path_invalid")
         ids = out.evidence_fact_ids
         pdf_row = store.write_artifact(s, app.application_id, "cover_letter", pdf, ids,
-                                       root=storage_path)
+                                       root=storage_path,
+                                       profile_version=out.profile_version)
         store.write_artifact(s, app.application_id, "cover_letter_text", txt, ids,
-                             root=storage_path)
+                             root=storage_path,
+                             profile_version=out.profile_version)
         mutations.set_artifact(s, app.application_id, "cover_letter", pdf_row.artifact_id,
                                actor=_ACTOR)
         transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=_ACTOR,
