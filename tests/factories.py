@@ -136,18 +136,6 @@ def seed_ready_apps(db_session: Any, n: int) -> list[str]:
 
 
 def edit_answer(db_session: Any, application_id: str, field_id: str, value: Any) -> None:
-    from sqlalchemy import select
+    from jobpilot.data.mutations import set_answer
 
-    from jobpilot.data.tables import FormFieldAnswerRow
-    from jobpilot.orchestrator.approval import ApprovalService
-    from jobpilot.util.hashing import canonical_json
-
-    row = db_session.execute(
-        select(FormFieldAnswerRow).where(
-            FormFieldAnswerRow.application_id == application_id,
-            FormFieldAnswerRow.field_id == field_id,
-        )
-    ).scalar_one()
-    row.proposed_value_json = canonical_json(value)
-    db_session.flush()
-    ApprovalService(db_session).invalidate_application(application_id, reason="answer_edited")
+    set_answer(db_session, application_id, field_id, value, actor="user")

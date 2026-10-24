@@ -159,6 +159,7 @@ class ApprovalRow(Base):
     kind: Mapped[str] = mapped_column(String)
     content_hash: Mapped[str] = mapped_column(String)
     approved_item_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    revoked_item_ids_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     approved_at: Mapped[datetime] = _ts(default=utcnow)
     revoked_at: Mapped[datetime | None] = _ts(nullable=True)
 

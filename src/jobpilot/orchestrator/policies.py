@@ -31,6 +31,17 @@ def _result(reasons: list[str]) -> GateResult:
     return GateResult(allowed=not reasons, reasons=reasons)
 
 
+def revoked_items(approval: ApprovalRow) -> list[str] | None:
+    """Item-revoked ids; None means malformed (treat every item as revoked)."""
+    try:
+        ids = json.loads(approval.revoked_item_ids_json or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return None
+    return ids
+
+
 def _approval_valid(
     approval: ApprovalRow | None, kind: ApprovalKind, item_id: str
 ) -> bool:
@@ -43,6 +54,9 @@ def _approval_valid(
     except (TypeError, ValueError):
         return False
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return False
+    revoked = revoked_items(approval)
+    if revoked is None or item_id in revoked:
         return False
     return item_id in ids
 

@@ -540,7 +540,7 @@ class Orchestrator:
                            reason="stranded_in_progress")
 
     def _requeue_orphaned_approvals(self, s: Session) -> None:
-        """APPROVED apps with no live SUBMIT task get one; the gate re-checks approval."""
+        """APPROVED apps with a valid approval and no live SUBMIT task get one."""
         live = set(s.execute(select(TaskRow.entity_id).where(
             TaskRow.kind == TaskKind.SUBMIT.value,
             TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)),
@@ -548,8 +548,9 @@ class Orchestrator:
         apps = s.execute(select(ApplicationRow.application_id).where(
             ApplicationRow.status == ApplicationStatus.APPROVED.value
         ).order_by(ApplicationRow.application_id)).scalars().all()
+        svc = ApprovalService(s)
         for app_id in apps:
-            if app_id not in live:
+            if app_id not in live and svc.active_approval_for(app_id) is not None:
                 self._add_task(s, TaskKind.SUBMIT, "application", app_id)
 
     def _recover_side_effect(self, s: Session, task: TaskRow, kind: TaskKind) -> None:

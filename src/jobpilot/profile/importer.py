@@ -115,6 +115,7 @@ def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
             "company_start": pf.current_employment.company_start,
         },
         "languages": pf.languages,
+        "open_questions": pf.open_questions,
     }
     s.add(CandidateProfileRow(profile_id=PROFILE_ID, version=version,
                               preferences_json=canonical_json(prefs)))

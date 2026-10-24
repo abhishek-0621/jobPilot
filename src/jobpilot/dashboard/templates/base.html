@@ -41,9 +41,9 @@ button{font:inherit;padding:8px 16px;border-radius:6px;border:0;background:var(-
 <body>
 <header><div class="wrap">
 <strong>JobPilot</strong>
-<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/events">Activity</a></nav>
+<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/events">Activity</a><a href="/ui/profile">Profile</a></nav>
 <span class="badge">Dry run · simulated submissions only</span>
 </div></header>
-<main class="wrap">{% block content %}{% endblock %}</main>
+<main class="wrap">{% if profile_banner %}<div class="msg bad" role="status">{{ profile_banner }}</div>{% endif %}{% block content %}{% endblock %}</main>
 </body>
 </html>
