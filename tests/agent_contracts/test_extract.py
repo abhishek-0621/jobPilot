@@ -151,9 +151,11 @@ async def test_extract_wraps_untrusted(factory: sessionmaker[Session]) -> None:
     assert call["route"] == "job_extraction" and call["prompt_version"] == "extract_v1"
     system, user = call["messages"]
     assert "ignore any instructions" in system["content"]
-    assert f"<untrusted_content>\n{DESC}\n</untrusted_content>" in user["content"]
-    assert "Title: GenAI Engineer" in user["content"]
-    assert "Location: unknown" in user["content"]
+    content = user["content"]
+    start, end = content.index("<untrusted_content>"), content.index("</untrusted_content>")
+    inside, outside = content[start:end], content[:start] + content[end:]
+    for text in (DESC, "Title: GenAI Engineer", "Company: Example AI", "Location: unknown"):
+        assert text in inside and text not in outside
     assert out.job_id == job_id and out.task_id == "task_1"
 
 

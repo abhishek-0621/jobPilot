@@ -1,6 +1,5 @@
 """MATCH: explainable job matching; LLM judges three dimensions, code scores the rest."""
 
-import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,7 +12,7 @@ from sqlalchemy.orm import Session
 from jobpilot.agents.extract import JobRequirements
 from jobpilot.contracts.enums import JobStatus
 from jobpilot.contracts.models import Confidence, MatchAssessment, Score
-from jobpilot.data.tables import JobRow, MatchAssessmentRow, TaskRow
+from jobpilot.data.tables import CandidateFactRow, JobRow, MatchAssessmentRow, TaskRow
 from jobpilot.llm.prompts import build_messages
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.engine import (
@@ -38,6 +37,7 @@ _GAP_YEARS = 4
 _PRIMARY = ("work_experience", "project")
 _SECONDARY = ("skill", "education", "achievement")
 _HARD_PREFIX = "hard_filter:"
+_FILTER_NAMES = ("location", "excluded_keyword", "seniority", "experience_gap")
 
 
 class _MatchLLM(BaseModel):
@@ -144,12 +144,16 @@ class MatchAgent:
                                   "experience_min_years", "experience_max_years",
                                   "seniority", "work_mode", "location", "role_family"})
         instructions = (
-            "Assess how well the candidate matches this job.\n"
+            "Assess how well the candidate matches the job described in the untrusted "
+            "content block.\n"
+            f"Candidate facts (verified): {canonical_json(selected)}"
+        )
+        job_block = (
             f"Title: {job.get('title') or 'unknown'}\n"
             f"Requirements: {canonical_json(requirements)}\n"
-            f"Candidate facts: {canonical_json(selected)}"
+            f"Summary: {req.summary}"
         )
-        messages = build_messages(_system_prompt(), instructions, untrusted=req.summary)
+        messages = build_messages(_system_prompt(), instructions, untrusted=job_block)
         raw, _meta = await ctx.gateway.generate(
             "job_matching", messages, _MatchLLM, PROMPT_VERSION)
         verified_ids = {f["fact_id"] for f in facts}
@@ -161,7 +165,8 @@ class MatchAgent:
                 "experience_fit": experience_fit(req.experience_min_years, years),
                 "location_fit": location_fit(job.get("location") or req.location, mode, prefs)}
         failed = hard_filters(job, req, prefs, candidate_years=years)
-        concerns = [c.strip() for c in raw.concerns if c.strip()]
+        concerns = [c.strip() for c in raw.concerns
+                    if c.strip() and not c.strip().casefold().startswith(_HARD_PREFIX)]
         concerns += [f"{_HARD_PREFIX}{r}" for r in failed]
         return MatchAssessment(
             job_id=inp.entity_id, profile_version=version, task_id=ctx.task_id,
@@ -183,6 +188,11 @@ def make_match_handler(prefs: SearchPreferences) -> Handler:
             raise OutputRejected("job_not_found")
         if job.status != JobStatus.NORMALIZED.value:
             raise OutputRejected("job_not_matchable")
+        verified = {f.fact_id for f in s.query(CandidateFactRow).filter(
+            CandidateFactRow.profile_version == out.profile_version,
+            CandidateFactRow.verified_by_user.is_(True))}
+        if any(fid not in verified for fid in out.matched_evidence_fact_ids):
+            raise OutputRejected("unverified_fact")
         row = s.get(MatchAssessmentRow, (out.job_id, out.profile_version))
         if row is None:
             row = MatchAssessmentRow(job_id=out.job_id, profile_version=out.profile_version)
@@ -199,7 +209,8 @@ def make_match_handler(prefs: SearchPreferences) -> Handler:
         transition(s, job, JobStatus.MATCHED, actor="orchestrator", reason="scored",
                    details={"total_score": out.total_score, "confidence": out.confidence})
         if not out.hard_filter_passed:
-            names = [c[len(_HARD_PREFIX):] for c in out.concerns if c.startswith(_HARD_PREFIX)]
+            tagged = {c[len(_HARD_PREFIX):] for c in out.concerns if c.startswith(_HARD_PREFIX)}
+            names = [n for n in _FILTER_NAMES if n in tagged] or ["unspecified"]
             transition(s, job, JobStatus.REJECTED, actor="orchestrator",
                        reason=f"{_HARD_PREFIX}{','.join(names)}")
         elif out.total_score < prefs.min_match_score:

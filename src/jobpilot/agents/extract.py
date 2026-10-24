@@ -98,13 +98,13 @@ class ExtractAgent:
         job = loader(inp.entity_id)
         if job is None:
             raise OutputRejected("job_not_found")
-        instructions = (
-            "Extract the structured requirements for this job posting.\n"
+        instructions = ("Extract the structured requirements for the job posting in the "
+                        "untrusted content block.")
+        posting = (
             f"Title: {job['title']}\nCompany: {job['company']}\n"
-            f"Location: {job.get('location') or 'unknown'}"
+            f"Location: {job.get('location') or 'unknown'}\n\n{job['description_text']}"
         )
-        messages = build_messages(_system_prompt(), instructions,
-                                  untrusted=job["description_text"])
+        messages = build_messages(_system_prompt(), instructions, untrusted=posting)
         raw, _meta = await ctx.gateway.generate(
             "job_extraction", messages, _ExtractLLM, PROMPT_VERSION)
         lo = _clamp_years(raw.experience_min_years)
