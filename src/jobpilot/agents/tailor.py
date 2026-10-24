@@ -18,7 +18,7 @@ from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import CandidateFactRow, TaskRow
 from jobpilot.documents import store
 from jobpilot.documents.diff import DiffRow, bullet_diff
-from jobpilot.documents.model import Bullet, ResumeDoc, base_resume
+from jobpilot.documents.model import Bullet, ResumeDoc, base_resume, split_skills
 from jobpilot.documents.render import fit_one_page, render_resume_docx
 from jobpilot.documents.validate import validate_rewrite
 from jobpilot.llm.prompts import build_messages
@@ -37,7 +37,6 @@ from jobpilot.util.hashing import canonical_json
 PROMPT_VERSION = "tailor_v1"
 _ROUTE = "resume_tailoring"
 _ACTOR = "orchestrator"
-_SKILL_PREFIX = "fact_skill_"
 TAILORABLE = (ApplicationStatus.NOT_STARTED.value, ApplicationStatus.DOCUMENTS_PENDING.value)
 _VERSION_RE = re.compile(r"^resume_v(\d+)\.pdf$")
 
@@ -79,16 +78,16 @@ def _system_prompt() -> str:
 
 
 def _fact_rows(version: int, facts: list[dict]) -> list[CandidateFactRow]:
-    """Transient rows for ``base_resume``; a skill fact's field is its group name."""
+    """Transient rows for ``base_resume`` carrying the real fact ``field``
+    (a skill fact's field is its group name)."""
     return [CandidateFactRow(
         fact_id=f["fact_id"], profile_version=version, category=f["category"],
-        field=f["fact_id"].removeprefix(_SKILL_PREFIX) if f["category"] == "skill"
-        else f["category"], value=f["value"], verified_by_user=True) for f in facts]
+        field=f["field"], value=f["value"], verified_by_user=True) for f in facts]
 
 
 def _verified_skills(facts: list[dict]) -> list[str]:
-    return [item.strip() for f in facts if f["category"] == "skill"
-            for item in f["value"].split(",") if item.strip()]
+    return [item for f in facts if f["category"] == "skill"
+            for item in split_skills(f["value"])]
 
 
 def fallback_summary(headline: str, years: float, required: list[str],
@@ -214,9 +213,11 @@ class TailorAgent:
         priority = list(dict.fromkeys(raw.priority))
         tailored = _select_bullets(base, selected, priority, texts)
         _order_skills(tailored, skills_order)
-        source = " ".join(verified[f] for f in _bullet_ids(tailored))
+        summary_ids = _bullet_ids(tailored)
+        source = " ".join(verified[f] for f in summary_ids)
         summary = raw.summary.strip()
         if not summary or validate_rewrite(source, summary, allowed, terms):
+            summary_ids = []
             summary = fallback_summary(base.headline, years,
                                        list(req.get("required_skills") or []), skills)
         tailored.summary = summary
@@ -232,6 +233,7 @@ class TailorAgent:
         dropped = [f for f in _bullet_ids(base) if f not in kept]
         used = _bullet_ids(fitted) + [e.fact_id for e in pf.education if e.fact_id in verified]
         used += [f["fact_id"] for f in facts if f["category"] == "skill"]
+        used += summary_ids  # the summary was validated against these (pre-fit) bullets
         diff = bullet_diff(base, fitted, set(rejected), set(dropped))
         return TailoringPlan(
             task_id=ctx.task_id, created_at=datetime.now(UTC),

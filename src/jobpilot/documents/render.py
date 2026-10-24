@@ -43,6 +43,12 @@ def render_resume_html(doc: ResumeDoc) -> str:
     return _env.get_template("resume.html.j2").render(doc=doc)
 
 
+def render_cover_letter_html(name: str, greeting: str, paragraphs: list[str],
+                             closing: str) -> str:
+    return _env.get_template("cover_letter.html.j2").render(
+        name=name, greeting=greeting, paragraphs=paragraphs, closing=closing)
+
+
 @asynccontextmanager
 async def _browser() -> AsyncIterator[Any]:
     """One headless Chromium; launch failures surface as DocRenderError."""

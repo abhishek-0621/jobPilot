@@ -1,4 +1,4 @@
-"""Wire DISCOVER/EXTRACT/MATCH/TAILOR agents, handlers and their tools for a running app."""
+"""Wire the DISCOVER..COVER_LETTER agents, handlers and their tools for a running app."""
 
 import json
 from collections.abc import Callable
@@ -10,16 +10,22 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session, sessionmaker
 
+from jobpilot.agents.cover_letter import CoverLetterAgent, make_cover_letter_handler
 from jobpilot.agents.extract import ExtractAgent, extract_handler
 from jobpilot.agents.match import MatchAgent, make_match_handler
 from jobpilot.agents.tailor import TailorAgent, make_tailor_handler
 from jobpilot.config import AppConfig
 from jobpilot.data.db import utcnow
-from jobpilot.data.tables import ApplicationRow, JobRow, MatchAssessmentRow
+from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, JobRow, MatchAssessmentRow
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
-from jobpilot.documents.validate import TECH_TERMS_PATH, load_tech_terms
+from jobpilot.documents.validate import (
+    BANNED_PATH,
+    TECH_TERMS_PATH,
+    load_banned,
+    load_tech_terms,
+)
 from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
 from jobpilot.portals.base import PortalAdapter
 from jobpilot.portals.simulated import SimulatedAdapter
@@ -67,7 +73,8 @@ def make_profile_loader(
     def profile_loader() -> tuple[int, list[dict], float]:
         with session_factory() as s:
             version, _ = active_profile(s)
-            facts = [{"fact_id": f.fact_id, "category": f.category, "value": f.value}
+            facts = [{"fact_id": f.fact_id, "category": f.category, "field": f.field,
+                      "value": f.value}
                      for f in verified_facts(s)
                      if f.verified_by_user and f.profile_version == version]
             try:
@@ -82,7 +89,8 @@ def make_application_loader(
     session_factory: sessionmaker[Session],
 ) -> Callable[[str], dict | None]:
     """Application + job (requirements, summary) + match evidence as {fact_id: value},
-    restricted to verified facts of the active profile."""
+    restricted to verified facts of the active profile; plus the current resume's
+    source fact ids and the other companies present in the jobs table."""
     def application_loader(application_id: str) -> dict | None:
         with session_factory() as s:
             app = s.get(ApplicationRow, application_id)
@@ -103,10 +111,20 @@ def make_application_loader(
             except ValueError:
                 ev = {}
             ids = ev.get("matched_evidence_fact_ids", []) if isinstance(ev, dict) else []
+            resume = None if app.resume_artifact_id is None \
+                else s.get(DocumentArtifactRow, app.resume_artifact_id)
+            try:
+                resume_ids = json.loads(resume.source_fact_ids_json) if resume else []
+            except ValueError:
+                resume_ids = []
+            others = sorted({c for (c,) in s.query(JobRow.company).filter(
+                JobRow.company != job.company).distinct() if c})
             return {"application_id": app.application_id, "job_id": job.job_id,
                     "status": app.status, "title": job.title, "company": job.company,
                     "requirements": req, "job_summary": req.get("summary") or "",
-                    "match_evidence": {i: facts[i] for i in ids if i in facts}}
+                    "match_evidence": {i: facts[i] for i in ids if i in facts},
+                    "resume_fact_ids": [i for i in resume_ids if i in facts],
+                    "other_companies": others}
     return application_loader
 
 
@@ -153,18 +171,21 @@ def build_runtime(
         "profile_file": make_profile_file(cfg),
         "artifact_dir": make_artifact_dir(cfg),
         "tech_terms": lambda: load_tech_terms(TECH_TERMS_PATH),
+        "cover_letter_banned": lambda: load_banned(BANNED_PATH),
     }
     agents: dict[TaskKind, Agent[Any, Any]] = {
         TaskKind.DISCOVER: DiscoverAgent(),
         TaskKind.EXTRACT: ExtractAgent(),
         TaskKind.MATCH: MatchAgent(),
         TaskKind.TAILOR: TailorAgent(),
+        TaskKind.COVER_LETTER: CoverLetterAgent(),
     }
     handlers: dict[TaskKind, Handler] = {
         TaskKind.DISCOVER: discover_handler,
         TaskKind.EXTRACT: extract_handler,
         TaskKind.MATCH: make_match_handler(prefs),
         TaskKind.TAILOR: make_tailor_handler(cfg.storage_path),
+        TaskKind.COVER_LETTER: make_cover_letter_handler(cfg.storage_path),
     }
     return Runtime(agents=agents, handlers=handlers,
                    adapters={"simulated": SimulatedAdapter()}, tools=tools,

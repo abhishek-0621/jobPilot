@@ -37,6 +37,11 @@ def _s(v: object) -> str:
     return "" if v is None else str(v)
 
 
+def split_skills(value: str) -> list[str]:
+    """A skill fact's value as items: split on ",", stripped, empties dropped."""
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def base_resume(profile: ProfileFile, facts: list[CandidateFactRow]) -> ResumeDoc:
     verified = {f.fact_id: f for f in facts if f.verified_by_user}
     counter = iter(range(1_000_000))
@@ -58,7 +63,7 @@ def base_resume(profile: ProfileFile, facts: list[CandidateFactRow]) -> ResumeDo
     projects = [p for p in projects if p.bullets]
     achievements = bullets(profile.achievements)
     education = [verified[e.fact_id].value for e in profile.education if e.fact_id in verified]
-    skills = [(f.field.title(), f.value.split(", ")) for f in facts
+    skills = [(f.field.title(), split_skills(f.value)) for f in facts
               if f.category == "skill" and f.fact_id in verified]
     order = list(profile.skills)
     skills.sort(key=lambda g: order.index(g[0].lower()) if g[0].lower() in order else len(order))

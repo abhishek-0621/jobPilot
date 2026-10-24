@@ -201,3 +201,40 @@ def validate_rewrite(source: str, rewrite: str, allowed_terms: set[str],
     if not (MIN_RATIO * n <= m <= MAX_RATIO * n):
         violations.add("length")
     return sorted(violations)
+
+
+BANNED_PATH = _CONFIG / "cover_letter_banned.txt"
+MAX_LETTER_WORDS = 250
+_PLACEHOLDER_RE = re.compile(r"[\[\]{}<>]|\bTODO\b|\bXXX\b", re.IGNORECASE)
+
+
+def load_banned(path: Path | str) -> list[str]:
+    """Banned cover-letter phrases, one per line, lower-cased, file order."""
+    return list(dict.fromkeys(t.casefold() for t in _lines(path)))
+
+
+def _lines(path: Path | str) -> list[str]:
+    out = [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines()]
+    return [line for line in out if line and not line.startswith("#")]
+
+
+def validate_cover_letter(text: str, company: str, role: str, banned: list[str],
+                          other_companies: list[str]) -> list[str]:
+    """Violation codes for a full cover letter; empty list means valid."""
+    codes: list[str] = []
+    if len(text.split()) > MAX_LETTER_WORDS:
+        codes.append("too_long")
+    if _PLACEHOLDER_RE.search(text):
+        codes.append("placeholder")
+    if not has_phrase(text, company):
+        codes.append("missing_company")
+    if not has_phrase(text, role):
+        codes.append("missing_role")
+    codes += [f"banned:{p}" for p in banned if has_phrase(text, p)]
+    for other in dict.fromkeys(o.strip() for o in other_companies):
+        if len(other) < 3 or other.casefold() == company.casefold() \
+                or has_phrase(company, other):
+            continue
+        if has_phrase(text, other):
+            codes.append(f"wrong_company:{other}")
+    return codes

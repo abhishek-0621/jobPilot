@@ -1,0 +1,42 @@
+# Cliché / generic-flattery phrases rejected in cover letters (case-insensitive phrase match).
+i am writing to express
+i am writing to apply
+dream job
+passionate about
+perfect fit
+perfect candidate
+ideal candidate
+rockstar
+rock star
+ninja
+guru
+synergy
+think outside the box
+hit the ground running
+i believe i would be
+esteemed
+world-class
+world class
+cutting-edge
+go-getter
+self-starter
+team player
+hard-working
+hardworking
+results-driven
+detail-oriented
+go above and beyond
+thrilled to apply
+honored
+humbled
+unparalleled
+best of breed
+game changer
+game-changer
+paradigm shift
+look forward to hearing from you
+to whom it may concern
+dear sir or madam
+i am confident that
+excited to bring
+add value

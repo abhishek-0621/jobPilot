@@ -44,7 +44,8 @@ def _client() -> httpx.AsyncClient:
 
 def test_build_runtime_registers_kinds(factory: sessionmaker[Session], tmp_path: Path) -> None:
     rt = build_runtime(_cfg(tmp_path), factory, client=_client())
-    kinds = {TaskKind.DISCOVER, TaskKind.EXTRACT, TaskKind.MATCH, TaskKind.TAILOR}
+    kinds = {TaskKind.DISCOVER, TaskKind.EXTRACT, TaskKind.MATCH, TaskKind.TAILOR,
+             TaskKind.COVER_LETTER}
     assert set(rt.agents) == kinds == set(rt.handlers)
     assert set(rt.adapters) == {"simulated"}
     assert set(rt.tools["sources"]) == {"greenhouse", "lever"}
@@ -65,7 +66,7 @@ def test_profile_loader_returns_only_verified_active(
     version, facts, years = rt.tools["profile_loader"]()
     assert version == 2
     assert [f["fact_id"] for f in facts] == ["fact_exp_001"]
-    assert set(facts[0]) == {"fact_id", "category", "value"}
+    assert set(facts[0]) == {"fact_id", "category", "field", "value"}
     assert years == 3.0
 
 

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ name }}</title>
+<style>
+@page { size: A4; margin: 12mm; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt;
+       line-height: 1.35; color: #000; }
+h1 { font-size: 18pt; margin: 0 0 12pt; }
+p { margin: 0 0 8pt; }
+.signoff { margin-top: 12pt; }
+</style>
+</head>
+<body>
+<h1>{{ name }}</h1>
+<p>{{ greeting }}</p>
+{% for para in paragraphs %}<p>{{ para }}</p>
+{% endfor %}<p class="signoff">{{ closing }}<br>{{ name }}</p>
+</body>
+</html>

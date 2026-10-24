@@ -322,3 +322,32 @@ def test_tailor_handler_rejects_path_outside_storage(
                    status="RUNNING", attempts=1)
     with factory() as s, pytest.raises(OutputRejected, match="artifact_path_invalid"):
         make_tailor_handler(cfg.storage_path)(s, task, plan)
+
+
+async def test_tailor_used_ids_include_summary_sources_after_fit_drop(
+    factory: sessionmaker[Session], cfg: AppConfig, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed(factory)
+
+    async def fit(doc: ResumeDoc, out: Path) -> tuple[ResumeDoc, list[str]]:
+        doc = doc.model_copy(deep=True)
+        doc.projects = []
+        out.write_bytes(b"%PDF-fake")
+        return doc, ["fact_proj_001"]
+
+    monkeypatch.setattr(tailor_mod, "fit_one_page", fit)
+    monkeypatch.setattr(tailor_mod, "render_resume_docx", lambda d, o: o.write_bytes(b"d"))
+    out = await run_agent(factory, cfg, FakeGateway())
+    assert out.summary == CANNED["summary"]
+    assert "fact_proj_001" in out.dropped_fact_ids and "fact_proj_001" in out.used_fact_ids
+
+
+def test_skill_group_name_comes_from_fact_field() -> None:
+    from jobpilot.documents.model import split_skills
+
+    assert split_skills(" Python,SQL , ,Go") == ["Python", "SQL", "Go"]
+    facts = [{"fact_id": "fact_skill_x9", "category": "skill", "field": "languages",
+              "value": "Python,SQL"}]
+    [row] = tailor_mod._fact_rows(1, facts)
+    assert row.field == "languages"
+    assert tailor_mod._verified_skills(facts) == ["Python", "SQL"]
