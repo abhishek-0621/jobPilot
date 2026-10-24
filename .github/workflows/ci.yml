@@ -13,6 +13,7 @@ jobs:
           python-version: "3.13"
       - run: uv sync --locked
       - run: uv run ruff check
+      - run: uv run playwright install chromium
       - run: uv run pytest -q
       - name: Migrations have no drift
         run: |

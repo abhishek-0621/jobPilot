@@ -60,6 +60,25 @@ Then, in the dashboard:
    de-duplicated, extracted and scored by the local model; those below `min_match_score`
    or failing a hard filter (location, seniority, excluded keyword, experience gap) are rejected with a reason.
 
+## Documents
+
+Selecting a MATCHED job (Jobs page → **Select**) creates an application and queues
+tailoring. The resume agent only picks, orders and rewords your *verified* facts;
+every rewrite is checked deterministically (no new numbers, tech terms or proper
+nouns) and falls back to the original fact if rejected. Employer names, titles and
+dates are copied from the profile, never from the model. The resume is rendered to a
+one-page PDF plus DOCX, then a cover letter (≤ 250 words, 2–3 cited facts) is written
+and the application moves to `FORM_IN_PROGRESS`.
+
+- Files live under `storage/artifacts/<application_id>/` (git-ignored), versioned
+  `resume_vN.pdf`, `resume_vN.docx`, `resume_vN_diff.json`, `cover_letter_vN.pdf/.txt`.
+- Review them at `/ui/applications/<id>`: PDF preview, DOCX download, a diff of original
+  vs tailored bullets with their source facts, and the cover letter with its evidence.
+- **Regenerate documents** on that page moves the application back to
+  `DOCUMENTS_PENDING` (revoking any approval) and re-runs tailoring.
+- Re-importing your profile marks documents citing a changed or removed fact as stale
+  and regenerates them the same way.
+
 ## Where data lives
 
 All state lives in `storage/` (SQLite database `storage/jobpilot.db`, generated artifacts).

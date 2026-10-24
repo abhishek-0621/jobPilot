@@ -17,8 +17,10 @@ from sqlalchemy.orm import Session
 from jobpilot.api.actions import (
     ActionConflict,
     approve_and_queue,
+    regenerate_documents,
     select_job,
     start_discovery,
+    start_tailor,
 )
 from jobpilot.contracts.enums import JobStatus
 from jobpilot.contracts.models import is_http_url
@@ -39,6 +41,7 @@ from jobpilot.data.tables import (
     ApprovalBatchRow,
     CandidateFactRow,
     CandidateProfileRow,
+    DocumentArtifactRow,
     JobRow,
     MatchAssessmentRow,
     OutreachDraftRow,
@@ -174,7 +177,8 @@ def _one_line(text: str, limit: int = 120) -> str:
 def jobs(request: Request, s: Db, status: str | None = None,
          show_duplicates: int = 0) -> HTMLResponse:
     version = _active_version(s)
-    selected = {a.job_id for a in s.execute(select(ApplicationRow)).scalars()}
+    selected = {a.job_id: a.application_id
+                for a in s.execute(select(ApplicationRow)).scalars()}
     rows = []
     for job, _score in jobs_with_scores(s, status or None):
         if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
@@ -182,6 +186,7 @@ def jobs(request: Request, s: Db, status: str | None = None,
             continue
         m = _assessment(s, job.job_id, version)
         rows.append({"job": job, "score": None if m is None else m.total_score,
+                     "application_id": selected.get(job.job_id),
                      "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
                      "selectable": job.status == JobStatus.MATCHED.value
                      and job.job_id not in selected})
@@ -214,8 +219,8 @@ def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
         extracted = json.loads(job.extracted_json or "{}")
     except ValueError:
         extracted = {}
-    has_app = s.execute(select(ApplicationRow.application_id)
-                        .where(ApplicationRow.job_id == job_id)).first() is not None
+    app_id = s.execute(select(ApplicationRow.application_id)
+                       .where(ApplicationRow.job_id == job_id)).scalar()
     return _page(request, s, "job_detail.html", {
         "job": job, "m": m, "evidence": facts,
         "requirements": extracted.get("requirements") if isinstance(extracted, dict)
@@ -223,18 +228,95 @@ def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
         "missing": ev.get("missing_requirements") or [], "concerns": ev.get("concerns") or [],
         "explanation": ev.get("explanation") or "",
         "events": list(reversed(list_events(s, job_id))),
-        "selectable": job.status == JobStatus.MATCHED.value and not has_app})
+        "application_id": app_id,
+        "selectable": job.status == JobStatus.MATCHED.value and app_id is None})
 
 
 @router.post("/ui/jobs/{job_id}/select", response_class=HTMLResponse)
-def select_ui(request: Request, job_id: str, s: Db) -> HTMLResponse:
+def select_ui(request: Request, job_id: str, s: Db, orch: Orch) -> HTMLResponse:
     try:
-        select_job(s, job_id)
+        select_job(s, orch, job_id)
     except LookupError as e:
         return _message(request, str(e), 404)
     except ActionConflict as e:
         return _message(request, str(e), 409)
     return _message(request, "Selected — application created.", 200, ok=True)
+
+
+@router.post("/ui/applications/{application_id}/tailor", response_class=HTMLResponse)
+def tailor_ui(request: Request, application_id: str, s: Db, orch: Orch) -> HTMLResponse:
+    try:
+        start_tailor(s, orch, application_id)
+    except LookupError as e:
+        return _message(request, str(e), 404)
+    except ActionConflict as e:
+        return _message(request, str(e), 409)
+    return _message(request, "Tailoring queued.", 200, ok=True)
+
+
+def _latest_artifact(s: Session, application_id: str, type_: str) -> DocumentArtifactRow | None:
+    return s.execute(select(DocumentArtifactRow).where(
+        DocumentArtifactRow.application_id == application_id, DocumentArtifactRow.type == type_)
+        .order_by(DocumentArtifactRow.version.desc())).scalars().first()
+
+
+def _artifact_text(request: Request, row: DocumentArtifactRow | None) -> str | None:
+    """File contents of an artifact, only if it resolves inside storage/artifacts."""
+    if row is None:
+        return None
+    storage: Path = request.app.state.storage_path
+    path = (storage / row.path).resolve()
+    if not path.is_relative_to((storage / "artifacts").resolve()) or not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def _diff_rows(raw: str | None) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+@router.get("/ui/applications/{application_id}", response_class=HTMLResponse)
+def application_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    job = s.get(JobRow, app.job_id)
+    letter_txt = _latest_artifact(s, application_id, "cover_letter_text")
+    try:
+        facts = {f.fact_id: f.value for f in active_profile(s)[1]}
+    except LookupError:
+        facts = {}
+    try:
+        cited = json.loads(letter_txt.source_fact_ids_json) if letter_txt else []
+    except ValueError:
+        cited = []
+    evidence = [{"fact_id": fid, "value": facts.get(fid, "(removed)")}
+                for fid in (cited if isinstance(cited, list) else []) if isinstance(fid, str)]
+    return _page(request, s, "application.html", {
+        "app": app, "job": job,
+        "resume": _latest_artifact(s, application_id, "resume"),
+        "docx": _latest_artifact(s, application_id, "resume_docx"),
+        "cover": _latest_artifact(s, application_id, "cover_letter"),
+        "diff": _diff_rows(_artifact_text(request, _latest_artifact(
+            s, application_id, "resume_diff"))),
+        "facts": facts, "letter": _artifact_text(request, letter_txt), "evidence": evidence,
+        "events": list(reversed(list_events(s, application_id)))})
+
+
+@router.post("/ui/applications/{application_id}/regenerate", response_class=HTMLResponse)
+def regenerate_ui(request: Request, application_id: str, s: Db) -> HTMLResponse:
+    try:
+        regenerate_documents(s, application_id)
+    except LookupError as e:
+        return _message(request, str(e), 404)
+    except ActionConflict as e:
+        s.rollback()
+        return _message(request, str(e), 409)
+    return _message(request, "Regeneration queued.", 200, ok=True)
 
 
 @router.get("/ui/events", response_class=HTMLResponse)

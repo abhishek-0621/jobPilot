@@ -1,0 +1,28 @@
+# Ambiguous English words that are also technologies.
+# Matched only in this exact capitalization, as whole words. One term per line.
+Go
+R
+C
+Spring
+Express
+Ray
+Make
+Linear
+Metal
+Phoenix
+Unity
+Oracle
+Excel
+Hive
+Storm
+Jest
+Beam
+Vault
+Chef
+Bun
+Apache
+Windows
+Notion
+Sketch
+Segment
+Transformers

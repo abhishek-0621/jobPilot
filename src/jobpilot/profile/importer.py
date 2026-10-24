@@ -15,11 +15,13 @@ from jobpilot.data.tables import (
     ApplicationRow,
     CandidateFactRow,
     CandidateProfileRow,
+    DocumentArtifactRow,
     FormFieldAnswerRow,
 )
 from jobpilot.ids import new_id
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.orchestrator.documents_flow import DocumentsBusy, DocumentsConflict, reset_documents
 from jobpilot.profile.schema import ProfileFile
 from jobpilot.util.hashing import canonical_json
 
@@ -114,6 +116,7 @@ def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
             "since": pf.current_employment.since,
             "company_start": pf.current_employment.company_start,
         },
+        "employers": sorted({r.employer for r in pf.experience}),
         "experience_ranges": [[str(r.start), str(r.end if r.end is not None else "present")]
                               for r in pf.experience if r.start is not None],
         "languages": pf.languages,
@@ -135,6 +138,8 @@ def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
     for app_id in affected:
         svc.invalidate_application(app_id, "profile_fact_changed")
 
+    stale = _mark_documents_stale(s, changed)
+
     counts: dict[str, int] = {}
     for f in new:
         counts[f.category] = counts.get(f.category, 0) + 1
@@ -142,6 +147,7 @@ def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
                  action="profile_imported", outcome="ok", details={
                      "version": version, "fact_counts": counts, "verified_carried": carried,
                      "answers": len(answers), "applications_invalidated": len(affected),
+                     "documents_stale": len(stale),
                      "open_questions": len(pf.open_questions)})
     return version
 
@@ -160,6 +166,45 @@ def _affected_applications(s: Session, changed: set[str]) -> list[str]:
         ).distinct()
     ).scalars()
     return sorted(rows)
+
+
+def _mark_documents_stale(s: Session, changed: set[str]) -> list[str]:
+    """Applications whose current resume/cover letter cites a changed or removed fact go
+    back to DOCUMENTS_PENDING with TAILOR queued. If generation is in flight, the TAILOR /
+    COVER_LETTER handler's profile-version check catches it. Events carry ids only."""
+    if not changed:
+        return []
+    actor = "system"
+    current: dict[str, str] = {}
+    for app in s.execute(select(ApplicationRow)).scalars():
+        for art_id in (app.resume_artifact_id, app.cover_letter_artifact_id):
+            if art_id:
+                current[art_id] = app.application_id
+    apps: dict[str, set[str]] = {}
+    for art in s.execute(select(DocumentArtifactRow).where(
+            DocumentArtifactRow.artifact_id.in_(list(current)))).scalars():
+        try:
+            cited = set(json.loads(art.source_fact_ids_json))
+        except ValueError:
+            continue
+        if hit := cited & changed:
+            apps.setdefault(art.application_id, set()).update(hit)
+    stale: list[str] = []
+    for app_id in sorted(apps):
+        task_id: str | None = None
+        try:
+            task_id = reset_documents(s, app_id, "profile_fact_changed", actor=actor)
+            outcome = "ok"
+        except DocumentsBusy:
+            outcome = "deferred_to_handler"
+        except DocumentsConflict:
+            outcome = "skipped"  # past submission: documents can no longer change
+        record_event(s, entity_type="application", entity_id=app_id, actor=actor,
+                     action="documents_stale", outcome=outcome,
+                     details={"fact_ids": sorted(apps[app_id]), "task_id": task_id})
+        if task_id:
+            stale.append(app_id)
+    return stale
 
 
 def active_profile(s: Session) -> tuple[int, list[CandidateFactRow]]:
