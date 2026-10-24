@@ -10,8 +10,9 @@ from pypdf import PdfReader
 from sqlalchemy import select
 
 from jobpilot.api.actions import select_job
-from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow
+from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, TaskRow
 from jobpilot.documents.render import chromium_available
+from jobpilot.orchestrator.engine import TaskKind, TaskStatus
 from tests.e2e.test_discovery_pipeline import FIX, FakeGateway, Pipeline, pipe  # noqa: F401
 
 TAILOR: dict[str, Any] = {
@@ -48,6 +49,7 @@ class DocsGateway(FakeGateway):
 @pytest.mark.skipif(not chromium_available(), reason="Chromium not installed")
 async def test_select_to_form_in_progress(pipe: Pipeline) -> None:  # noqa: F811
     pipe.gateway.__class__ = DocsGateway  # same object the orchestrator holds
+    pipe.runtime.agents.pop(TaskKind.PREPARE_FORM)  # its job URL is a real portal
     shutil.copy(FIX / "profile_example.yaml",
                 pipe.cfg.storage_path / "profiles" / "profile.yaml")
     pipe.import_profile(verify=True)
@@ -74,3 +76,8 @@ async def test_select_to_form_in_progress(pipe: Pipeline) -> None:  # noqa: F811
     assert pipe.gateway.calls.count("resume_tailoring") == 1
     assert pipe.gateway.calls.count("cover_letter") == 1
     assert pipe.cfg.dry_run is True and pipe.adapter.submit_calls == 0
+    with pipe.factory() as s:
+        prep = s.execute(select(TaskRow).where(
+            TaskRow.kind == TaskKind.PREPARE_FORM.value,
+            TaskRow.entity_id == app_id)).scalars().all()
+    assert len(prep) == 1 and prep[0].status == TaskStatus.FAILED.value  # no agent: never ran

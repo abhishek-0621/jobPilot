@@ -9,3 +9,5 @@ class GreenhouseAdapter(PlaywrightFormAdapter):
     name: ClassVar[str] = "greenhouse"
     form_roots: ClassVar[tuple[str, ...]] = (
         "#application_form", "form#application-form", 'form[action*="applications"]')
+    ASSET_HOSTS: ClassVar[frozenset[str]] = frozenset({
+        "boards.greenhouse.io", "job-boards.greenhouse.io", "boards-api.greenhouse.io"})

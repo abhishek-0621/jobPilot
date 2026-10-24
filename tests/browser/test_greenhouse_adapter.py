@@ -197,3 +197,22 @@ async def test_upload_outside_root_refused(gh: GreenhouseAdapter, tmp_path: Path
     finally:
         outside.unlink()
     assert report.failed == {f"{GH}[resume]": "UPLOAD_OUTSIDE_ROOT"}
+
+
+async def test_checkbox_group_ignores_hidden_member(gh: GreenhouseAdapter) -> None:
+    await gh.inspect_form()
+    report = await gh.fill_fields([answer("locations[]", ["Onsite"], "checkbox_group")])
+    assert report.filled == ["locations[]"], report.failed
+    assert (await gh.validate_form({"locations[]": ["Onsite"]})).ok
+    assert await gh.page.is_checked("input[value=legacy]")  # hidden: never touched
+
+
+async def test_upload_guard_uses_inspected_kind(gh: GreenhouseAdapter, tmp_path: Path) -> None:
+    await gh.inspect_form()
+    outside = tmp_path.parent / f"{tmp_path.name}_outside2.pdf"
+    outside.write_bytes(b"%PDF-1.4 synthetic")
+    try:  # the answer lies about its type; the page says it is a file input
+        report = await gh.fill_fields([answer(f"{GH}[resume]", str(outside), "text")])
+    finally:
+        outside.unlink()
+    assert report.failed == {f"{GH}[resume]": "UPLOAD_OUTSIDE_ROOT"}

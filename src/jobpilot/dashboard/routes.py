@@ -14,13 +14,17 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from jobpilot.agents.form_prep import answer_rows, unresolved_required
 from jobpilot.api.actions import (
+    ANSWERABLE_STATUSES,
     ActionConflict,
     approve_and_queue,
     regenerate_documents,
+    save_user_answers,
     select_job,
     start_discovery,
     start_tailor,
+    user_editable,
 )
 from jobpilot.contracts.enums import JobStatus
 from jobpilot.contracts.models import is_http_url
@@ -46,6 +50,7 @@ from jobpilot.data.tables import (
     MatchAssessmentRow,
     OutreachDraftRow,
 )
+from jobpilot.forms.classify import classify_sensitive
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
@@ -304,6 +309,71 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
             s, application_id, "resume_diff"))),
         "facts": facts, "letter": _artifact_text(request, letter_txt), "evidence": evidence,
         "events": list(reversed(list_events(s, application_id)))})
+
+
+def _display(value: Any) -> str:
+    if value is None or value == "" or value == []:
+        return "—"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, list):
+        return ", ".join(map(str, value))
+    return str(value)
+
+
+@router.get("/ui/applications/{application_id}/answers", response_class=HTMLResponse)
+def answers_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    rows = []
+    for r in answer_rows(s, application_id):
+        value = json.loads(r.proposed_value_json)
+        rows.append({
+            "field_id": r.field_id, "label": r.label, "field_type": r.field_type,
+            "decision": r.decision, "value": value, "display": _display(value),
+            "source": r.source_fact_id, "rationale": r.rationale, "required": r.required,
+            "options": json.loads(r.options_json),
+            "editable": user_editable(r.decision, r.field_type),
+            "declaration": r.field_type == "checkbox"
+            and classify_sensitive(r.label, "", []) == "declaration"})
+    return _page(request, s, "answers.html", {
+        "app": app, "job": s.get(JobRow, app.job_id), "rows": rows,
+        "missing": unresolved_required(s, application_id),
+        "editable_status": app.status in ANSWERABLE_STATUSES})
+
+
+@router.post("/ui/applications/{application_id}/answers")
+async def save_answers_ui(request: Request, application_id: str, s: Db,
+                          orch: Orch) -> RedirectResponse:
+    form = await request.form()
+    values: dict[str, Any] = {}
+    for r in answer_rows(s, application_id):
+        if not user_editable(r.decision, r.field_type):
+            continue
+        name, old = f"v:{r.field_id}", json.loads(r.proposed_value_json)
+        if r.field_type == "checkbox":
+            if form.get(f"seen:{r.field_id}") is None:
+                continue
+            ticked = form.get(name) == "on"
+            if ticked != (old is True) and (ticked or old is not None):
+                values[r.field_id] = ticked
+        elif r.field_type == "checkbox_group":
+            picked = [v for v in form.getlist(name) if isinstance(v, str)]
+            if picked and picked != old:
+                values[r.field_id] = picked
+        else:
+            raw = form.get(name)
+            text = raw.strip() if isinstance(raw, str) else ""
+            if text and text != old:
+                values[r.field_id] = text
+    try:
+        save_user_answers(s, orch, application_id, values)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
 
 
 @router.post("/ui/applications/{application_id}/regenerate", response_class=HTMLResponse)

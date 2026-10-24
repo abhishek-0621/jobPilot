@@ -156,6 +156,7 @@ _TYPE_SEL = {
     "checkbox_group": ("input[type=checkbox]",), "file": ("input[type=file]",),
     "select": ("select",), "textarea": ("textarea",),
 }
+_GROUP_KINDS = {"radio", "checkbox_group"}
 _ACTION_TIMEOUT_MS = 5_000
 
 _ERRORS_JS = "(sels) => {" + _HELPERS + r"""
@@ -202,6 +203,12 @@ class PlaywrightFormAdapter:
 
     name: ClassVar[str] = "playwright"
     form_roots: ClassVar[tuple[str, ...]] = ("form",)
+    ASSET_HOSTS: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def apply_url(cls, canonical_url: str) -> str:
+        """Where the application form lives when the job has no explicit application URL."""
+        return canonical_url
 
     def __init__(self, page: Page, *, upload_root: Path) -> None:
         self.page = page
@@ -255,6 +262,8 @@ class PlaywrightFormAdapter:
         for attr in ("name", "id"):
             attr_sel = _attr_sel(attr, field_id)
             loc = root.locator(", ".join(t + attr_sel for t in tags))
+            if kind in _GROUP_KINDS:  # inspect_form only counts visible group members
+                loc = loc.filter(visible=True)
             if await loc.count():
                 return loc
         if field_id.startswith("lbl_") and label and label_key(label) == field_id:
@@ -290,7 +299,9 @@ class PlaywrightFormAdapter:
             if loc is None:
                 failed[a.field_id] = _LAYOUT
                 continue
-            if a.field_type == "file" and not self._inside_root(a.proposed_value):
+            known = self._fields.get(a.field_id)
+            is_file = a.field_type == "file" or (known is not None and known.field_type == "file")
+            if is_file and not self._inside_root(a.proposed_value):
                 failed[a.field_id] = "UPLOAD_OUTSIDE_ROOT"
                 continue
             try:
@@ -357,6 +368,10 @@ class PlaywrightFormAdapter:
             fid = e["name"] or e["id"] or (label_key(e["label"]) if e["label"] else "_form")
             errors.setdefault(fid, e["message"])
         return ValidationReport(ok=not errors, errors=errors)
+
+    async def screenshot(self, path: Path) -> None:
+        """Full-page PNG evidence of the filled (never submitted) form."""
+        await self.page.screenshot(path=str(path), full_page=True)
 
     async def submit(self, approved_application: ApprovedApplication) -> SubmitResult:
         raise NotImplementedError("Plan 5")
