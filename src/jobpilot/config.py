@@ -24,10 +24,16 @@ class AppConfig(BaseModel):
     db_path: Path = Path("storage/jobpilot.db")
     storage_path: Path = Path("storage")
     dry_run: bool = True
+    live_portals: list[Literal["greenhouse", "lever"]] = []
     ollama_url: str = "http://127.0.0.1:11434"
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
     model_routes: dict[str, ModelRoute]
+
+    @property
+    def effective_live_portals(self) -> list[str]:
+        """Portals that really submit: only when BOTH dry_run is off and listed."""
+        return [] if self.dry_run else list(self.live_portals)
 
     @property
     def browser_state_dir(self) -> Path:

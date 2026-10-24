@@ -16,6 +16,7 @@ class HealthOut(_Out):
     db_revision: str
     disk_free_gb: float
     dry_run: bool
+    live_portals: list[str]
 
 
 class JobSummary(_Out):

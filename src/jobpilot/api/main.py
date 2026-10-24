@@ -143,7 +143,8 @@ def compute_health(cfg: AppConfig, session_factory: sessionmaker[Session],
     except Exception:
         free = 0.0
     return sc.HealthOut(ollama=available is not None, missing_models=missing,
-                        db_revision=revision, disk_free_gb=free, dry_run=cfg.dry_run)
+                        db_revision=revision, disk_free_gb=free, dry_run=cfg.dry_run,
+                        live_portals=cfg.effective_live_portals)
 
 
 def create_app(
@@ -176,6 +177,7 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
     app.state.storage_path = cfg.storage_path
+    app.state.cfg = cfg
     app.state.field_aliases_path = cfg.field_aliases_path
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(dashboard_router)

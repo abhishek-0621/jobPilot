@@ -165,11 +165,13 @@ class Orchestrator:
         lease_seconds: float = 300,
         agent_timeout_s: float = 300,
         adapter_timeout_s: float = 120,
+        submitter_factory: Callable[[str], PortalAdapter] | None = None,
     ) -> None:
         self._sf = session_factory
         self._cfg = cfg
         self._agents = agents
         self._adapters = adapters
+        self._submitter_factory = submitter_factory
         self._clock = clock
         self._handlers = handlers if handlers is not None else {
             k: noop_handler for k in agents
@@ -367,10 +369,11 @@ class Orchestrator:
 
     # ---- side effects ----------------------------------------------------
     def _adapter_for(self, app: ApplicationRow) -> tuple[PortalAdapter | None, bool]:
-        if self._cfg.dry_run:
-            return self._adapters.get("simulated") or SimulatedAdapter(), True
-        adapter = self._adapters.get(app.portal or "")
-        return adapter, isinstance(adapter, SimulatedAdapter)
+        # Two independent switches: dry_run off AND the portal listed in live_portals.
+        if (not self._cfg.dry_run and app.portal in self._cfg.live_portals
+                and self._submitter_factory is not None):
+            return self._submitter_factory(app.portal), False
+        return self._adapters.get("simulated") or SimulatedAdapter(), True
 
     async def _run_submit(self, s: Session, task: TaskRow) -> None:
         app = get_application(s, task.entity_id)

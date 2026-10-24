@@ -27,6 +27,7 @@ from jobpilot.api.actions import (
     start_tailor,
     user_editable,
 )
+from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, BatchStatus, FieldDecision, JobStatus
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import set_library_answer
@@ -108,8 +109,10 @@ def _profile_banner(s: Session) -> str | None:
 
 
 def _page(request: Request, s: Session, name: str, ctx: dict[str, Any]) -> HTMLResponse:
-    return templates.TemplateResponse(request, name,
-                                      {**ctx, "profile_banner": _profile_banner(s)})
+    cfg: AppConfig = request.app.state.cfg
+    return templates.TemplateResponse(
+        request, name, {**ctx, "profile_banner": _profile_banner(s),
+                        "live_portals": cfg.effective_live_portals})
 
 
 def _library_fields(aliases_path: Path) -> list[dict[str, str]]:
