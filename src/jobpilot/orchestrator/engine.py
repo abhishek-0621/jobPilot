@@ -163,6 +163,14 @@ class Orchestrator:
             s.commit()
             return task_id
 
+    def enqueue_in(
+        self, s: Session, kind: TaskKind, entity_type: str, entity_id: str,
+    ) -> str:
+        """Queue a task inside the caller's transaction (caller commits)."""
+        task_id = self._add_task(s, kind, entity_type, entity_id)
+        s.flush()
+        return task_id
+
     def _add_task(
         self, s: Session, kind: TaskKind, entity_type: str, entity_id: str,
         not_before: datetime | None = None,
@@ -505,6 +513,7 @@ class Orchestrator:
                              action="task_interrupted", outcome="error",
                              details={"reason": "lease_expired", "kind": kind})
             self._sweep_stranded(s)
+            self._requeue_orphaned_approvals(s)
             s.commit()
         return affected
 
@@ -524,6 +533,19 @@ class Orchestrator:
             if (TaskKind.OUTREACH_SEND.value, d.outreach_id) not in running:
                 transition(s, d, OutreachStatus.DELIVERY_UNKNOWN, actor=_ACTOR,
                            reason="stranded_in_progress")
+
+    def _requeue_orphaned_approvals(self, s: Session) -> None:
+        """APPROVED apps with no live SUBMIT task get one; the gate re-checks approval."""
+        live = set(s.execute(select(TaskRow.entity_id).where(
+            TaskRow.kind == TaskKind.SUBMIT.value,
+            TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)),
+        )).scalars())
+        apps = s.execute(select(ApplicationRow.application_id).where(
+            ApplicationRow.status == ApplicationStatus.APPROVED.value
+        ).order_by(ApplicationRow.application_id)).scalars().all()
+        for app_id in apps:
+            if app_id not in live:
+                self._add_task(s, TaskKind.SUBMIT, "application", app_id)
 
     def _recover_side_effect(self, s: Session, task: TaskRow, kind: TaskKind) -> None:
         if kind is TaskKind.SUBMIT:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 from jobpilot.config import load_config  # noqa: E402
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head  # noqa: E402
 from jobpilot.ids import new_id  # noqa: E402
+from jobpilot.api.actions import approve_and_queue  # noqa: E402
 from jobpilot.orchestrator.approval import ApprovalService  # noqa: E402
 from jobpilot.orchestrator.engine import TaskKind  # noqa: E402
 from jobpilot.portals.simulated import SimulatedAdapter  # noqa: E402
@@ -41,11 +42,10 @@ async def main(config_dir: Path = ROOT / "config") -> int:
             return 0
         with factory() as s:
             batch = ApprovalService(s).build_batch(fresh)
-            approval = ApprovalService(s).approve(
-                batch.batch_id, batch.version, batch.content_hash or "", fresh[:1])
             s.commit()
-        for app_id in fresh[:1]:
-            orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+        with factory() as s:
+            approval = approve_and_queue(s, orch, batch.batch_id, batch.version,
+                                         batch.content_hash or "", fresh[:1])
         await orch.run_until_idle()
         print(f"Seeded {len(fresh)} applications; batch {batch.batch_id} "
               f"(approval {approval.approval_id}): 1 simulated submission, "

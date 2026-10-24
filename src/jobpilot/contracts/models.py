@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from jobpilot.contracts.enums import (
     ApplicationStatus,
@@ -11,6 +13,11 @@ from jobpilot.contracts.enums import (
 
 Score = Annotated[float, Field(ge=0, le=100)]
 Confidence = Annotated[float, Field(ge=0, le=1)]
+
+
+def is_http_url(url: str) -> bool:
+    parts = urlsplit(url.strip())
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
 
 
 class Contract(BaseModel):
@@ -57,6 +64,13 @@ class JobListing(AgentOutput):
     last_seen_at: datetime
     extraction_confidence: Confidence
     source_evidence: list[str] = Field(default_factory=list)
+
+    @field_validator("canonical_url", "application_url")
+    @classmethod
+    def _http_only(cls, v: str | None) -> str | None:
+        if v is not None and not is_http_url(v):
+            raise ValueError("URL must be http(s)")
+        return v
 
 
 class MatchAssessment(AgentOutput):

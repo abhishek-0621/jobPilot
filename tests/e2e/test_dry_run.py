@@ -187,7 +187,7 @@ async def e2e_seeded(e2e: E2E) -> E2E:
 @pytest.fixture
 def e2e_client(e2e_seeded: E2E) -> Iterator[TestClient]:
     app = create_app(e2e_seeded.cfg, e2e_seeded.factory, e2e_seeded.orch, start_worker=False)
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         yield client
 
 
@@ -221,7 +221,7 @@ def test_dashboard_approve_form_rejects_stale_hash(
     assert page.status_code == 200 and (batch.content_hash or "") in page.text
     ids = _batch_ids(e2e_client, batch)
     r = e2e_client.post(f"/ui/batches/{batch.batch_id}/approve",
-                        data={"content_hash": "sha256:old", "ids": ids})
+                        data={"content_hash": "sha256:old", "version": "1", "ids": ids})
     assert r.status_code == 409
     assert "This batch changed since you viewed it" in r.text
 
@@ -235,11 +235,13 @@ async def test_dashboard_approve_form_approves_and_queues_submit(
     e2e_seeded: E2E, batch: ApprovalBatchRow
 ) -> None:
     app = create_app(e2e_seeded.cfg, e2e_seeded.factory, e2e_seeded.orch, start_worker=False)
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         ids = _batch_ids(client, batch)
         r = client.post(f"/ui/batches/{batch.batch_id}/approve",
                         data={"content_hash": batch.content_hash, "version": "1",
-                              "ids": ids})
+                              "ids": ids},
+                        headers={"Origin": "http://127.0.0.1:8765",
+                                 "Sec-Fetch-Site": "same-origin"})
         assert r.status_code == 200 and "Approved 1" in r.text
     await e2e_seeded.orch.run_until_idle()
     assert e2e_seeded.status(ids[0]) == "CONFIRMED"
@@ -250,7 +252,7 @@ async def test_dashboard_builds_batch_from_ready_apps(e2e: E2E) -> None:
     e2e.orch.enqueue(TaskKind.DISCOVER, "run", "run_1")
     await e2e.orch.run_until_idle()
     app = create_app(e2e.cfg, e2e.factory, e2e.orch, start_worker=False)
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         assert "Build review batch" in client.get("/").text
         r = client.post("/ui/batches", follow_redirects=False)
         assert r.status_code == 303 and r.headers["location"].startswith("/ui/batches/batch")
@@ -258,3 +260,70 @@ async def test_dashboard_builds_batch_from_ready_apps(e2e: E2E) -> None:
         assert page.text.count('name="ids"') == 2
         # Both apps are now in a pending batch: nothing left to batch.
         assert client.post("/ui/batches", follow_redirects=False).status_code == 422
+
+
+def test_jobs_page_neutralises_non_http_links(e2e: E2E) -> None:
+    from tests.factories import NOW
+
+    with e2e.factory() as s:
+        s.add(JobRow(job_id="job_evil", source="x", canonical_url="javascript:alert(1)",
+                     company="Evil", title="T", description_text="d", status="DISCOVERED",
+                     first_seen_at=NOW, last_seen_at=NOW))
+        s.commit()
+    app = create_app(e2e.cfg, e2e.factory, e2e.orch, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        page = client.get("/ui/jobs").text
+    assert 'href="#"' in page and 'href="javascript:' not in page
+    assert 'rel="noopener noreferrer"' in page
+
+
+async def test_approve_enqueues_in_same_transaction(
+    e2e: E2E, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jobpilot.api.actions import approve_and_queue
+    from jobpilot.data.tables import ApprovalRow, TaskRow
+
+    e2e.orch.enqueue(TaskKind.DISCOVER, "run", "run_1")
+    await e2e.orch.run_until_idle()
+    apps = e2e.ready_apps()
+    b = e2e.approvals.build_batch(apps)
+
+    def boom(*a: object, **k: object) -> str:
+        raise RuntimeError("crash before commit")
+
+    monkeypatch.setattr(e2e.orch, "enqueue_in", boom)
+    with e2e.factory() as s, pytest.raises(RuntimeError):
+        approve_and_queue(s, e2e.orch, b.batch_id, b.version, b.content_hash or "", apps[:1])
+    with e2e.factory() as s:
+        assert s.execute(select(ApprovalRow)).first() is None
+        assert s.execute(select(TaskRow).where(TaskRow.kind == "SUBMIT")).first() is None
+    assert e2e.status(apps[0]) == "READY_FOR_REVIEW"
+
+
+async def test_recovery_queues_submit_for_orphaned_approved(e2e: E2E) -> None:
+    e2e.orch.enqueue(TaskKind.DISCOVER, "run", "run_1")
+    await e2e.orch.run_until_idle()
+    apps = e2e.ready_apps()
+    b = e2e.approvals.build_batch(apps)
+    with e2e.factory() as s:  # approval committed, SUBMIT never queued (old crash window)
+        ApprovalService(s).approve(b.batch_id, b.version, b.content_hash or "", apps[:1])
+        s.commit()
+    e2e.orch.recover_on_startup()
+    e2e.orch.recover_on_startup()  # idempotent: a live task already exists
+    await e2e.orch.run_until_idle()
+    assert e2e.status(apps[0]) == "CONFIRMED"
+    assert e2e.adapter.simulated_submissions == 1
+
+
+def test_cross_site_post_and_bad_host_rejected(e2e: E2E) -> None:
+    app = create_app(e2e.cfg, e2e.factory, e2e.orch, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/control/stop",
+                           headers={"Origin": "https://evil.example"}).status_code == 403
+        assert client.post("/control/stop",
+                           headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        assert client.get("/", headers={"Host": "evil.example"}).status_code == 400
+        assert client.post("/control/pause", headers={
+            "Origin": "http://127.0.0.1:8765", "Sec-Fetch-Site": "same-origin"}).status_code == 200
+    with TestClient(app, base_url="http://evil.example") as bad:
+        assert bad.get("/").status_code == 400

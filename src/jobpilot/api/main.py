@@ -12,6 +12,11 @@ from typing import Annotated, Any, Literal
 from alembic.runtime.migration import MigrationContext
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse, Response
+from starlette.types import ASGIApp
 from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session, sessionmaker
@@ -49,6 +54,22 @@ from jobpilot.portals.simulated import SimulatedAdapter
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
+
+
+class LocalOriginMiddleware(BaseHTTPMiddleware):
+    """Reject state-changing requests from other sites (CSRF / DNS-rebinding guard)."""
+
+    def __init__(self, app: ASGIApp, port: int) -> None:
+        super().__init__(app)
+        self.allowed = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.method not in ("GET", "HEAD"):
+            origin = request.headers.get("origin")
+            if (origin is not None and origin not in self.allowed) or \
+                    request.headers.get("sec-fetch-site") == "cross-site":
+                return PlainTextResponse("cross-origin request rejected", status_code=403)
+        return await call_next(request)
 
 
 async def worker_loop(orch: Orchestrator, stop: asyncio.Event) -> None:
@@ -134,6 +155,8 @@ def create_app(
                 await task
 
     app = FastAPI(title="JobPilot", lifespan=lifespan)
+    app.add_middleware(LocalOriginMiddleware, port=cfg.port)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

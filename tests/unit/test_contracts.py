@@ -77,3 +77,16 @@ def test_recovery_mapping() -> None:
 def test_every_error_code_has_recovery() -> None:
     for code in ErrorCode:
         assert isinstance(recovery_for(code), Recovery)
+
+
+def test_job_listing_rejects_non_http_urls() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from tests.factories import make_listing
+
+    for field in ("canonical_url", "application_url"):
+        with pytest.raises(ValidationError):
+            make_listing(**{field: "javascript:alert(1)"})
+    ok = make_listing(application_url=None)
+    assert isinstance(ok.canonical_url, str)

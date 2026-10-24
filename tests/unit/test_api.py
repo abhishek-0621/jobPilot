@@ -46,7 +46,8 @@ def make_client(factory: sessionmaker[Session], tmp_path: Path,
         },
     )
     orch = Orchestrator(factory, cfg, {}, {"simulated": SimulatedAdapter()})
-    return TestClient(create_app(cfg, factory, orch, gateway, start_worker=False))
+    return TestClient(create_app(cfg, factory, orch, gateway, start_worker=False),
+                      base_url="http://127.0.0.1")
 
 
 def seed_batch(factory: sessionmaker[Session]) -> tuple[list[str], str, str]:
@@ -174,7 +175,7 @@ def test_lifespan_runs_and_stops_worker(
 ) -> None:
     cfg = AppConfig(storage_path=tmp_path, model_routes={})
     orch = Orchestrator(factory, cfg, {}, {})
-    with TestClient(create_app(cfg, factory, orch)) as client:
+    with TestClient(create_app(cfg, factory, orch), base_url="http://127.0.0.1") as client:
         assert client.get("/overview").status_code == 200
 
 

@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from jobpilot.api.actions import approve_and_queue
+from jobpilot.contracts.models import is_http_url
 from jobpilot.data.repositories import (
     batch_items,
     counts_by_status,
@@ -39,6 +40,11 @@ def _utc(ts: datetime) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _safe_href(url: str | None) -> str:
+    return url if url and is_http_url(url) else "#"
+
+
+templates.env.filters["safe_href"] = _safe_href
 templates.env.filters["local"] = _local
 templates.env.filters["utc"] = _utc
 
@@ -127,14 +133,9 @@ def _message(request: Request, text: str, status: int, ok: bool = False) -> HTML
 def approve(
     request: Request, batch_id: str, s: Db, orch: Orch,
     content_hash: Annotated[str, Form()],
+    version: Annotated[int, Form()],
     ids: Annotated[list[str], Form()],
-    version: Annotated[int | None, Form()] = None,
 ) -> HTMLResponse:
-    if version is None:
-        batch = latest_batch(s, batch_id)
-        if batch is None:
-            raise HTTPException(404, "batch not found")
-        version = batch.version
     try:
         res = approve_and_queue(s, orch, batch_id, version, content_hash, ids)
     except StaleApprovalError:
