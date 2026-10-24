@@ -1,0 +1,139 @@
+import json
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from jobpilot.contracts.enums import ErrorCode, JobStatus
+from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
+from jobpilot.data.repositories import list_events
+from jobpilot.data.tables import JobRow, TaskRow
+from jobpilot.discovery.finder import DiscoverAgent, DiscoverOutput, discover_handler
+from jobpilot.discovery.sources.base import RawPosting, SourceError
+from jobpilot.discovery.sources.greenhouse import GreenhouseSource
+from jobpilot.discovery.sources.lever import LeverSource
+from jobpilot.orchestrator.engine import AgentContext, TaskInput, TaskKind
+from jobpilot.profile.preferences import CompanyBoard, SearchPreferences
+
+FIX = Path(__file__).parent.parent / "fixtures"
+T0 = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+PREFS = SearchPreferences(target_titles=["AI Engineer"], locations=["Bengaluru"],
+                          work_modes=["remote"])
+GH = CompanyBoard(name="Example AI", source="greenhouse", token="exampleai")
+LV = CompanyBoard(name="Sample Labs", source="lever", token="samplelabs")
+
+
+@pytest.fixture
+def factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
+    db_path = tmp_path / "f.db"
+    upgrade_to_head(db_path)
+    engine = make_engine(db_path)
+    yield make_session_factory(engine)
+    engine.dispose()
+
+
+class FailingSource:
+    source = "greenhouse"
+
+    async def list_postings(self, board: CompanyBoard) -> list[RawPosting]:
+        raise SourceError(ErrorCode.SOURCE_UNAVAILABLE)
+
+
+def _inp(run_id: str = "run_1") -> TaskInput:
+    return TaskInput(task_id="task_1", kind=TaskKind.DISCOVER, entity_type="run",
+                     entity_id=run_id, attempt=1)
+
+
+def _ctx(sources: dict, companies: list[CompanyBoard],
+         prefs: SearchPreferences = PREFS) -> AgentContext:
+    return AgentContext(task_id="task_1", gateway=None, tools={
+        "sources": sources, "prefs": prefs, "companies": companies, "clock": lambda: T0})
+
+
+def _fixture_client() -> httpx.AsyncClient:
+    def handler(req: httpx.Request) -> httpx.Response:
+        name = "lever_postings.json" if req.url.host == "api.lever.co" else "greenhouse_jobs.json"
+        return httpx.Response(200, text=(FIX / name).read_text())
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def _discover(companies: list[CompanyBoard], prefs: SearchPreferences = PREFS,
+                    failing_gh: bool = False) -> DiscoverOutput:
+    async with _fixture_client() as c:
+        sources = {"greenhouse": FailingSource() if failing_gh
+                   else GreenhouseSource(c, min_interval_s=0),
+                   "lever": LeverSource(c, min_interval_s=0)}
+        return await DiscoverAgent().run(_inp(), _ctx(sources, companies, prefs))
+
+
+async def test_discover_agent_builds_listings() -> None:
+    out = await _discover([GH, LV])
+    assert out.run_id == "run_1" and out.task_id == "task_1"
+    assert out.source_status == {"greenhouse:exampleai": "ok", "lever:samplelabs": "ok"}
+    assert out.fetched == 3
+    titles = [li.title for li in out.listings]
+    assert titles == ["Senior Applied ML Engineer", "GenAI Engineer"]
+    gh = out.listings[0]
+    assert gh.canonical_url == "https://boards.greenhouse.io/exampleai/jobs/1001"
+    assert gh.description_text == "Build LLM systems.\n- Python"
+    assert gh.extraction_confidence == 0.0 and gh.first_seen_at == T0
+    assert gh.task_id == "task_1" and gh.source_job_id == "1001"
+    assert gh.job_id.startswith("job")
+
+
+async def test_one_source_failure_does_not_stop_others() -> None:
+    unknown = CompanyBoard.model_construct(name="X", source="workday", token="x")
+    out = await _discover([GH, unknown, LV], failing_gh=True)
+    assert out.source_status == {
+        "greenhouse:exampleai": ErrorCode.SOURCE_UNAVAILABLE.value,
+        "workday:x": "unsupported_source",
+        "lever:samplelabs": "ok",
+    }
+    assert [li.title for li in out.listings] == ["GenAI Engineer"]
+
+
+async def test_discover_stops_at_max_jobs() -> None:
+    out = await _discover([GH, LV], prefs=PREFS.model_copy(update={"max_jobs_per_run": 1}))
+    assert len(out.listings) == 1
+
+
+async def test_discover_handler_enqueues_extract_only_for_new(
+        factory: sessionmaker[Session]) -> None:
+    out = await _discover([GH, LV])
+    task = TaskRow(task_id="task_1", kind="DISCOVER", entity_type="run", entity_id="run_1",
+                   status="RUNNING", attempts=1)
+    with factory() as s:
+        follow = discover_handler(s, task, out)
+        s.commit()
+        jobs = s.execute(select(JobRow)).scalars().all()
+        assert len(jobs) == 2 and all(j.status == JobStatus.DISCOVERED.value for j in jobs)
+        assert sorted(follow) == sorted((TaskKind.EXTRACT, "job", j.job_id) for j in jobs)
+        [ev] = [e for e in list_events(s, "run_1") if e.action == "discovery_run"]
+        first_event = ev.event_id
+        details = json.loads(ev.redacted_details_json)
+        assert details["counts"] == {"fetched": 3, "kept": 2, "new": 2,
+                                     "duplicates": 0, "reseen": 0}
+        assert details["source_status"] == out.source_status
+
+    # second run: same postings re-seen, plus a cross-posted duplicate of the lever job
+    out2 = await _discover([GH, LV])
+    dup = out2.listings[1].model_copy(update={
+        "job_id": "job_dup", "source": "greenhouse", "source_job_id": "9999",
+        "canonical_url": "https://boards.greenhouse.io/samplelabs/jobs/9999"})
+    out2 = out2.model_copy(update={"listings": [*out2.listings, dup]})
+    with factory() as s:
+        follow = discover_handler(s, task, out2)
+        s.commit()
+        assert follow == []
+        [ev] = [e for e in list_events(s, "run_1")
+                if e.action == "discovery_run" and e.event_id != first_event]
+        counts = json.loads(ev.redacted_details_json)["counts"]
+        assert counts == {"fetched": 3, "kept": 3, "new": 0, "duplicates": 1, "reseen": 2}
+
+
+def test_extract_task_kind() -> None:
+    assert TaskKind.EXTRACT.value == "EXTRACT"

@@ -1,0 +1,13 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "text": "GenAI Engineer",
+    "categories": {"location": "Remote - India", "commitment": "Full-time", "team": "AI"},
+    "description": "<div>Ship RAG pipelines.</div>",
+    "lists": [{"text": "Requirements", "content": "<li>3+ years Python</li>"}],
+    "additional": "<div>We value curiosity.</div>",
+    "hostedUrl": "https://jobs.lever.co/samplelabs/00000000-0000-4000-8000-000000000001",
+    "applyUrl": "https://jobs.lever.co/samplelabs/00000000-0000-4000-8000-000000000001/apply",
+    "createdAt": 1730000000000
+  }
+]

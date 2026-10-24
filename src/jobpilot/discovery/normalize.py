@@ -47,22 +47,27 @@ _BLOCK = frozenset({
 })
 
 
-def _walk(node: LexborNode, out: list[str]) -> None:
-    for child in node.iter(include_text=True):
-        tag = child.tag
+def _walk(root: LexborNode, out: list[str]) -> None:
+    """Iterative pre-order walk (explicit stack) so deeply nested HTML cannot recurse."""
+    stack: list[LexborNode | str] = list(reversed(list(root.iter(include_text=True))))
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            out.append(item)
+            continue
+        tag = item.tag
         if tag == "-text":
-            out.append(child.text(deep=False))
+            out.append(item.text(deep=False))
         elif tag == "-comment":
             continue
         else:
             block = tag in _BLOCK
             if block:
                 out.append("\n")
+                stack.append("\n")
             if tag == "li":
                 out.append("- ")
-            _walk(child, out)
-            if block:
-                out.append("\n")
+            stack.extend(reversed(list(item.iter(include_text=True))))
 
 
 def html_to_text(html: str, max_chars: int = 12000) -> str:

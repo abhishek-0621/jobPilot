@@ -70,3 +70,8 @@ def test_cross_source_duplicate_links_canonical(db_session) -> None:
         source="x", source_job_id="6", canonical_url="https://other.example.org/x"))
     assert d.canonical_job_id == a.job_id
     assert len(db_session.execute(select(JobRow)).scalars().all()) == 4
+
+
+def test_html_to_text_deep_nesting() -> None:
+    html = "<div>" * 5000 + "deep text" + "</div>" * 5000
+    assert html_to_text(html) == "deep text"

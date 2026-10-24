@@ -61,6 +61,7 @@ _UNRESOLVED_DECISIONS = (FieldDecision.ASK_USER.value, FieldDecision.BLOCKED.val
 
 class TaskKind(StrEnum):
     DISCOVER = "DISCOVER"
+    EXTRACT = "EXTRACT"
     MATCH = "MATCH"
     TAILOR = "TAILOR"
     PREPARE_FORM = "PREPARE_FORM"
