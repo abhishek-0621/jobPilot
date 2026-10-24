@@ -65,6 +65,7 @@ ARTIFACT_MEDIA_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".json": "application/json",
     ".txt": "text/plain",
+    ".png": "image/png",
 }
 
 

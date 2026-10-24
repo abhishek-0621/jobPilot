@@ -27,7 +27,7 @@ from jobpilot.api.actions import (
     start_tailor,
     user_editable,
 )
-from jobpilot.contracts.enums import JobStatus
+from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, JobStatus
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import set_library_answer
 from jobpilot.data.repositories import (
@@ -44,9 +44,11 @@ from jobpilot.data.tables import (
     AnswerLibraryRow,
     ApplicationRow,
     ApprovalBatchRow,
+    BatchItemRow,
     CandidateFactRow,
     CandidateProfileRow,
     DocumentArtifactRow,
+    FormFieldAnswerRow,
     JobRow,
     MatchAssessmentRow,
     OutreachDraftRow,
@@ -419,17 +421,81 @@ def build_batch(s: Db) -> RedirectResponse:
     return RedirectResponse(f"/ui/batches/{batch_id}", status_code=303)
 
 
+MODEL_SUGGESTED = "Model-suggested mapping"
+CHANGED_STATUSES = (ApplicationStatus.READY_FOR_REVIEW.value, ApplicationStatus.APPROVED.value)
+
+
+def _is_model_suggested(a: FormFieldAnswerRow) -> bool:
+    return a.rationale == MODEL_SUGGESTED or a.confidence <= 0.5
+
+
+@router.get("/ui/batches", response_class=HTMLResponse)
+def batches_page(request: Request, s: Db) -> HTMLResponse:
+    batches = pending_batches(s)
+    counts: dict[tuple[str, int], list[int]] = {}
+    for item in s.execute(select(BatchItemRow).where(
+            BatchItemRow.batch_id.in_([b.batch_id for b in batches]))).scalars():
+        c = counts.setdefault((item.batch_id, item.version), [0, 0])
+        c[0] += 1
+        c[1] += 1 if item.selected else 0
+    return _page(request, s, "batches.html", {"rows": [
+        {"batch": b, "total": counts.get((b.batch_id, b.version), [0, 0])[0],
+         "approved": counts.get((b.batch_id, b.version), [0, 0])[1]} for b in batches]})
+
+
 @router.get("/ui/batches/{batch_id}", response_class=HTMLResponse)
 def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
     batch = latest_batch(s, batch_id)
     if batch is None:
         raise HTTPException(404, "batch not found")
+    items = batch_items(s, batch.batch_id, batch.version)
+    app_ids = [i.application_id for i in items]
+    apps = {a.application_id: a for a in s.execute(
+        select(ApplicationRow).where(ApplicationRow.application_id.in_(app_ids))).scalars()}
+    jobs_by_id = {j.job_id: j for j in s.execute(select(JobRow).where(
+        JobRow.job_id.in_([a.job_id for a in apps.values()]))).scalars()}
+    shots: dict[str, DocumentArtifactRow] = {}
+    for art in s.execute(select(DocumentArtifactRow).where(
+            DocumentArtifactRow.application_id.in_(app_ids),
+            DocumentArtifactRow.type == "form_screenshot")
+            .order_by(DocumentArtifactRow.version)).scalars():
+        shots[art.application_id] = art  # ascending, so the last one is the latest
+    answers: dict[str, list[FormFieldAnswerRow]] = {}
+    for a in s.execute(select(FormFieldAnswerRow).where(
+            FormFieldAnswerRow.application_id.in_(app_ids))
+            .order_by(FormFieldAnswerRow.field_id)).scalars():
+        answers.setdefault(a.application_id, []).append(a)
+    svc = ApprovalService(s)
     rows = []
-    for item in batch_items(s, batch.batch_id, batch.version):
-        app = s.get(ApplicationRow, item.application_id)
-        job = s.get(JobRow, app.job_id) if app is not None else None
-        rows.append({"item": item, "app": app, "job": job})
+    for item in items:
+        app = apps.get(item.application_id)
+        job = jobs_by_id.get(app.job_id) if app is not None else None
+        mine = answers.get(item.application_id, [])
+        summary: dict[str, int] = {}
+        for a in mine:
+            summary[a.decision] = summary.get(a.decision, 0) + 1
+        changed = app is None or app.status not in CHANGED_STATUSES \
+            or svc.application_hash(item.application_id) != item.item_hash
+        rows.append({
+            "item": item, "app": app, "job": job, "changed": changed,
+            "shot": shots.get(item.application_id), "summary": sorted(summary.items()),
+            "answers": [{"label": a.label, "decision": a.decision, "source": a.source_fact_id,
+                         "display": _display(json.loads(a.proposed_value_json))} for a in mine],
+            "review_count": summary.get(FieldDecision.FILL_AND_REVIEW.value, 0),
+            "suggested_count": sum(1 for a in mine if _is_model_suggested(a))})
     return _page(request, s, "batch.html", {"batch": batch, "rows": rows})
+
+
+@router.post("/ui/batches/{batch_id}/rebuild")
+def rebuild(batch_id: str, s: Db) -> RedirectResponse:
+    try:
+        batch = ApprovalService(s).rebuild_batch(batch_id, only_ready=True)
+    except ValueError as e:
+        s.rollback()
+        raise HTTPException(422, str(e)) from e
+    new_id_ = batch.batch_id
+    s.commit()
+    return RedirectResponse(f"/ui/batches/{new_id_}", status_code=303)
 
 
 def _message(request: Request, text: str, status: int, ok: bool = False) -> HTMLResponse:

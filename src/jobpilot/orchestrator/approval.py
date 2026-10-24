@@ -113,11 +113,15 @@ class ApprovalService:
     def build_batch(self, application_ids: list[str]) -> ApprovalBatchRow:
         return self._freeze(new_id("batch"), 1, application_ids)
 
-    def rebuild_batch(self, batch_id: str) -> ApprovalBatchRow:
+    def rebuild_batch(self, batch_id: str, only_ready: bool = False) -> ApprovalBatchRow:
+        """Freeze the next version. only_ready drops applications no longer READY_FOR_REVIEW."""
         latest = self._latest_version(batch_id)
         if latest is None:
             raise ValueError(f"unknown batch {batch_id}")
         ids = [i.application_id for i in self._items(batch_id, latest)]
+        if only_ready:
+            ids = [a for a in ids if get_application(self.session, a).status
+                   == ApplicationStatus.READY_FOR_REVIEW]
         return self._freeze(batch_id, latest + 1, ids)
 
     def approve(
