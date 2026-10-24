@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 from alembic.runtime.migration import MigrationContext
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
@@ -59,6 +60,12 @@ from jobpilot.runtime import Runtime, build_runtime
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
+ARTIFACT_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".json": "application/json",
+    ".txt": "text/plain",
+}
 
 
 class LocalOriginMiddleware(BaseHTTPMiddleware):
@@ -167,6 +174,7 @@ def create_app(
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
+    app.state.storage_path = cfg.storage_path
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(dashboard_router)
 
@@ -268,6 +276,19 @@ def create_app(
                 validation_errors=json.loads(x.validation_errors_json)) for x in answers],
             events=[_event_out(e) for e in list_events(s, application_id)],
         )
+
+    @app.get("/artifacts/{artifact_id}")
+    def artifact_file(artifact_id: str, s: Db) -> FileResponse:
+        row = s.get(DocumentArtifactRow, artifact_id)
+        if row is None:
+            raise HTTPException(404, "artifact not found")
+        base = (cfg.storage_path / "artifacts").resolve()
+        path = (cfg.storage_path / row.path).resolve()
+        media = ARTIFACT_MEDIA_TYPES.get(path.suffix.lower())
+        if not path.is_relative_to(base) or not path.is_file() or media is None:
+            raise HTTPException(404, "artifact not found")
+        return FileResponse(path, media_type=media, filename=path.name,
+                            content_disposition_type="inline")
 
     @app.post("/batches", response_model=sc.BatchOut)
     def create_batch(body: sc.BatchCreate, s: Db) -> sc.BatchOut:

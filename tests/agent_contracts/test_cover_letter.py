@@ -226,3 +226,46 @@ async def test_cover_letter_renders_real_one_page_pdf(
     seed_cl(factory)
     out = await run_agent(factory, cfg, SeqGateway(GOOD))
     assert len(PdfReader(out.pdf_path).pages) == 1
+
+
+def test_loader_excludes_own_employers_and_cited_names(
+    factory: sessionmaker[Session],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    with factory() as s:
+        for jid, company in (("job_3", "Example Corp"),
+                             ("job_4", "Example Institute of Technology")):
+            s.add(JobRow(job_id=jid, source="lever", source_job_id=jid,
+                         canonical_url=f"https://example.com/{jid}", company=company,
+                         title="AI Engineer", location="Pune", work_mode="remote",
+                         description_text="d", extracted_json="{}", status="MATCHED",
+                         first_seen_at=T0, last_seen_at=T0))
+        s.commit()
+    app = make_application_loader(factory)(APP)
+    assert app is not None and app["other_companies"] == ["Globex Labs"]
+    text = ("I am applying for the GenAI Engineer role at Example AI. At Example Corp "
+            "I built a retrieval pipeline.")
+    assert validate_cover_letter(text, "Example AI", "GenAI Engineer", [],
+                                 app["other_companies"]) == []
+
+
+def test_placeholder_words_are_case_sensitive() -> None:
+    ok = "GenAI Engineer at Example AI; I keep a todo list and fixed xxx-large files."
+    assert validate_cover_letter(ok, "Example AI", "GenAI Engineer", [], []) == []
+    assert "placeholder" in validate_cover_letter(
+        "GenAI Engineer at Example AI [name]", "Example AI", "GenAI Engineer", [], [])
+
+
+async def test_invented_employer_or_number_rejected(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    for para, code in (("Building Initech systems, I built a retrieval pipeline.",
+                        "p2:new_proper_noun:initech"),
+                       ("I built a retrieval pipeline serving 50k queries per day.",
+                        "p2:new_number")):
+        bad = {**GOOD, "paragraphs": [GOOD["paragraphs"][0], para]}
+        gw = SeqGateway(bad, bad)
+        with pytest.raises(OutputRejected, match="cover_letter_invalid"):
+            await run_agent(factory, cfg, gw)
+        assert code in gw.calls[1]["messages"][1]["content"]

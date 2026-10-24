@@ -16,20 +16,27 @@ from jobpilot.agents.match import MatchAgent, make_match_handler
 from jobpilot.agents.tailor import TailorAgent, make_tailor_handler
 from jobpilot.config import AppConfig
 from jobpilot.data.db import utcnow
-from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, JobRow, MatchAssessmentRow
+from jobpilot.data.tables import (
+    ApplicationRow,
+    CandidateProfileRow,
+    DocumentArtifactRow,
+    JobRow,
+    MatchAssessmentRow,
+)
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
 from jobpilot.documents.validate import (
     BANNED_PATH,
     TECH_TERMS_PATH,
+    has_phrase,
     load_banned,
     load_tech_terms,
 )
 from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
 from jobpilot.portals.base import PortalAdapter
 from jobpilot.portals.simulated import SimulatedAdapter
-from jobpilot.profile.importer import active_profile, candidate_years, verified_facts
+from jobpilot.profile.importer import PROFILE_ID, active_profile, candidate_years, verified_facts
 from jobpilot.profile.preferences import load_companies, load_search_preferences
 from jobpilot.profile.schema import ProfileFile, load_profile_file
 
@@ -85,6 +92,19 @@ def make_profile_loader(
     return profile_loader
 
 
+def _own_employers(s: Session) -> set[str]:
+    """Casefolded employer names from the active profile's roles and current employment."""
+    try:
+        version, _ = active_profile(s)
+    except LookupError:
+        return set()
+    row = s.get(CandidateProfileRow, (PROFILE_ID, version))
+    prefs = json.loads(row.preferences_json) if row else {}
+    names = list(prefs.get("employers") or [])
+    names.append((prefs.get("current_employment") or {}).get("employer") or "")
+    return {n.strip().casefold() for n in names if n and n.strip()}
+
+
 def make_application_loader(
     session_factory: sessionmaker[Session],
 ) -> Callable[[str], dict | None]:
@@ -117,8 +137,11 @@ def make_application_loader(
                 resume_ids = json.loads(resume.source_fact_ids_json) if resume else []
             except ValueError:
                 resume_ids = []
+            own = _own_employers(s)
             others = sorted({c for (c,) in s.query(JobRow.company).filter(
-                JobRow.company != job.company).distinct() if c})
+                JobRow.company != job.company).distinct()
+                if c and c.casefold() not in own
+                and not any(has_phrase(v, c) for v in facts.values())})
             return {"application_id": app.application_id, "job_id": job.job_id,
                     "status": app.status, "title": job.title, "company": job.company,
                     "requirements": req, "job_summary": req.get("summary") or "",

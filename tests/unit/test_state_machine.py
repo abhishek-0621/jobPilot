@@ -91,3 +91,13 @@ def test_outreach_and_batch_edges():
     assert OutreachStatus.SKIPPED not in o[OutreachStatus.SENT]
     assert BatchStatus.PROCESSING in TRANSITIONS[BatchStatus][BatchStatus.APPROVED]
     assert AgentRunStatus.RUNNING in TRANSITIONS[AgentRunStatus][AgentRunStatus.WAITING_FOR_USER]
+
+
+def test_regenerate_edges_back_to_documents_pending():
+    A = ApplicationStatus  # noqa: N806
+    edges = TRANSITIONS[ApplicationStatus]
+    for src in (A.FORM_IN_PROGRESS, A.NEEDS_USER_INPUT, A.VALIDATION_FAILED,
+                A.READY_FOR_REVIEW):
+        assert A.DOCUMENTS_PENDING in edges[src]
+    for src in (A.APPROVED, A.VALIDATING, A.SUBMITTED, A.SUBMISSION_IN_PROGRESS):
+        assert A.DOCUMENTS_PENDING not in edges[src]

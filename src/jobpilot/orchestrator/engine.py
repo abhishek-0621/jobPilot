@@ -135,6 +135,21 @@ def noop_handler(session: Session, task: TaskRow, output: BaseModel) -> list[Fol
     return []
 
 
+def add_task(
+    s: Session, kind: TaskKind, entity_type: str, entity_id: str,
+    not_before: datetime | None = None,
+) -> str:
+    """The single place a TaskRow is created (plus its task_enqueued event); no commit."""
+    task_id = new_id("task")
+    s.add(TaskRow(task_id=task_id, kind=TaskKind(kind).value, entity_type=entity_type,
+                  entity_id=entity_id, status=TaskStatus.QUEUED.value, attempts=0,
+                  not_before=not_before))
+    record_event(s, entity_type="task", entity_id=task_id, actor=_ACTOR,
+                 action="task_enqueued", outcome="ok",
+                 details={"kind": kind, "entity_type": entity_type, "entity_id": entity_id})
+    return task_id
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -190,15 +205,7 @@ class Orchestrator:
         self, s: Session, kind: TaskKind, entity_type: str, entity_id: str,
         not_before: datetime | None = None,
     ) -> str:
-        task_id = new_id("task")
-        s.add(TaskRow(task_id=task_id, kind=TaskKind(kind).value, entity_type=entity_type,
-                      entity_id=entity_id, status=TaskStatus.QUEUED.value, attempts=0,
-                      not_before=not_before))
-        record_event(s, entity_type="task", entity_id=task_id, actor=_ACTOR,
-                     action="task_enqueued", outcome="ok",
-                     details={"kind": kind, "entity_type": entity_type,
-                              "entity_id": entity_id})
-        return task_id
+        return add_task(s, kind, entity_type, entity_id, not_before)
 
     def _lease_next(self) -> str | None:
         now = self._clock()

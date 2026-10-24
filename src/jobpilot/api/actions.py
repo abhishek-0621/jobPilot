@@ -1,5 +1,6 @@
 """State-changing user actions shared by the JSON API and the dashboard."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -11,7 +12,8 @@ from jobpilot.data.tables import ApplicationRow, ApprovalBatchRow, JobRow, TaskR
 from jobpilot.ids import new_id
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
-from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
+from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus, add_task
+from jobpilot.orchestrator.state_machine import transition
 
 DISCOVERY_RUNNING = "A discovery run is already queued or running."
 
@@ -69,6 +71,51 @@ def start_tailor(s: Session, orch: Orchestrator, application_id: str) -> str:
     if active is not None:
         raise ActionConflict(TAILOR_RUNNING)
     task_id = orch.enqueue_in(s, TaskKind.TAILOR, "application", application_id)
+    s.commit()
+    return task_id
+
+
+DOCUMENTS_BUSY = "Documents are already being generated for this application."
+A = ApplicationStatus
+_REGENERABLE = frozenset({A.DOCUMENTS_PENDING.value, A.FORM_IN_PROGRESS.value,
+                          A.NEEDS_USER_INPUT.value, A.VALIDATION_FAILED.value,
+                          A.READY_FOR_REVIEW.value, A.APPROVED.value})
+_DOC_TASKS = (TaskKind.TAILOR.value, TaskKind.COVER_LETTER.value)
+
+
+def documents_busy(s: Session, application_id: str) -> bool:
+    return s.execute(select(TaskRow.task_id).where(
+        TaskRow.kind.in_(_DOC_TASKS), TaskRow.entity_id == application_id,
+        TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)))).first() \
+        is not None
+
+
+def reset_documents(s: Session, application_id: str, reason: str, *, actor: str,
+                    enqueue: Callable[[Session, TaskKind, str, str], str] = add_task) -> str:
+    """Revoke any approval, move back to DOCUMENTS_PENDING and queue TAILOR (no commit).
+
+    Raises LookupError / ActionConflict.
+    """
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise LookupError("application not found")
+    if app.status not in _REGENERABLE:
+        raise ActionConflict(f"Documents cannot be regenerated (status is {app.status}).")
+    if documents_busy(s, application_id):
+        raise ActionConflict(DOCUMENTS_BUSY)
+    ApprovalService(s).invalidate_application(application_id, reason)  # APPROVED -> RFR
+    if app.status != A.DOCUMENTS_PENDING.value:
+        transition(s, app, A.DOCUMENTS_PENDING, actor=actor, reason=reason)
+    task_id = enqueue(s, TaskKind.TAILOR, "application", application_id)
+    s.flush()
+    return task_id
+
+
+def regenerate_documents(s: Session, orch: Orchestrator, application_id: str,
+                         reason: str = "user_regenerate") -> str:
+    """User action: regenerate resume + cover letter. Commits; raises like reset_documents."""
+    task_id = reset_documents(s, application_id, reason, actor="user",
+                              enqueue=orch.enqueue_in)
     s.commit()
     return task_id
 

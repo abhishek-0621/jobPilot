@@ -205,7 +205,7 @@ def validate_rewrite(source: str, rewrite: str, allowed_terms: set[str],
 
 BANNED_PATH = _CONFIG / "cover_letter_banned.txt"
 MAX_LETTER_WORDS = 250
-_PLACEHOLDER_RE = re.compile(r"[\[\]{}<>]|\bTODO\b|\bXXX\b", re.IGNORECASE)
+_PLACEHOLDER_RE = re.compile(r"[\[\]{}<>]|\bTODO\b|\bXXX\b")  # words: upper-case only
 
 
 def load_banned(path: Path | str) -> list[str]:

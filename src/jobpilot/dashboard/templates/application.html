@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Application{% endblock %}
+{% block content %}
+<h1>{% if job %}{{ job.title }} · {{ job.company }}{% else %}Application{% endif %}</h1>
+<p><strong>{{ app.status }}</strong>{% if job %} · <a href="/ui/jobs/{{ job.job_id }}">Job</a> · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}{% endif %}</p>
+<p><button type="button" hx-post="/ui/applications/{{ app.application_id }}/regenerate" hx-target="#regen-result" hx-swap="innerHTML">Regenerate documents</button></p>
+<div id="regen-result"></div>
+<h2>Resume</h2>
+{% if resume %}
+<p class="muted">Version {{ resume.version }}{% if docx %} · <a href="/artifacts/{{ docx.artifact_id }}" download>Download DOCX</a>{% endif %} · <a href="/artifacts/{{ resume.artifact_id }}" target="_blank" rel="noopener noreferrer">Open PDF</a></p>
+<iframe src="/artifacts/{{ resume.artifact_id }}" title="Resume preview" referrerpolicy="no-referrer" style="width:100%;height:640px;border:1px solid var(--line);border-radius:8px"></iframe>
+{% else %}<p class="muted">Not generated yet.</p>{% endif %}
+<h2>Changes</h2>
+{% if diff %}
+<div class="table-wrap"><table><thead><tr><th>Original</th><th>Tailored</th><th>Status</th><th>Source fact</th></tr></thead><tbody>
+{% for r in diff %}<tr><td>{{ r.original }}</td><td>{{ r.tailored }}</td><td><span class="badge">{{ r.status }}</span></td><td><span class="mono">{{ r.fact_id }}</span>{% if facts.get(r.fact_id) %}<br><span class="muted">{{ facts[r.fact_id] }}</span>{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">No diff yet.</p>{% endif %}
+<h2>Cover letter</h2>
+{% if cover %}<p class="muted">Version {{ cover.version }} · <a href="/artifacts/{{ cover.artifact_id }}" target="_blank" rel="noopener noreferrer">Open PDF</a></p>{% endif %}
+{% if letter %}<div class="card" style="white-space:pre-wrap">{{ letter }}</div>
+<h3>Evidence</h3>
+<ul>{% for f in evidence %}<li><span class="mono">{{ f.fact_id }}</span>: {{ f.value }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">Not generated yet.</p>{% endif %}
+<h2>Status timeline</h2>
+{% if events %}<ul>{% for e in events %}<li>{{ e.timestamp_utc|local }} · {{ e.actor }} · {{ e.action }} · {{ e.outcome }}</li>{% endfor %}</ul>{% else %}<p class="muted">No events.</p>{% endif %}
+{% endblock %}
