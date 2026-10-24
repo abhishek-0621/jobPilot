@@ -20,7 +20,9 @@ from jobpilot.orchestrator.engine import (
     FollowUp,
     Handler,
     OutputRejected,
+    Provided,
     TaskInput,
+    resolve_tool,
 )
 from jobpilot.orchestrator.state_machine import transition
 from jobpilot.profile.preferences import SearchPreferences
@@ -179,7 +181,8 @@ class MatchAgent:
         )
 
 
-def make_match_handler(prefs: SearchPreferences) -> Handler:
+def make_match_handler(prefs: SearchPreferences | Provided) -> Handler:
+    """``prefs`` may be a ``Provided`` so edits to the preferences file apply per task."""
     def match_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         if not isinstance(out, MatchAssessment) or out.job_id != task.entity_id:
             raise OutputRejected("match output does not match task job")
@@ -213,7 +216,7 @@ def make_match_handler(prefs: SearchPreferences) -> Handler:
             names = [n for n in _FILTER_NAMES if n in tagged] or ["unspecified"]
             transition(s, job, JobStatus.REJECTED, actor="orchestrator",
                        reason=f"{_HARD_PREFIX}{','.join(names)}")
-        elif out.total_score < prefs.min_match_score:
+        elif out.total_score < resolve_tool(prefs).min_match_score:
             transition(s, job, JobStatus.REJECTED, actor="orchestrator",
                        reason="below_threshold")
         elif out.confidence < _LOW_CONFIDENCE:

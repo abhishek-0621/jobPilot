@@ -133,3 +133,42 @@ def test_start_binds_configured_host_and_port(
     assert seen["host"] == "127.0.0.1" and seen["port"] == 9911
     assert "http://127.0.0.1:9911" in r.output
     assert (tmp_path / "storage" / "jobpilot.db").exists()
+
+
+def test_discover_enqueues_and_refuses_second(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.httpx, "get", _down)
+    d = _config(tmp_path)
+    r = runner.invoke(cli.app, ["discover", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    assert "Queued discovery run run" in r.output
+    assert "Run `uv run jobpilot start` to process it." in r.output
+    r2 = runner.invoke(cli.app, ["discover", "--config-dir", str(d)])
+    assert r2.exit_code == 1 and "already queued or running" in r2.output
+
+
+def test_sources_check_reports_per_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _config(tmp_path)
+    prof = tmp_path / "storage" / "profiles"
+    prof.mkdir(parents=True)
+    (prof / "companies.yaml").write_text(yaml.safe_dump({"companies": [
+        {"name": "Example AI", "source": "greenhouse", "token": "exampleai"},
+        {"name": "Sample Labs", "source": "lever", "token": "samplelabs"}]}))
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    gh = (fixtures / "greenhouse_jobs.json").read_text()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "boards-api.greenhouse.io":
+            return httpx.Response(200, text=gh)
+        return httpx.Response(503)
+
+    monkeypatch.setattr(cli, "_sources_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)))
+    r = runner.invoke(cli.app, ["sources", "check", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    n = len(__import__("json").loads(gh)["jobs"])
+    assert f"Example AI (greenhouse:exampleai): ok {n} postings" in r.output
+    assert "Sample Labs (lever:samplelabs): SOURCE_UNAVAILABLE" in r.output

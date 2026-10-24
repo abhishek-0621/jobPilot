@@ -14,7 +14,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.api.actions import approve_and_queue
+from jobpilot.api.actions import (
+    ActionConflict,
+    approve_and_queue,
+    select_job,
+    start_discovery,
+)
+from jobpilot.contracts.enums import JobStatus
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import set_library_answer
 from jobpilot.data.repositories import (
@@ -34,6 +40,7 @@ from jobpilot.data.tables import (
     CandidateFactRow,
     CandidateProfileRow,
     JobRow,
+    MatchAssessmentRow,
     OutreachDraftRow,
 )
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
@@ -131,9 +138,103 @@ def overview_counts(request: Request, s: Db) -> HTMLResponse:
     return templates.TemplateResponse(request, "_counts.html", _counts(s))
 
 
+def _active_version(s: Session) -> int | None:
+    try:
+        return active_profile(s)[0]
+    except LookupError:
+        return None
+
+
+def _assessment(s: Session, job_id: str, version: int | None) -> MatchAssessmentRow | None:
+    """The assessment for the active profile version, else the latest one."""
+    if version is not None:
+        row = s.get(MatchAssessmentRow, (job_id, version))
+        if row is not None:
+            return row
+    return s.execute(select(MatchAssessmentRow).where(MatchAssessmentRow.job_id == job_id)
+                     .order_by(MatchAssessmentRow.profile_version.desc())).scalars().first()
+
+
+def _evidence(m: MatchAssessmentRow | None) -> dict[str, Any]:
+    if m is None:
+        return {}
+    try:
+        data = json.loads(m.evidence_json or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _one_line(text: str, limit: int = 120) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[:limit - 1] + "…"
+
+
 @router.get("/ui/jobs", response_class=HTMLResponse)
-def jobs(request: Request, s: Db) -> HTMLResponse:
-    return _page(request, s, "jobs.html", {"jobs": jobs_with_scores(s)})
+def jobs(request: Request, s: Db, status: str | None = None,
+         show_duplicates: int = 0) -> HTMLResponse:
+    version = _active_version(s)
+    selected = {a.job_id for a in s.execute(select(ApplicationRow)).scalars()}
+    rows = []
+    for job, _score in jobs_with_scores(s, status or None):
+        if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
+                and status != JobStatus.DUPLICATE.value:
+            continue
+        m = _assessment(s, job.job_id, version)
+        rows.append({"job": job, "score": None if m is None else m.total_score,
+                     "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
+                     "selectable": job.status == JobStatus.MATCHED.value
+                     and job.job_id not in selected})
+    return _page(request, s, "jobs.html", {
+        "rows": rows, "status": status or "", "show_duplicates": bool(show_duplicates),
+        "statuses": [st.value for st in JobStatus]})
+
+
+@router.post("/ui/runs/discovery", response_class=HTMLResponse)
+def run_discovery(request: Request, s: Db, orch: Orch) -> HTMLResponse:
+    try:
+        start_discovery(s, orch)
+    except ActionConflict as e:
+        return _message(request, str(e), 409)
+    return _message(request, "Discovery started", 200, ok=True)
+
+
+@router.get("/ui/jobs/{job_id}", response_class=HTMLResponse)
+def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
+    job = s.get(JobRow, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    m = _assessment(s, job_id, _active_version(s))
+    ev = _evidence(m)
+    facts = []
+    for fid in ev.get("matched_evidence_fact_ids") or []:
+        f = s.get(CandidateFactRow, fid)
+        facts.append({"fact_id": fid, "value": f.value if f is not None else "(missing)"})
+    try:
+        extracted = json.loads(job.extracted_json or "{}")
+    except ValueError:
+        extracted = {}
+    has_app = s.execute(select(ApplicationRow.application_id)
+                        .where(ApplicationRow.job_id == job_id)).first() is not None
+    return _page(request, s, "job_detail.html", {
+        "job": job, "m": m, "evidence": facts,
+        "requirements": extracted.get("requirements") if isinstance(extracted, dict)
+        else None,
+        "missing": ev.get("missing_requirements") or [], "concerns": ev.get("concerns") or [],
+        "explanation": ev.get("explanation") or "",
+        "events": list(reversed(list_events(s, job_id))),
+        "selectable": job.status == JobStatus.MATCHED.value and not has_app})
+
+
+@router.post("/ui/jobs/{job_id}/select", response_class=HTMLResponse)
+def select_ui(request: Request, job_id: str, s: Db) -> HTMLResponse:
+    try:
+        select_job(s, job_id)
+    except LookupError as e:
+        return _message(request, str(e), 404)
+    except ActionConflict as e:
+        return _message(request, str(e), 409)
+    return _message(request, "Selected — application created.", 200, ok=True)
 
 
 @router.get("/ui/events", response_class=HTMLResponse)

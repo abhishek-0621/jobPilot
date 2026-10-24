@@ -162,3 +162,78 @@ def profile_import(
         typer.echo("Open questions:")
         for q in pf.open_questions:
             typer.echo(f"  - {q}")
+
+
+def _server_running(cfg: AppConfig) -> bool:
+    try:
+        httpx.get(f"http://127.0.0.1:{cfg.port}/health", timeout=2)
+    except httpx.HTTPError:
+        return False
+    return True
+
+
+@app.command()
+def discover(config_dir: ConfigDir = Path("config")) -> None:
+    """Queue a discovery run; the worker in `jobpilot start` processes it."""
+    from jobpilot.api.actions import ActionConflict, start_discovery
+    from jobpilot.orchestrator.engine import Orchestrator
+
+    cfg = load_config(config_dir)
+    _migrate(cfg)
+    engine = make_engine(cfg.db_path)
+    try:
+        factory = make_session_factory(engine)
+        with factory() as s:
+            try:
+                _task_id, run_id = start_discovery(s, Orchestrator(factory, cfg, {}, {}))
+            except ActionConflict as e:
+                typer.echo(str(e))
+                raise typer.Exit(1) from e
+    finally:
+        engine.dispose()
+    typer.echo(f"Queued discovery run {run_id}")
+    if not _server_running(cfg):
+        typer.echo("Run `uv run jobpilot start` to process it.")
+
+
+sources_app = typer.Typer(help="Job source commands.", no_args_is_help=True)
+app.add_typer(sources_app, name="sources")
+
+
+async def _check_sources(cfg: AppConfig, client: httpx.AsyncClient) -> list[str]:
+    from jobpilot.discovery.sources.base import SourceAdapter, SourceError
+    from jobpilot.discovery.sources.greenhouse import GreenhouseSource
+    from jobpilot.discovery.sources.lever import LeverSource
+    from jobpilot.profile.preferences import load_companies
+
+    adapters: dict[str, SourceAdapter] = {"greenhouse": GreenhouseSource(client),
+                                          "lever": LeverSource(client)}
+    lines: list[str] = []
+    for board in load_companies(cfg):
+        label = f"{board.name} ({board.source}:{board.token})"
+        try:
+            postings = await adapters[board.source].list_postings(board)
+        except SourceError as e:
+            lines.append(f"{label}: {e.code.value}")
+            continue
+        lines.append(f"{label}: ok {len(postings)} postings")
+    return lines
+
+
+def _sources_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient()
+
+
+@sources_app.command("check")
+def sources_check(config_dir: ConfigDir = Path("config")) -> None:
+    """Fetch each configured board once (live) and print ok / error per board."""
+    import asyncio
+
+    cfg = load_config(config_dir)
+
+    async def run() -> list[str]:
+        async with _sources_client() as client:
+            return await _check_sources(cfg, client)
+
+    for line in asyncio.run(run()):
+        typer.echo(line)

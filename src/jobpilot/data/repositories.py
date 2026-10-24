@@ -144,3 +144,12 @@ def ready_unbatched_applications(s: Session) -> list[tuple[ApplicationRow, JobRo
     ).where(ApplicationRow.status == ApplicationStatus.READY_FOR_REVIEW.value)
         .order_by(ApplicationRow.application_id)).all()
     return [(a, j) for a, j in rows if a.application_id not in in_pending]
+
+
+def create_application(s: Session, job: JobRow) -> ApplicationRow:
+    """Start an application for a selected job (caller checks eligibility and commits)."""
+    row = ApplicationRow(application_id=new_id("app"), job_id=job.job_id,
+                         status=ApplicationStatus.NOT_STARTED.value, portal=job.source)
+    s.add(row)
+    s.flush()
+    return row

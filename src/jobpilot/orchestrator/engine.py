@@ -101,6 +101,17 @@ class AgentContext:
     tools: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class Provided:
+    """A tool whose value is produced fresh for every task (e.g. files re-read per run)."""
+
+    factory: Callable[[], Any]
+
+
+def resolve_tool(value: Any) -> Any:
+    return value.factory() if isinstance(value, Provided) else value
+
+
 class Agent(Protocol[I, O]):
     name: str
     prompt_version: str
@@ -286,7 +297,8 @@ class Orchestrator:
             return
         declared = tuple(getattr(agent, "tools", ()))
         ctx = AgentContext(task_id=task.task_id, gateway=self._gateway,
-                           tools={k: v for k, v in self._tools.items() if k in declared})
+                           tools={k: resolve_tool(v) for k, v in self._tools.items()
+                                  if k in declared})
         inp = TaskInput(task_id=task.task_id, kind=kind, entity_type=task.entity_type,
                         entity_id=task.entity_id, attempt=task.attempts)
         started = time.monotonic()

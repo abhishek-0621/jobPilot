@@ -2,11 +2,53 @@
 
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.data.tables import ApprovalBatchRow
+from jobpilot.contracts.enums import JobStatus
+from jobpilot.data.repositories import create_application
+from jobpilot.data.tables import ApplicationRow, ApprovalBatchRow, JobRow, TaskRow
+from jobpilot.ids import new_id
+from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
-from jobpilot.orchestrator.engine import Orchestrator, TaskKind
+from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
+
+DISCOVERY_RUNNING = "A discovery run is already queued or running."
+
+
+class ActionConflict(Exception):
+    """The requested action is not allowed in the current state (HTTP 409)."""
+
+
+def start_discovery(s: Session, orch: Orchestrator) -> tuple[str, str]:
+    """Queue a DISCOVER task for a new run; refuse while one is QUEUED/RUNNING."""
+    active = s.execute(select(TaskRow.task_id).where(
+        TaskRow.kind == TaskKind.DISCOVER.value,
+        TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)))).first()
+    if active is not None:
+        raise ActionConflict(DISCOVERY_RUNNING)
+    run_id = new_id("run")
+    task_id = orch.enqueue_in(s, TaskKind.DISCOVER, "run", run_id)
+    s.commit()
+    return task_id, run_id
+
+
+def select_job(s: Session, job_id: str) -> ApplicationRow:
+    """Create an application for a MATCHED job that has none. Raises LookupError /
+    ActionConflict."""
+    job = s.get(JobRow, job_id)
+    if job is None:
+        raise LookupError("job not found")
+    if job.status != JobStatus.MATCHED.value:
+        raise ActionConflict(f"Only MATCHED jobs can be selected (job is {job.status}).")
+    if s.execute(select(ApplicationRow.application_id)
+                 .where(ApplicationRow.job_id == job_id)).first() is not None:
+        raise ActionConflict("An application already exists for this job.")
+    app = create_application(s, job)
+    record_event(s, entity_type="job", entity_id=job_id, actor="user", action="job_selected",
+                 outcome="ok", details={"application_id": app.application_id})
+    s.commit()
+    return app
 
 
 @dataclass(frozen=True)
