@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ doc.name }}</title>
+<style>
+@page { size: A4; margin: 12mm; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt;
+       line-height: 1.25; color: #000; }
+h1 { font-size: 18pt; margin: 0; }
+.headline { margin: 0; color: #333; }
+.contact { margin: 2pt 0 4pt; color: #333; }
+h2 { font-size: 11.5pt; margin: 6pt 0 2pt; border-bottom: 1px solid #333; }
+.role { margin-top: 3pt; }
+.role-head { display: flex; justify-content: space-between; font-weight: bold; }
+ul { margin: 1pt 0 0; padding-left: 14pt; }
+li { margin: 0; }
+p { margin: 0; }
+</style>
+</head>
+<body>
+<header>
+<h1>{{ doc.name }}</h1>
+<p class="headline">{{ doc.headline }}</p>
+<p class="contact">{{ doc.contact_line }}</p>
+</header>
+{% if doc.summary %}<section><h2>Summary</h2><p>{{ doc.summary }}</p></section>{% endif %}
+{% if doc.skills %}<section><h2>Skills</h2>
+{% for group, items in doc.skills %}<p><strong>{{ group }}:</strong> {{ items | join(", ") }}</p>{% endfor %}
+</section>{% endif %}
+{% macro blocks(items) %}{% for r in items %}<div class="role">
+<div class="role-head"><span>{{ r.title }}{% if r.employer %} — {{ r.employer }}{% endif %}{% if r.location %} | {{ r.location }}{% endif %}</span><span>{{ r.start }}{% if r.end %} – {{ r.end }}{% endif %}</span></div>
+<ul>{% for b in r.bullets %}<li>{{ b.text }}</li>{% endfor %}</ul>
+</div>{% endfor %}{% endmacro %}
+{% if doc.roles %}<section><h2>Experience</h2>{{ blocks(doc.roles) }}</section>{% endif %}
+{% if doc.projects %}<section><h2>Projects</h2>{{ blocks(doc.projects) }}</section>{% endif %}
+{% if doc.education %}<section><h2>Education</h2>{% for e in doc.education %}<p>{{ e }}</p>{% endfor %}</section>{% endif %}
+{% if doc.achievements %}<section><h2>Achievements</h2><ul>{% for b in doc.achievements %}<li>{{ b.text }}</li>{% endfor %}</ul></section>{% endif %}
+</body>
+</html>
