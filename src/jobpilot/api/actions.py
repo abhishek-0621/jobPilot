@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.contracts.enums import JobStatus
+from jobpilot.contracts.enums import ApplicationStatus, JobStatus
 from jobpilot.data.repositories import create_application
 from jobpilot.data.tables import ApplicationRow, ApprovalBatchRow, JobRow, TaskRow
 from jobpilot.ids import new_id
@@ -33,9 +33,9 @@ def start_discovery(s: Session, orch: Orchestrator) -> tuple[str, str]:
     return task_id, run_id
 
 
-def select_job(s: Session, job_id: str) -> ApplicationRow:
-    """Create an application for a MATCHED job that has none. Raises LookupError /
-    ActionConflict."""
+def select_job(s: Session, orch: Orchestrator, job_id: str) -> ApplicationRow:
+    """Create an application for a MATCHED job that has none and queue TAILOR in the
+    same transaction. Raises LookupError / ActionConflict."""
     job = s.get(JobRow, job_id)
     if job is None:
         raise LookupError("job not found")
@@ -47,8 +47,30 @@ def select_job(s: Session, job_id: str) -> ApplicationRow:
     app = create_application(s, job)
     record_event(s, entity_type="job", entity_id=job_id, actor="user", action="job_selected",
                  outcome="ok", details={"application_id": app.application_id})
+    orch.enqueue_in(s, TaskKind.TAILOR, "application", app.application_id)
     s.commit()
     return app
+
+
+TAILOR_RUNNING = "Tailoring is already queued or running for this application."
+_TAILORABLE = (ApplicationStatus.NOT_STARTED.value, ApplicationStatus.DOCUMENTS_PENDING.value)
+
+
+def start_tailor(s: Session, orch: Orchestrator, application_id: str) -> str:
+    """Queue TAILOR for an application. Raises LookupError / ActionConflict."""
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise LookupError("application not found")
+    if app.status not in _TAILORABLE:
+        raise ActionConflict(f"Application cannot be tailored (status is {app.status}).")
+    active = s.execute(select(TaskRow.task_id).where(
+        TaskRow.kind == TaskKind.TAILOR.value, TaskRow.entity_id == application_id,
+        TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)))).first()
+    if active is not None:
+        raise ActionConflict(TAILOR_RUNNING)
+    task_id = orch.enqueue_in(s, TaskKind.TAILOR, "application", application_id)
+    s.commit()
+    return task_id
 
 
 @dataclass(frozen=True)

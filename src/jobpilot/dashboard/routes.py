@@ -19,6 +19,7 @@ from jobpilot.api.actions import (
     approve_and_queue,
     select_job,
     start_discovery,
+    start_tailor,
 )
 from jobpilot.contracts.enums import JobStatus
 from jobpilot.contracts.models import is_http_url
@@ -227,14 +228,25 @@ def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
 
 
 @router.post("/ui/jobs/{job_id}/select", response_class=HTMLResponse)
-def select_ui(request: Request, job_id: str, s: Db) -> HTMLResponse:
+def select_ui(request: Request, job_id: str, s: Db, orch: Orch) -> HTMLResponse:
     try:
-        select_job(s, job_id)
+        select_job(s, orch, job_id)
     except LookupError as e:
         return _message(request, str(e), 404)
     except ActionConflict as e:
         return _message(request, str(e), 409)
     return _message(request, "Selected — application created.", 200, ok=True)
+
+
+@router.post("/ui/applications/{application_id}/tailor", response_class=HTMLResponse)
+def tailor_ui(request: Request, application_id: str, s: Db, orch: Orch) -> HTMLResponse:
+    try:
+        start_tailor(s, orch, application_id)
+    except LookupError as e:
+        return _message(request, str(e), 404)
+    except ActionConflict as e:
+        return _message(request, str(e), 409)
+    return _message(request, "Tailoring queued.", 200, ok=True)
 
 
 @router.get("/ui/events", response_class=HTMLResponse)

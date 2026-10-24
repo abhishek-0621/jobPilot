@@ -112,3 +112,79 @@ async def test_unfittable_raises_doc_render(tmp_path: Path) -> None:
     with pytest.raises(DocRenderError) as e:
         await fit_one_page(doc, tmp_path / "r.pdf")
     assert e.value.code == ErrorCode.DOC_RENDER
+    assert not (tmp_path / "r.pdf").exists()
+
+
+class _FakeChromium:
+    """Stands in for Playwright: each pdf() writes as many pages as the html has bullets
+    beyond ``fits``; counts launches."""
+
+    def __init__(self, fits: int, fail_launch: bool = False) -> None:
+        self.fits, self.fail_launch, self.launches = fits, fail_launch, 0
+        self.chromium = self
+
+    async def __aenter__(self) -> "_FakeChromium":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def launch(self, headless: bool) -> "_FakeChromium":
+        if self.fail_launch:
+            raise RuntimeError("Executable doesn't exist")
+        self.launches += 1
+        return self
+
+    async def new_page(self) -> "_FakeChromium":
+        return self
+
+    async def set_content(self, html: str, wait_until: str) -> None:
+        self.html = html
+
+    async def pdf(self, path: str, **_: object) -> None:
+        from pypdf import PdfWriter
+
+        w = PdfWriter()
+        for _ in range(1 + max(0, self.html.count("<li") - self.fits)):
+            w.add_blank_page(width=595, height=842)
+        with open(path, "wb") as f:
+            w.write(f)
+
+    async def close(self) -> None:
+        return None
+
+
+def test_chromium_available_doc_says_import_time_only() -> None:
+    assert "import-time only" in (chromium_available.__wrapped__.__doc__ or "").lower()
+
+
+async def test_html_to_pdf_wraps_launch_errors(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.documents import render
+
+    monkeypatch.setattr(render, "async_playwright", lambda: _FakeChromium(0, True))
+    with pytest.raises(DocRenderError) as e:
+        await html_to_pdf("<p>x</p>", tmp_path / "r.pdf")
+    assert e.value.code == ErrorCode.DOC_RENDER
+
+
+async def test_fit_one_page_reuses_one_browser(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.documents import render
+
+    fake = _FakeChromium(fits=4)
+    monkeypatch.setattr(render, "async_playwright", lambda: fake)
+    _, dropped = await fit_one_page(_big_doc(n_roles=1, per_role=6), tmp_path / "r.pdf")
+    assert len(dropped) == 2 and fake.launches == 1
+
+
+async def test_fit_one_page_deletes_overlong_output(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.documents import render
+
+    fake = _FakeChromium(fits=0)
+    monkeypatch.setattr(render, "async_playwright", lambda: fake)
+    out = tmp_path / "r.pdf"
+    with pytest.raises(DocRenderError):
+        await fit_one_page(_big_doc(n_roles=1, per_role=10), out, max_drops=3)
+    assert not out.exists() and fake.launches == 1

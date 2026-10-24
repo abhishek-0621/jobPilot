@@ -1,7 +1,10 @@
 """Render a ResumeDoc to HTML, PDF (Playwright Chromium) and DOCX; fit the PDF to one page."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 from docx import Document
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -27,6 +30,8 @@ class DocRenderError(Exception):
 
 @cache
 def chromium_available() -> bool:
+    """Import-time only (cached; uses the sync API): for pytest skip markers, never
+    call it from inside a running event loop."""
     try:
         with sync_playwright() as p:
             return Path(p.chromium.executable_path).exists()
@@ -38,17 +43,39 @@ def render_resume_html(doc: ResumeDoc) -> str:
     return _env.get_template("resume.html.j2").render(doc=doc)
 
 
-async def html_to_pdf(html: str, out: Path) -> int:
+@asynccontextmanager
+async def _browser() -> AsyncIterator[Any]:
+    """One headless Chromium; launch failures surface as DocRenderError."""
+    try:
+        async with async_playwright() as p:
+            try:
+                browser = await p.chromium.launch(headless=True)
+            except Exception as e:
+                raise DocRenderError(f"chromium launch failed: {type(e).__name__}") from e
+            try:
+                yield browser
+            finally:
+                await browser.close()
+    except DocRenderError:
+        raise
+    except Exception as e:
+        raise DocRenderError(f"playwright failed: {type(e).__name__}") from e
+
+
+async def _print_pdf(browser: Any, html: str, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            page = await browser.new_page()
-            await page.set_content(html, wait_until="load")
-            await page.pdf(path=str(out), format="A4", margin=_MARGIN, print_background=False)
-        finally:
-            await browser.close()
+    page = await browser.new_page()
+    try:
+        await page.set_content(html, wait_until="load")
+        await page.pdf(path=str(out), format="A4", margin=_MARGIN, print_background=False)
+    finally:
+        await page.close()
     return len(PdfReader(out).pages)
+
+
+async def html_to_pdf(html: str, out: Path) -> int:
+    async with _browser() as browser:
+        return await _print_pdf(browser, html, out)
 
 
 def _drop_one(doc: ResumeDoc) -> str | None:
@@ -67,15 +94,20 @@ def _drop_one(doc: ResumeDoc) -> str | None:
 
 async def fit_one_page(doc: ResumeDoc, out: Path,
                        max_drops: int = 6) -> tuple[ResumeDoc, list[str]]:
+    """Render to ``out``, dropping low-priority bullets until one page; reuses one
+    browser across iterations and never leaves an over-long ``out`` behind."""
     doc = doc.model_copy(deep=True)
     dropped: list[str] = []
-    while await html_to_pdf(render_resume_html(doc), out) != 1:
-        if len(dropped) >= max_drops:
-            raise DocRenderError(f"still over one page after dropping {len(dropped)} bullets")
-        fact_id = _drop_one(doc)
-        if fact_id is None:
-            raise DocRenderError("over one page and no droppable bullets left")
-        dropped.append(fact_id)
+    async with _browser() as browser:
+        while await _print_pdf(browser, render_resume_html(doc), out) != 1:
+            fact_id = _drop_one(doc) if len(dropped) < max_drops else None
+            if fact_id is None:
+                out.unlink(missing_ok=True)
+                reason = (f"still over one page after dropping {len(dropped)} bullets"
+                          if len(dropped) >= max_drops
+                          else "over one page and no droppable bullets left")
+                raise DocRenderError(reason)
+            dropped.append(fact_id)
     return doc, dropped
 
 

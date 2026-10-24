@@ -303,6 +303,45 @@ def test_select_requires_matched(factory: sessionmaker[Session], tmp_path: Path)
     assert client.post("/ui/jobs/job_m1/select").status_code == 409
 
 
+def test_select_enqueues_tailor(factory: sessionmaker[Session], tmp_path: Path) -> None:
+    from sqlalchemy import select
+
+    from jobpilot.data.tables import TaskRow
+
+    client = make_client(factory, tmp_path)
+    _seed_job(factory, "MATCHED", "job_m1")
+    app_id = client.post("/jobs/job_m1/select").json()["application_id"]
+    with factory() as s:
+        tasks = s.execute(select(TaskRow)).scalars().all()
+    assert [(t.kind, t.entity_type, t.entity_id) for t in tasks] == [
+        ("TAILOR", "application", app_id)]
+
+
+def test_tailor_endpoints_conflict_when_queued(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    from sqlalchemy import select, update
+
+    from jobpilot.data.tables import TaskRow
+
+    client = make_client(factory, tmp_path)
+    _seed_job(factory, "MATCHED", "job_m1")
+    app_id = client.post("/jobs/job_m1/select").json()["application_id"]
+    assert client.post(f"/applications/{app_id}/tailor").status_code == 409
+    assert client.post(f"/ui/applications/{app_id}/tailor").status_code == 409
+    assert client.post("/applications/nope/tailor").status_code == 404
+    with factory() as s:
+        s.execute(update(TaskRow).values(status="SUCCEEDED"))
+        s.commit()
+    r = client.post(f"/applications/{app_id}/tailor")
+    assert r.status_code == 200
+    ui = client.post(f"/ui/applications/{app_id}/tailor")
+    assert ui.status_code == 409
+    with factory() as s:
+        queued = s.execute(select(TaskRow).where(TaskRow.status == "QUEUED")).scalars().all()
+    assert [t.task_id for t in queued] == [r.json()["task_id"]]
+
+
 def test_job_detail_renders_scores_and_evidence(
     factory: sessionmaker[Session], tmp_path: Path
 ) -> None:

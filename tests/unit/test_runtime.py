@@ -44,7 +44,7 @@ def _client() -> httpx.AsyncClient:
 
 def test_build_runtime_registers_kinds(factory: sessionmaker[Session], tmp_path: Path) -> None:
     rt = build_runtime(_cfg(tmp_path), factory, client=_client())
-    kinds = {TaskKind.DISCOVER, TaskKind.EXTRACT, TaskKind.MATCH}
+    kinds = {TaskKind.DISCOVER, TaskKind.EXTRACT, TaskKind.MATCH, TaskKind.TAILOR}
     assert set(rt.agents) == kinds == set(rt.handlers)
     assert set(rt.adapters) == {"simulated"}
     assert set(rt.tools["sources"]) == {"greenhouse", "lever"}

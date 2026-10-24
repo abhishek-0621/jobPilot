@@ -1,9 +1,10 @@
-"""Wire DISCOVER/EXTRACT/MATCH agents, handlers and their tools for a running app."""
+"""Wire DISCOVER/EXTRACT/MATCH/TAILOR agents, handlers and their tools for a running app."""
 
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,17 +12,20 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.agents.extract import ExtractAgent, extract_handler
 from jobpilot.agents.match import MatchAgent, make_match_handler
+from jobpilot.agents.tailor import TailorAgent, make_tailor_handler
 from jobpilot.config import AppConfig
 from jobpilot.data.db import utcnow
-from jobpilot.data.tables import JobRow
+from jobpilot.data.tables import ApplicationRow, JobRow, MatchAssessmentRow
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
+from jobpilot.documents.validate import TECH_TERMS_PATH, load_tech_terms
 from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
 from jobpilot.portals.base import PortalAdapter
 from jobpilot.portals.simulated import SimulatedAdapter
 from jobpilot.profile.importer import active_profile, candidate_years, verified_facts
 from jobpilot.profile.preferences import load_companies, load_search_preferences
+from jobpilot.profile.schema import ProfileFile, load_profile_file
 
 
 @dataclass
@@ -74,6 +78,60 @@ def make_profile_loader(
     return profile_loader
 
 
+def make_application_loader(
+    session_factory: sessionmaker[Session],
+) -> Callable[[str], dict | None]:
+    """Application + job (requirements, summary) + match evidence as {fact_id: value},
+    restricted to verified facts of the active profile."""
+    def application_loader(application_id: str) -> dict | None:
+        with session_factory() as s:
+            app = s.get(ApplicationRow, application_id)
+            job = None if app is None else s.get(JobRow, app.job_id)
+            if app is None or job is None:
+                return None
+            try:
+                data = json.loads(job.extracted_json or "{}")
+            except ValueError:
+                data = {}
+            req = data.get("requirements") if isinstance(data, dict) else None
+            req = req if isinstance(req, dict) else {}
+            facts = {f.fact_id: f.value for f in verified_facts(s)}
+            m = s.query(MatchAssessmentRow).filter(MatchAssessmentRow.job_id == job.job_id) \
+                .order_by(MatchAssessmentRow.profile_version.desc()).first()
+            try:
+                ev = json.loads(m.evidence_json) if m is not None else {}
+            except ValueError:
+                ev = {}
+            ids = ev.get("matched_evidence_fact_ids", []) if isinstance(ev, dict) else []
+            return {"application_id": app.application_id, "job_id": job.job_id,
+                    "status": app.status, "title": job.title, "company": job.company,
+                    "requirements": req, "job_summary": req.get("summary") or "",
+                    "match_evidence": {i: facts[i] for i in ids if i in facts}}
+    return application_loader
+
+
+def make_profile_file(cfg: AppConfig) -> Callable[[], ProfileFile]:
+    """Identity and role structure from the profile YAML (contents never logged)."""
+    path = cfg.storage_path / "profiles" / "profile.yaml"
+
+    def profile_file() -> ProfileFile:
+        if not path.is_file():
+            raise OutputRejected("no_profile_file")
+        try:
+            return load_profile_file(path)
+        except ValueError as e:
+            raise OutputRejected("bad_profile_file") from e
+    return profile_file
+
+
+def make_artifact_dir(cfg: AppConfig) -> Callable[[str], Path]:
+    def artifact_dir(application_id: str) -> Path:
+        d = cfg.storage_path / "artifacts" / application_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return artifact_dir
+
+
 def build_runtime(
     cfg: AppConfig,
     session_factory: sessionmaker[Session],
@@ -91,16 +149,22 @@ def build_runtime(
         "clock": clock,
         "job_loader": make_job_loader(session_factory),
         "profile_loader": make_profile_loader(session_factory, clock),
+        "application_loader": make_application_loader(session_factory),
+        "profile_file": make_profile_file(cfg),
+        "artifact_dir": make_artifact_dir(cfg),
+        "tech_terms": lambda: load_tech_terms(TECH_TERMS_PATH),
     }
     agents: dict[TaskKind, Agent[Any, Any]] = {
         TaskKind.DISCOVER: DiscoverAgent(),
         TaskKind.EXTRACT: ExtractAgent(),
         TaskKind.MATCH: MatchAgent(),
+        TaskKind.TAILOR: TailorAgent(),
     }
     handlers: dict[TaskKind, Handler] = {
         TaskKind.DISCOVER: discover_handler,
         TaskKind.EXTRACT: extract_handler,
         TaskKind.MATCH: make_match_handler(prefs),
+        TaskKind.TAILOR: make_tailor_handler(cfg.storage_path),
     }
     return Runtime(agents=agents, handlers=handlers,
                    adapters={"simulated": SimulatedAdapter()}, tools=tools,

@@ -22,7 +22,13 @@ from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp
 
 from jobpilot.api import schemas as sc
-from jobpilot.api.actions import ActionConflict, approve_and_queue, select_job, start_discovery
+from jobpilot.api.actions import (
+    ActionConflict,
+    approve_and_queue,
+    select_job,
+    start_discovery,
+    start_tailor,
+)
 from jobpilot.config import AppConfig, load_config
 from jobpilot.dashboard.routes import router as dashboard_router
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
@@ -216,12 +222,22 @@ def create_app(
     @app.post("/jobs/{job_id}/select")
     def select_api(job_id: str, s: Db) -> dict[str, str]:
         try:
-            a = select_job(s, job_id)
+            a = select_job(s, orchestrator, job_id)
         except LookupError as e:
             raise HTTPException(404, str(e)) from e
         except ActionConflict as e:
             raise HTTPException(409, str(e)) from e
         return {"application_id": a.application_id}
+
+    @app.post("/applications/{application_id}/tailor")
+    def tailor_api(application_id: str, s: Db) -> dict[str, str]:
+        try:
+            task_id = start_tailor(s, orchestrator, application_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ActionConflict as e:
+            raise HTTPException(409, str(e)) from e
+        return {"task_id": task_id}
 
     @app.get("/applications/{application_id}", response_model=sc.ApplicationDetail)
     def application_detail(application_id: str, s: Db) -> sc.ApplicationDetail:
