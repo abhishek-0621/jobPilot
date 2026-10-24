@@ -1,0 +1,3 @@
+# JobPilot
+
+See [docs/](docs/).
