@@ -98,7 +98,7 @@ class ApprovalService:
         self.session.add(batch)
         items = [
             BatchItemRow(batch_id=batch_id, version=version, application_id=a,
-                         item_hash=self.application_hash(a), selected=True)
+                         item_hash=self.application_hash(a), selected=False)
             for a in ids
         ]
         self.session.add_all(items)
@@ -142,11 +142,18 @@ class ApprovalService:
         missing = [a for a in selected if a not in items]
         if missing:
             raise ValueError(f"applications not in batch: {missing}")
+        if batch.status not in (BatchStatus.READY_FOR_REVIEW, BatchStatus.PARTIALLY_APPROVED):
+            raise ValueError(f"batch {batch_id} v{version} is {batch.status}")
+        apps = {a: get_application(self.session, a) for a in selected}
+        for a, app in apps.items():
+            if app.status != ApplicationStatus.READY_FOR_REVIEW:
+                raise ValueError(f"application {a} is {app.status}, not READY_FOR_REVIEW")
         for a in selected:
             if self.application_hash(a) != items[a].item_hash:
                 raise StaleApprovalError(f"application {a} changed since batch was built")
-        for a, item in items.items():
-            item.selected = a in selected
+        # All checks passed; mutate from here on. Never clear earlier selections.
+        for a in selected:
+            items[a].selected = True
         approval = ApprovalRow(
             approval_id=new_id("apr"), batch_id=batch_id, batch_version=version,
             kind=ApprovalKind.APPLICATION.value, content_hash=batch.content_hash,
@@ -154,13 +161,13 @@ class ApprovalService:
         )
         self.session.add(approval)
         for a in selected:
-            transition(self.session, get_application(self.session, a),
-                       ApplicationStatus.APPROVED, actor=actor, reason="batch_approved",
+            transition(self.session, apps[a], ApplicationStatus.APPROVED, actor=actor,
+                       reason="batch_approved", details={"approval_id": approval.approval_id})
+        target = (BatchStatus.APPROVED if all(i.selected for i in items.values())
+                  else BatchStatus.PARTIALLY_APPROVED)
+        if batch.status != target:
+            transition(self.session, batch, target, actor=actor, reason="approved",
                        details={"approval_id": approval.approval_id})
-        all_selected = len(selected) == len(items)
-        transition(self.session, batch,
-                   BatchStatus.APPROVED if all_selected else BatchStatus.PARTIALLY_APPROVED,
-                   actor=actor, reason="approved", details={"approval_id": approval.approval_id})
         record_event(self.session, entity_type="approval", entity_id=approval.approval_id,
                      actor=actor, action="approval_granted", outcome="ok",
                      details={"batch_id": batch_id, "version": version, "items": selected})
@@ -215,7 +222,8 @@ class ApprovalService:
         if not presented_hash or presented_hash != current:
             raise StaleApprovalError("outreach draft changed since it was presented")
         draft = self.session.get(OutreachDraftRow, outreach_id)
-        assert draft is not None
+        if draft is None:
+            raise ValueError(f"unknown outreach draft {outreach_id}")
         approval = ApprovalRow(
             approval_id=new_id("apr"), batch_id=outreach_id, batch_version=1,
             kind=ApprovalKind.OUTREACH.value, content_hash=current,

@@ -133,3 +133,45 @@ def test_approve_outreach_stale(db_session):
     with pytest.raises(StaleApprovalError):
         svc.approve_outreach(draft.outreach_id, h)
     assert draft.status == "NEEDS_REVIEW"
+
+
+def test_second_approve_preserves_prior_selection(db_session):
+    from jobpilot.data.tables import BatchItemRow
+
+    a1, a2 = seed_ready_apps(db_session, 2)
+    svc = ApprovalService(db_session)
+    b = svc.build_batch([a1, a2])
+    svc.approve(b.batch_id, b.version, b.content_hash, [a1])
+    assert b.status == "PARTIALLY_APPROVED"
+    svc.approve(b.batch_id, b.version, b.content_hash, [a2])
+    for a in (a1, a2):
+        assert db_session.get(BatchItemRow, (b.batch_id, b.version, a)).selected
+        assert get_application(db_session, a).status == "APPROVED"
+    assert b.status == "APPROVED"
+
+
+def test_approve_validates_state_before_mutating(db_session):
+    from sqlalchemy import func, select
+
+    from jobpilot.data.tables import ApprovalRow
+
+    def n_approvals() -> int:
+        return db_session.execute(select(func.count()).select_from(ApprovalRow)).scalar()
+
+    a1, a2 = seed_ready_apps(db_session, 2)
+    svc = ApprovalService(db_session)
+    b = svc.build_batch([a1, a2])
+    svc.approve(b.batch_id, b.version, b.content_hash, [a1])
+    before = n_approvals()
+    # a1 already APPROVED -> re-approving it (with a2) must fail with nothing changed
+    with pytest.raises(ValueError):
+        svc.approve(b.batch_id, b.version, b.content_hash, [a1, a2])
+    assert db_session.new == set() or not any(isinstance(o, ApprovalRow) for o in db_session.new)
+    assert n_approvals() == before
+    assert get_application(db_session, a2).status == "READY_FOR_REVIEW"
+    # batch in a non-approvable state
+    svc.approve(b.batch_id, b.version, b.content_hash, [a2])
+    assert b.status == "APPROVED"
+    with pytest.raises(ValueError):
+        svc.approve(b.batch_id, b.version, b.content_hash, [a2])
+    assert n_approvals() == before + 1
