@@ -298,6 +298,14 @@ class Orchestrator:
             self._handle_model_error(s, task, code)
             s.commit()
             return
+        except OutputRejected as e:
+            self._record_run(s, task, agent, AgentRunStatus.FAILED, started,
+                             ErrorCode.MODEL_INVALID_SCHEMA)
+            self._fail(s, task, "output_rejected",
+                       {"error_type": type(e).__name__, "reason": str(e)},
+                       ErrorCode.MODEL_INVALID_SCHEMA)
+            s.commit()
+            return
 
         model = agent.output_model
         try:
@@ -311,7 +319,10 @@ class Orchestrator:
             assert task is not None
             self._record_run(s, task, agent, AgentRunStatus.FAILED, started,
                              ErrorCode.MODEL_INVALID_SCHEMA)
-            self._fail(s, task, "output_rejected", {"error_type": type(e).__name__},
+            details = {"error_type": type(e).__name__}
+            if isinstance(e, OutputRejected):
+                details["reason"] = str(e)
+            self._fail(s, task, "output_rejected", details,
                        ErrorCode.MODEL_INVALID_SCHEMA)
             s.commit()
             return

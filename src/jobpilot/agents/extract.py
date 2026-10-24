@@ -92,7 +92,8 @@ class ExtractAgent:
     tools = ("job_loader",)
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> JobRequirements:
-        assert ctx.gateway is not None
+        if ctx.gateway is None:
+            raise OutputRejected("no_model_gateway")
         loader: Callable[[str], dict | None] = ctx.tools["job_loader"]
         job = loader(inp.entity_id)
         if job is None:
