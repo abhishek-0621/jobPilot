@@ -1,0 +1,13 @@
+{
+  "title": "Machine Learning Engineer",
+  "company": "Northbeam Analytics",
+  "location": "Bengaluru, India (Hybrid)",
+  "description": "Train and deploy ranking models at scale. Requirements: 3+ years with Python, PyTorch, SQL, and MLOps practices including Docker and model monitoring. Nice to have: Spark, Airflow.",
+  "expected_required_skills": [
+    "Python",
+    "PyTorch",
+    "SQL",
+    "MLOps",
+    "Docker"
+  ]
+}

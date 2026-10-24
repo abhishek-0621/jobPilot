@@ -1,0 +1,13 @@
+{
+  "title": "GenAI Engineer",
+  "company": "Lumenwave Labs",
+  "location": "Remote, India",
+  "description": "We are hiring a GenAI Engineer to build retrieval-augmented generation systems. You will design LLM pipelines, prompt templates and evaluation harnesses. Requirements: Python, LLM prompt engineering, RAG, vector databases, FastAPI. Nice to have: Kubernetes, LangChain.",
+  "expected_required_skills": [
+    "Python",
+    "Prompt Engineering",
+    "RAG",
+    "Vector Databases",
+    "FastAPI"
+  ]
+}

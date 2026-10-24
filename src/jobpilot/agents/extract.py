@@ -85,6 +85,19 @@ def _system_prompt() -> str:
     return (resources.files("jobpilot.agents.prompts") / "extract_v1.md").read_text("utf-8")
 
 
+def build_extract_messages(
+    title: str, company: str, location: str | None, description: str
+) -> list[dict]:
+    """The exact chat messages the extract agent (and the model benchmark) send."""
+    instructions = ("Extract the structured requirements for the job posting in the "
+                    "untrusted content block.")
+    posting = (
+        f"Title: {title}\nCompany: {company}\n"
+        f"Location: {location or 'unknown'}\n\n{description}"
+    )
+    return build_messages(_system_prompt(), instructions, untrusted=posting)
+
+
 class ExtractAgent:
     name = "job_extractor"
     prompt_version = PROMPT_VERSION
@@ -98,13 +111,8 @@ class ExtractAgent:
         job = loader(inp.entity_id)
         if job is None:
             raise OutputRejected("job_not_found")
-        instructions = ("Extract the structured requirements for the job posting in the "
-                        "untrusted content block.")
-        posting = (
-            f"Title: {job['title']}\nCompany: {job['company']}\n"
-            f"Location: {job.get('location') or 'unknown'}\n\n{job['description_text']}"
-        )
-        messages = build_messages(_system_prompt(), instructions, untrusted=posting)
+        messages = build_extract_messages(
+            job["title"], job["company"], job.get("location"), job["description_text"])
         raw, _meta = await ctx.gateway.generate(
             "job_extraction", messages, _ExtractLLM, PROMPT_VERSION)
         lo = _clamp_years(raw.experience_min_years)

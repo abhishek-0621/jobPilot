@@ -17,6 +17,7 @@ from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
 app = typer.Typer(help="JobPilot: local-first job applications.", no_args_is_help=True)
 
 ConfigDir = Annotated[Path, typer.Option(help="Directory holding app.yaml / model_routes.yaml")]
+_BENCH_HINT = "Run `uv run jobpilot bench` once to pick model tags for your Mac."
 _OLLAMA_DOWN = "Start Ollama (open the Ollama app or run `ollama serve`) and re-run setup"
 
 
@@ -68,6 +69,7 @@ def setup(config_dir: ConfigDir = Path("config")) -> None:
     _migrate(cfg)
     typer.echo(f"Storage ready at {cfg.storage_path}; database migrated.")
     typer.echo("Setup complete. Next: uv run jobpilot start")
+    typer.echo(_BENCH_HINT)
 
 
 @app.command()
@@ -237,3 +239,33 @@ def sources_check(config_dir: ConfigDir = Path("config")) -> None:
 
     for line in asyncio.run(run()):
         typer.echo(line)
+
+
+@app.command()
+def bench(
+    tags: Annotated[str | None, typer.Option(help="Comma-separated model tags")] = None,
+    route: Annotated[str, typer.Option(help="Model route to benchmark")] = "job_extraction",
+    fixtures: Annotated[Path, typer.Option(help="Directory of labeled job fixtures")] = Path(
+        "tests/fixtures/bench/jobs"),
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Benchmark local model tags on labeled job postings. Never pulls models."""
+    import asyncio
+
+    from jobpilot.bench import format_table, run_bench, write_report
+
+    cfg = load_config(config_dir)
+    if route not in cfg.model_routes:
+        typer.echo(f"Unknown model route: {route}")
+        raise typer.Exit(1)
+    if tags:
+        wanted = [t.strip() for t in tags.split(",") if t.strip()]
+    else:
+        r = cfg.model_routes[route]
+        wanted = list(dict.fromkeys([r.model_tag, *([r.fallback] if r.fallback else [])]))
+    if _ollama_tags(cfg) is None:
+        typer.echo(_OLLAMA_DOWN.replace("re-run setup", "re-run bench"))
+        raise typer.Exit(1)
+    results = asyncio.run(run_bench(cfg, wanted, route, fixtures))
+    typer.echo(format_table(results))
+    typer.echo(f"Report: {write_report(cfg, route, results)}")

@@ -1,0 +1,13 @@
+{
+  "title": "Applied Scientist",
+  "company": "Orbitry Research",
+  "location": "Remote, India",
+  "description": "Research and ship NLP models for search relevance. Requirements: Python, PyTorch, natural language processing, statistics, experiment design. Nice to have: publications, Hugging Face Transformers.",
+  "expected_required_skills": [
+    "Python",
+    "PyTorch",
+    "Natural Language Processing",
+    "Statistics",
+    "Experiment Design"
+  ]
+}

@@ -67,6 +67,7 @@ def test_setup_installs_pulls_missing_and_migrates(
         ["ollama", "pull", "m3:tiny"],
     ]
     assert (tmp_path / "storage" / "jobpilot.db").exists()
+    assert "Run `uv run jobpilot bench` once to pick model tags for your Mac." in r.output
     # Idempotent: everything present -> no pulls, still succeeds.
     monkeypatch.setattr(cli.httpx, "get", _tags("m1:small", "m2:big", "m3:tiny"))
     fake_run.calls.clear()
@@ -172,3 +173,27 @@ def test_sources_check_reports_per_board(
     n = len(__import__("json").loads(gh)["jobs"])
     assert f"Example AI (greenhouse:exampleai): ok {n} postings" in r.output
     assert "Sample Labs (lever:samplelabs): SOURCE_UNAVAILABLE" in r.output
+
+
+def test_bench_exits_when_ollama_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.httpx, "get", _down)
+    r = runner.invoke(cli.app, ["bench", "--route", "a", "--config-dir", str(_config(tmp_path))])
+    assert r.exit_code == 1 and "Start Ollama" in r.output
+
+
+def test_bench_default_tags_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.bench import BenchResult
+
+    monkeypatch.setattr(cli.httpx, "get", _tags("m2:big"))
+    seen: dict[str, Any] = {}
+
+    async def fake(cfg: Any, tags: list[str], route: str, fixtures: Path) -> list[BenchResult]:
+        seen["tags"] = tags
+        return [BenchResult(t, 1.0, 0.5, 0.5, 10, 20) for t in tags]
+
+    import jobpilot.bench as b
+    monkeypatch.setattr(b, "run_bench", fake)
+    r = runner.invoke(cli.app, ["bench", "--route", "c", "--config-dir", str(_config(tmp_path))])
+    assert r.exit_code == 0, r.output
+    assert seen["tags"] == ["m2:big", "m3:tiny"]
+    assert "m3:tiny" in r.output and str(tmp_path / "storage" / "bench") in r.output

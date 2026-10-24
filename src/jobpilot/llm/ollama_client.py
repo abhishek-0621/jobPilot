@@ -125,17 +125,23 @@ class ModelGateway:
         raise AssertionError("unreachable")  # pragma: no cover
 
     async def generate(
-        self, route: str, messages: list[dict], schema: type[T], prompt_version: str
+        self,
+        route: str,
+        messages: list[dict],
+        schema: type[T],
+        prompt_version: str,
+        model_tag: str | None = None,
     ) -> tuple[T, GenerationMeta]:
         if route not in self._cfg.model_routes:
             raise ValueError(f"unknown model route: {route}")
         cfg = self._cfg.model_routes[route]
         start = time.monotonic()
-        model_tag = cfg.model_tag
+        override = model_tag is not None
+        model_tag = model_tag or cfg.model_tag
         try:
             out, attempts, eval_count = await self._generate_with(cfg, model_tag, messages, schema)
         except ModelError as e:
-            if cfg.fallback is None or e.code not in (
+            if override or cfg.fallback is None or e.code not in (
                 ErrorCode.MODEL_UNAVAILABLE,
                 ErrorCode.MODEL_TIMEOUT,
             ):
