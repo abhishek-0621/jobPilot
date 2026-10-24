@@ -136,6 +136,7 @@ class Orchestrator:
         tools: dict[str, Any] | None = None,
         lease_seconds: float = 300,
         agent_timeout_s: float = 300,
+        adapter_timeout_s: float = 120,
     ) -> None:
         self._sf = session_factory
         self._cfg = cfg
@@ -149,6 +150,7 @@ class Orchestrator:
         self._tools = tools or {}
         self._lease = timedelta(seconds=lease_seconds)
         self._agent_timeout_s = agent_timeout_s
+        self._adapter_timeout_s = adapter_timeout_s
 
     # ---- queue -----------------------------------------------------------
     def enqueue(
@@ -378,11 +380,12 @@ class Orchestrator:
         s.commit()  # write-ahead: never act before this is durable
 
         try:
-            result = await adapter.find_existing_submission(key)
+            result = await asyncio.wait_for(
+                adapter.find_existing_submission(key), self._adapter_timeout_s)
             if result is None:
-                result = await adapter.submit(ApprovedApplication(
+                result = await asyncio.wait_for(adapter.submit(ApprovedApplication(
                     application_id=app.application_id, approved_hash=approved_hash or "",
-                    idempotency_key=key))
+                    idempotency_key=key)), self._adapter_timeout_s)
         except TimeoutError:
             transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
                        reason="submit_timeout")
@@ -430,6 +433,8 @@ class Orchestrator:
                           ApplicationStatus.SUBMISSION_FAILED):
             transition(s, app, ApplicationStatus(r.status), actor=_ACTOR,
                        reason="adapter_result", details=details)
+        elif r.status is not ApplicationStatus.SUBMITTED:
+            raise ValueError(f"unexpected submit status {r.status!r}")
         app.confirmation_reference = r.confirmation_reference
         record_event(s, entity_type="application", entity_id=app.application_id,
                      actor=_ACTOR, action="submit_finished", outcome=str(r.status),

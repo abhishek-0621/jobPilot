@@ -49,6 +49,7 @@ def make_engine(db_path: Path) -> Engine:
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA recursive_triggers=ON")
         cur.close()
 
     return engine

@@ -228,7 +228,8 @@ class ApprovalService:
             raise ValueError(f"unknown outreach draft {outreach_id}")
         return content_hash({
             "outreach_id": d.outreach_id, "contact_id": d.contact_id, "channel": d.channel,
-            "message_text": d.message_text, "resume_artifact_id": d.resume_artifact_id,
+            "message_text": d.message_text,
+            "resume_artifact_hash": self._artifact_hash(d.resume_artifact_id),
         })
 
     def approve_outreach(

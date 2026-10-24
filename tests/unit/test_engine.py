@@ -541,3 +541,67 @@ async def test_second_submit_task_gate_denied(factory) -> None:
         ev = [e for e in list_events(s, app_id) if e.action == "gate_denied"]
     assert ev and "wrong_status" in ev[0].redacted_details_json
     assert task(factory, t2).status == TaskStatus.FAILED
+
+
+async def test_adapter_timeout_marks_uncertain(factory) -> None:
+    import asyncio
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+
+    class Slow(SimulatedAdapter):
+        async def submit(self, approved_application):  # type: ignore[no-untyped-def]
+            self.submit_calls += 1
+            await asyncio.sleep(5)
+            return await super().submit(approved_application)
+
+    adapter = Slow()
+    orch = make_orch(factory, clock, adapter=adapter, adapter_timeout_s=0.05)
+    tid = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    await orch.run_until_idle()
+    with factory() as s:
+        assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
+        assert [e for e in list_events(s, app_id) if e.error_code == "SUBMIT_TIMEOUT"]
+    assert task(factory, tid).status == TaskStatus.FAILED
+
+
+async def test_unexpected_submit_status_marks_uncertain(factory) -> None:
+    from jobpilot.contracts.models import SubmitResult
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+
+    class Weird(SimulatedAdapter):
+        async def submit(self, approved_application):  # type: ignore[no-untyped-def]
+            self.submit_calls += 1
+            return SubmitResult.model_construct(
+                status="IN_PROGRESS", confirmation_reference="x", evidence_url=None)
+
+    orch = make_orch(factory, clock, adapter=Weird())
+    tid = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    await orch.run_until_idle()
+    with factory() as s:
+        assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
+    assert task(factory, tid).status == TaskStatus.FAILED
+
+
+async def test_outreach_send_live_mode_gate_denied(factory) -> None:
+    clock = FakeClock()
+    with factory() as s:
+        s.add(ContactCandidateRow(contact_id="c1", company="Acme", name="Pat",
+                                  public_source_url="https://acme.example/team",
+                                  confidence=0.9))
+        s.add(OutreachDraftRow(outreach_id="o1", company_key="acme", campaign_id="c1",
+                               contact_id="c1", channel="email", message_text="hi",
+                               status="NEEDS_REVIEW"))
+        s.flush()
+        svc = ApprovalService(s)
+        svc.approve_outreach("o1", svc.outreach_hash("o1"))
+        s.commit()
+    orch = Orchestrator(factory, cfg(dry_run=False), {}, {"simulated": SimulatedAdapter()},
+                        clock=clock)
+    tid = orch.enqueue(TaskKind.OUTREACH_SEND, "outreach", "o1")
+    await orch.run_once()
+    with factory() as s:
+        d = s.get(OutreachDraftRow, "o1")
+        assert d is not None and d.status == "APPROVED" and d.evidence_ref is None
+        assert "send_started" not in [e.action for e in list_events(s, "o1")]
+    assert task(factory, tid).status == TaskStatus.FAILED

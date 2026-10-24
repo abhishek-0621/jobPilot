@@ -175,3 +175,34 @@ def test_approve_validates_state_before_mutating(db_session):
     with pytest.raises(ValueError):
         svc.approve(b.batch_id, b.version, b.content_hash, [a2])
     assert n_approvals() == before + 1
+
+
+def test_outreach_hash_tracks_resume_content(db_session):
+    from jobpilot.data.tables import DocumentArtifactRow
+    art = db_session.query(DocumentArtifactRow).first()
+    if art is None:
+        a1 = seed_ready_apps(db_session, 1)[0]
+        art = db_session.query(DocumentArtifactRow).first()
+    assert art is not None
+    draft = _draft(db_session)
+    draft.resume_artifact_id = art.artifact_id
+    db_session.flush()
+    svc = ApprovalService(db_session)
+    old = svc.outreach_hash(draft.outreach_id)
+    art.content_hash = "sha256:changed"
+    db_session.flush()
+    assert svc.outreach_hash(draft.outreach_id) != old
+    with pytest.raises(StaleApprovalError):
+        svc.approve_outreach(draft.outreach_id, old)
+
+
+def test_revocation_blocks_submit_even_with_old_item_hash(db_session):
+    (a1,) = seed_ready_apps(db_session, 1)
+    svc = ApprovalService(db_session)
+    b = svc.build_batch([a1])
+    approval = svc.approve(b.batch_id, b.version, b.content_hash, [a1])
+    before = svc.application_hash(a1)
+    edit_answer(db_session, a1, "notice_period", "60 days")
+    gate = may_submit(get_application(db_session, a1), approval, svc.application_hash(a1),
+                      0, False, policy_ok(), simulated=True, approved_item_hash=before)
+    assert not gate.allowed and "not_approved" in gate.reasons
