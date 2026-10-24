@@ -1,0 +1,457 @@
+# Known technology vocabulary for the rewrite validator.
+# One term per line, case-insensitive; '#' starts a comment.
+
+# Languages
+Python
+Java
+JavaScript
+TypeScript
+Golang
+Rust
+C++
+C#
+.NET
+Kotlin
+Swift
+Scala
+Ruby
+PHP
+Perl
+MATLAB
+Julia
+Haskell
+Elixir
+Erlang
+Clojure
+Dart
+Lua
+Bash
+PowerShell
+SQL
+PL/SQL
+T-SQL
+Objective-C
+Groovy
+Solidity
+Fortran
+COBOL
+VHDL
+Verilog
+HTML
+CSS
+SASS
+SCSS
+GraphQL
+Protobuf
+WebAssembly
+
+# Frameworks
+React
+React Native
+Angular
+Vue
+Vue.js
+Svelte
+Next.js
+Nuxt
+Node.js
+NestJS
+Django
+Flask
+FastAPI
+Spring Boot
+Rails
+Ruby on Rails
+Laravel
+ASP.NET
+Flutter
+SwiftUI
+Jetpack Compose
+jQuery
+Redux
+Tailwind
+Bootstrap
+Electron
+Pydantic
+SQLAlchemy
+Celery
+Streamlit
+Gradio
+Deno
+Webpack
+Vite
+Storybook
+tRPC
+gRPC
+Hibernate
+Quarkus
+Micronaut
+Ktor
+
+# ML
+PyTorch
+TensorFlow
+Keras
+JAX
+scikit-learn
+XGBoost
+LightGBM
+CatBoost
+Hugging Face
+LangChain
+LangGraph
+LlamaIndex
+DSPy
+CrewAI
+AutoGen
+OpenAI
+GPT
+ChatGPT
+Claude
+Anthropic
+Gemini
+Llama
+Mistral
+Qwen
+DeepSeek
+BERT
+CLIP
+Whisper
+Stable Diffusion
+Ollama
+vLLM
+TensorRT
+ONNX
+CUDA
+MLflow
+Weights & Biases
+Kubeflow
+Dask
+Spark
+PySpark
+Pandas
+NumPy
+SciPy
+Polars
+OpenCV
+spaCy
+NLTK
+Matplotlib
+Jupyter
+Optuna
+SHAP
+LoRA
+QLoRA
+PEFT
+RLHF
+DPO
+RAG
+retrieval-augmented generation
+fine-tuning
+prompt engineering
+embeddings
+vector database
+vector search
+semantic search
+reranking
+Model Context Protocol
+MCP
+function calling
+multi-agent
+LLM
+LLMs
+NLP
+computer vision
+deep learning
+machine learning
+reinforcement learning
+diffusion models
+GANs
+CNN
+RNN
+LSTM
+time series
+recommender systems
+A/B testing
+feature store
+MLOps
+LLMOps
+model serving
+quantization
+distillation
+
+# Vector/search
+Pinecone
+Weaviate
+Milvus
+Qdrant
+Chroma
+FAISS
+pgvector
+Elasticsearch
+OpenSearch
+Solr
+Lucene
+Algolia
+Meilisearch
+BM25
+
+# Cloud
+AWS
+Amazon Web Services
+Azure
+GCP
+Google Cloud
+EC2
+S3
+Lambda
+ECS
+EKS
+Fargate
+SageMaker
+Bedrock
+DynamoDB
+RDS
+Aurora
+Redshift
+CloudFormation
+CloudWatch
+SQS
+SNS
+Kinesis
+Vertex AI
+BigQuery
+Cloud Run
+Dataflow
+Pub/Sub
+Azure DevOps
+Azure Functions
+Databricks
+Snowflake
+Heroku
+Vercel
+Netlify
+Cloudflare
+DigitalOcean
+Firebase
+Supabase
+OpenShift
+
+# Databases
+PostgreSQL
+Postgres
+MySQL
+MariaDB
+SQLite
+MongoDB
+Redis
+Cassandra
+Neo4j
+CouchDB
+Couchbase
+SQL Server
+Cosmos DB
+ClickHouse
+TimescaleDB
+InfluxDB
+Memcached
+etcd
+Elasticache
+Presto
+Trino
+Hadoop
+HDFS
+HBase
+Iceberg
+Delta Lake
+Parquet
+Avro
+dbt
+Airflow
+Dagster
+Prefect
+Luigi
+Kafka
+RabbitMQ
+NATS
+ActiveMQ
+Flink
+NiFi
+Fivetran
+Airbyte
+Looker
+Tableau
+Power BI
+Metabase
+Superset
+Grafana
+Kibana
+
+# DevOps
+Docker
+Kubernetes
+Helm
+Terraform
+Ansible
+Puppet
+Pulumi
+Jenkins
+GitHub Actions
+GitLab CI
+CircleCI
+Travis CI
+ArgoCD
+Istio
+Nginx
+HAProxy
+Linux
+Ubuntu
+Git
+GitHub
+GitLab
+Bitbucket
+Jira
+Confluence
+Prometheus
+Datadog
+New Relic
+Splunk
+Sentry
+OpenTelemetry
+PagerDuty
+CI/CD
+DevOps
+SRE
+GitOps
+Infrastructure as Code
+IaC
+microservices
+serverless
+service mesh
+load balancing
+observability
+
+# Practices
+REST
+RESTful
+OAuth
+OAuth2
+JWT
+SAML
+SSO
+OIDC
+WebSockets
+Agile
+Scrum
+Kanban
+TDD
+BDD
+DDD
+Event Sourcing
+CQRS
+ETL
+ELT
+OLAP
+OLTP
+data warehouse
+data lake
+data pipeline
+streaming
+batch processing
+unit testing
+integration testing
+load testing
+pytest
+JUnit
+Cypress
+Selenium
+Playwright
+Postman
+Swagger
+OpenAPI
+Mockito
+GDPR
+HIPAA
+SOC 2
+PCI DSS
+ISO 27001
+zero trust
+penetration testing
+cryptography
+TLS
+SSL
+SSH
+VPN
+Kerberos
+LDAP
+Active Directory
+Okta
+Auth0
+
+# Misc
+Android
+iOS
+macOS
+Unreal Engine
+ROS
+Arduino
+Raspberry Pi
+FPGA
+Qt
+OpenGL
+Vulkan
+Figma
+Photoshop
+Salesforce
+SAP
+ServiceNow
+Zendesk
+HubSpot
+Stripe
+Twilio
+Shopify
+WordPress
+Magento
+Slack
+Asana
+Trello
+Zapier
+Retool
+Mixpanel
+Amplitude
+Snowplow
+Optimizely
+LaunchDarkly
+Blockchain
+Ethereum
+Web3
+Bitcoin
+IoT
+MQTT
+Bluetooth
+5G
+RPA
+UiPath
+Selenium WebDriver
+Babel
+ESLint
+Prettier
+Maven
+Gradle
+npm
+Yarn
+pnpm
+pip
+Poetry
+uv
+Conda
+CMake
+Bazel
+LLVM
+GCC
+Valgrind
+gdb
+Wireshark
+Express.js
+Spring Framework
+Oracle Database
