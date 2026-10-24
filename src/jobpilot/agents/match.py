@@ -27,6 +27,7 @@ from jobpilot.orchestrator.engine import (
 from jobpilot.orchestrator.state_machine import transition
 from jobpilot.profile.preferences import SearchPreferences
 from jobpilot.util.hashing import canonical_json
+from jobpilot.util.textmatch import has_phrase
 
 PROMPT_VERSION = "match_v1"
 _ACTOR = "job_matcher"
@@ -63,7 +64,7 @@ def location_fit(job_location: str | None, job_mode: str, prefs: SearchPreferenc
     modes = {m.casefold() for m in prefs.work_modes}
     mode = (job_mode or "unknown").casefold()
     loc = (job_location or "").casefold()
-    matches = bool(loc) and any(p.casefold() in loc for p in prefs.locations if p.strip())
+    matches = bool(loc) and any(has_phrase(loc, p.strip()) for p in prefs.locations if p.strip())
     if mode in modes and (matches or mode == "remote"):
         return 100.0
     if not loc or (matches and mode == "unknown"):
@@ -77,10 +78,6 @@ def experience_fit(min_years: float | None, candidate_years: float) -> float:
     return max(0.0, 100.0 - 25.0 * (min_years - candidate_years))
 
 
-def _has_word(text: str, kw: str) -> bool:
-    return re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", text, re.IGNORECASE) is not None
-
-
 def hard_filters(job: dict, req: JobRequirements, prefs: SearchPreferences, *,
                  candidate_years: float) -> list[str]:
     reasons: list[str] = []
@@ -88,7 +85,7 @@ def hard_filters(job: dict, req: JobRequirements, prefs: SearchPreferences, *,
     if location_fit(job.get("location") or req.location, mode, prefs) == 0:
         reasons.append("location")
     text = f"{job.get('title') or ''}\n{req.summary}"
-    if any(kw.strip() and _has_word(text, kw.strip()) for kw in prefs.exclude_keywords):
+    if any(kw.strip() and has_phrase(text, kw.strip()) for kw in prefs.exclude_keywords):
         reasons.append("excluded_keyword")
     if req.seniority in _REJECT_SENIORITY:
         reasons.append("seniority")

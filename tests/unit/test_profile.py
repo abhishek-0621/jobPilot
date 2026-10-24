@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
@@ -16,6 +16,7 @@ from jobpilot.data.tables import (
     AnswerLibraryRow,
     ApplicationRow,
     AuditEventRow,
+    CandidateProfileRow,
     FormFieldAnswerRow,
 )
 from jobpilot.profile.importer import (
@@ -166,3 +167,37 @@ def test_cli_profile_import_missing_file(tmp_path: Path) -> None:
     res = CliRunner().invoke(cli.app, ["profile", "import", "--path",
                                         str(tmp_path / "nope.yaml"), "--config-dir", str(cfg)])
     assert res.exit_code == 1 and "not found" in res.output
+
+
+def _years_for(db_session: Session, ranges: list[list[str]], now: datetime) -> float:
+    import_profile(db_session, load_profile_file(FIXTURE))
+    version = db_session.execute(select(func.max(CandidateProfileRow.version))).scalar()
+    row = db_session.get(CandidateProfileRow, ("default", version))
+    prefs = json.loads(row.preferences_json)
+    prefs["experience_ranges"] = ranges
+    row.preferences_json = json.dumps(prefs)
+    db_session.flush()
+    return candidate_years(db_session, now)
+
+
+def test_import_stores_experience_ranges(db_session: Session) -> None:
+    import_profile(db_session, load_profile_file(FIXTURE))
+    row = db_session.get(CandidateProfileRow, ("default", 1))
+    assert json.loads(row.preferences_json)["experience_ranges"] == [["2023-01", "present"]]
+
+
+def test_candidate_years_sums_non_overlapping_roles(db_session: Session) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    ranges = [["2018-01", "2020-01"], ["2023-01", "present"]]
+    assert _years_for(db_session, ranges, now) == 5.0
+
+
+def test_candidate_years_merges_overlapping_roles(db_session: Session) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    ranges = [["2020-01", "2022-01"], ["2021-01", "2023-01"], ["2024-01", "present"]]
+    assert _years_for(db_session, ranges, now) == 5.0
+
+
+def test_candidate_years_malformed_dates_raise_value_error(db_session: Session) -> None:
+    with pytest.raises(ValueError):
+        _years_for(db_session, [["soon", "present"]], datetime(2026, 1, 1, tzinfo=UTC))

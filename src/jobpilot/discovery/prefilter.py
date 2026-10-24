@@ -1,17 +1,12 @@
 """Deterministic, model-free prefilter applied to raw postings before storage."""
 
-import re
-
 from jobpilot.discovery.normalize import html_to_text, normalize_title
 from jobpilot.discovery.sources.base import RawPosting
 from jobpilot.profile.preferences import SearchPreferences
+from jobpilot.util.textmatch import has_phrase
 
 KEYWORDS = ("ai", "ml", "genai", "llm", "machine learning", "rag", "applied scientist")
 _ANYWHERE = ("remote", "anywhere")
-
-
-def _has_word(text: str, phrase: str) -> bool:
-    return re.search(rf"\b{re.escape(phrase.casefold())}\b", text) is not None
 
 
 def _title_ok(title: str, prefs: SearchPreferences) -> bool:
@@ -21,24 +16,24 @@ def _title_ok(title: str, prefs: SearchPreferences) -> bool:
         want = set(normalize_title(target).split())
         if want and want <= tokens:
             return True
-    return any(_has_word(norm, k) for k in KEYWORDS)
+    return any(has_phrase(norm, k) for k in KEYWORDS)
 
 
 def _location_ok(location: str | None, prefs: SearchPreferences) -> bool:
     if location is None:
         return True
     loc = location.casefold()
-    if any(p.casefold() in loc for p in prefs.locations if p.strip()):
+    if any(has_phrase(loc, p.strip()) for p in prefs.locations if p.strip()):
         return True
-    remote = "remote" in (m.casefold() for m in prefs.work_modes)
-    return remote and any(w in loc for w in _ANYWHERE)
+    remote = "remote" in {m.casefold() for m in prefs.work_modes}
+    return remote and any(has_phrase(loc, w) for w in _ANYWHERE)
 
 
 def prefilter(p: RawPosting, prefs: SearchPreferences) -> tuple[bool, str]:
     if prefs.exclude_keywords:
         haystack = f"{p.title}\n{html_to_text(p.description_html)}".casefold()
         for kw in prefs.exclude_keywords:
-            if kw.strip() and _has_word(haystack, kw.strip()):
+            if kw.strip() and has_phrase(haystack, kw.strip()):
                 return False, f"excluded_keyword:{kw.strip()}"
     if not _title_ok(p.title, prefs):
         return False, "title_mismatch"

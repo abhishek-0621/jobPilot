@@ -125,3 +125,34 @@ def test_match_handler_accepts_prefs_provider(db_session: Session) -> None:
     handler = make_match_handler(Provided(lambda: SearchPreferences(min_match_score=50)))
     assert handler(db_session, task, out) == []
     assert db_session.get(JobRow, "job_1").status == JobStatus.MATCHED.value
+
+
+async def test_malformed_profile_dates_reject_match(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    import json
+
+    from jobpilot.agents.match import MatchAgent
+    from jobpilot.data.tables import CandidateProfileRow
+    from jobpilot.orchestrator.engine import AgentContext, OutputRejected, TaskInput
+
+    with factory() as s:
+        import_profile(s, load_profile_file(FIXTURE))
+        verify_fact(s, "fact_exp_001")
+        row = s.get(CandidateProfileRow, ("default", 1))
+        prefs = json.loads(row.preferences_json)
+        prefs["experience_ranges"] = [["garbage", "present"]]
+        row.preferences_json = json.dumps(prefs)
+        s.commit()
+    rt = build_runtime(_cfg(tmp_path), factory, client=_client(), clock=lambda: NOW)
+    inp = TaskInput(task_id="t", kind=TaskKind.MATCH, entity_type="job", entity_id="j",
+                    attempt=1)
+    tools = {**rt.tools, "job_loader": lambda _id: {
+        "requirements": {"job_id": "j", "task_id": "t", "created_at": NOW.isoformat(),
+                         "required_skills": [], "preferred_skills": [],
+                         "experience_min_years": None, "experience_max_years": None,
+                         "seniority": "senior", "work_mode": "hybrid", "location": None,
+                         "role_family": "genai_llm", "summary": "x",
+                         "extraction_confidence": 0.9}}}
+    with pytest.raises(OutputRejected, match="bad_profile_dates"):
+        await MatchAgent().run(inp, AgentContext("t", object(), tools))  # type: ignore[arg-type]

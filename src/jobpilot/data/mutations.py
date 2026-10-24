@@ -73,7 +73,12 @@ def set_application_url(s: Session, application_id: str, url: str, *, actor: str
 
 def set_library_answer(s: Session, question_key: str, value: Any, *,
                        actor: str = "user") -> None:
-    """Upsert (or, for ``None``, delete) an answer on the active profile version."""
+    """Upsert (or, for ``None``, delete) an answer on the active profile version.
+
+    Intentionally does NOT invalidate approvals: an approval binds each application's own
+    copied form answers (FormFieldAnswerRow), not the library, so editing the library
+    only affects applications prepared afterwards.
+    """
     version, _ = active_profile(s)
     row = s.execute(select(AnswerLibraryRow).where(
         AnswerLibraryRow.profile_version == version,

@@ -114,6 +114,8 @@ def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
             "since": pf.current_employment.since,
             "company_start": pf.current_employment.company_start,
         },
+        "experience_ranges": [[str(r.start), str(r.end if r.end is not None else "present")]
+                              for r in pf.experience if r.start is not None],
         "languages": pf.languages,
         "open_questions": pf.open_questions,
     }
@@ -187,12 +189,45 @@ def verified_facts(s: Session) -> list[CandidateFactRow]:
     return [f for f in active_profile(s)[1] if f.verified_by_user]
 
 
+def _month_index(value: str, *, end: bool, now: datetime) -> int:
+    """Months since year 0 for ``YYYY-MM`` / ``YYYY`` / ``present``; ValueError if malformed."""
+    v = value.strip().casefold()
+    if v == "present":
+        return now.year * 12 + now.month
+    parts = v.split("-")
+    if len(parts) == 1:
+        return int(parts[0]) * 12 + (12 if end else 1)
+    if len(parts) != 2:
+        raise ValueError(f"bad date {value!r}")
+    year, month = int(parts[0]), int(parts[1])
+    if not 1 <= month <= 12:
+        raise ValueError(f"bad month in {value!r}")
+    return year * 12 + month
+
+
 def candidate_years(s: Session, now: datetime) -> float:
+    """Total experience in years: union of role ranges, else current_employment.company_start.
+
+    Raises ValueError on a missing or malformed date.
+    """
     version, _ = active_profile(s)
     row = s.get(CandidateProfileRow, (PROFILE_ID, version))
-    start = json.loads(row.preferences_json)["current_employment"].get("company_start") \
-        if row else None
+    prefs = json.loads(row.preferences_json) if row else {}
+    ranges = prefs.get("experience_ranges")
+    if ranges:
+        spans = sorted(
+            (_month_index(str(a), end=False, now=now), _month_index(str(b), end=True, now=now))
+            for a, b in ranges)
+        months, cur_start, cur_end = 0, *spans[0]
+        for a, b in spans[1:]:
+            if a > cur_end:
+                months += max(0, cur_end - cur_start)
+                cur_start, cur_end = a, b
+            else:
+                cur_end = max(cur_end, b)
+        months += max(0, cur_end - cur_start)
+        return round(months / 12, 1)
+    start = (prefs.get("current_employment") or {}).get("company_start")
     if not start:
-        raise ValueError("profile has no current_employment.company_start")
-    year, month = (int(p) for p in start.split("-"))
-    return round(((now.year - year) * 12 + now.month - month) / 12, 1)
+        raise ValueError("profile has no experience ranges or current_employment.company_start")
+    return round((now.year * 12 + now.month - _month_index(str(start), end=False, now=now)) / 12, 1)

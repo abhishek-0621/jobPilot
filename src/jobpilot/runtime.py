@@ -17,7 +17,7 @@ from jobpilot.data.tables import JobRow
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
-from jobpilot.orchestrator.engine import Agent, Handler, Provided, TaskKind
+from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
 from jobpilot.portals.base import PortalAdapter
 from jobpilot.portals.simulated import SimulatedAdapter
 from jobpilot.profile.importer import active_profile, candidate_years, verified_facts
@@ -66,7 +66,11 @@ def make_profile_loader(
             facts = [{"fact_id": f.fact_id, "category": f.category, "value": f.value}
                      for f in verified_facts(s)
                      if f.verified_by_user and f.profile_version == version]
-            return version, facts, candidate_years(s, clock())
+            try:
+                years = candidate_years(s, clock())
+            except ValueError as e:
+                raise OutputRejected("bad_profile_dates") from e
+            return version, facts, years
     return profile_loader
 
 

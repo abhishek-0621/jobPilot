@@ -166,3 +166,20 @@ def test_prefilter_remote_requires_remote_work_mode() -> None:
 def test_raw_posting_json_roundtrip() -> None:
     p = _post("AI Engineer")
     assert RawPosting.model_validate(json.loads(p.model_dump_json())) == p
+
+
+def test_prefilter_location_whole_word_only() -> None:
+    prefs = PREFS.model_copy(update={"locations": ["Pune"]})
+    assert prefilter(_post("LLM Engineer", location="Puneet Nagar"), prefs) == (
+        False, "location_mismatch")
+    assert prefilter(_post("LLM Engineer", location="PUNE, India"), prefs) == (True, "ok")
+
+
+def test_prefilter_excludes_symbol_keywords() -> None:
+    prefs = PREFS.model_copy(update={"exclude_keywords": ["c++", ".net"]})
+    assert prefilter(_post("AI Engineer", desc="<p>Strong C++ skills</p>"), prefs) == (
+        False, "excluded_keyword:c++")
+    assert prefilter(_post("AI Engineer", desc="<p>Experience with .NET core</p>"), prefs) == (
+        False, "excluded_keyword:.net")
+    assert prefilter(_post("AI Engineer", desc="<p>Python and cpp-free</p>"), prefs) == (
+        True, "ok")

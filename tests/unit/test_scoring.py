@@ -65,3 +65,10 @@ def test_hard_filters() -> None:
     assert hard_filters(job, req(experience_min_years=8), PREFS,
                         candidate_years=4.0) == ["experience_gap"]
     assert hard_filters(job, req(experience_min_years=7.9), PREFS, candidate_years=4.0) == []
+
+
+def test_location_fit_matches_whole_words_only() -> None:
+    pune = SearchPreferences(locations=["Pune"], work_modes=["hybrid"])
+    assert location_fit("Puneet Nagar", "hybrid", pune) == 0
+    assert location_fit("PUNE, India", "hybrid", pune) == 100
+    assert location_fit("Hybrid (Pune)", "hybrid", pune) == 100
