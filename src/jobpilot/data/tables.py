@@ -239,3 +239,10 @@ class AuditEventRow(Base):
     evidence_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class ControlFlagRow(Base):
+    __tablename__ = "control_flag"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = _ts(default=utcnow)

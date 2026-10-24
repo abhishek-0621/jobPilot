@@ -34,7 +34,7 @@ class SimulatedAdapter(PortalAdapter):
         form: FormSnapshot | None = None,
     ) -> None:
         self.fail_mode = fail_mode
-        self.form = form or _DEFAULT_FORM
+        self.form = (form or _DEFAULT_FORM).model_copy(deep=True)
         self.submit_calls: int = 0
         self.submissions: dict[str, SubmitResult] = {}
         self._filled: list[str] = []
@@ -81,6 +81,7 @@ class SimulatedAdapter(PortalAdapter):
         if self.fail_mode == "timeout":
             raise asyncio.TimeoutError
         now = datetime.now(UTC)
+        short = key.split(":", 1)[-1][:8]
         uncertain = self.fail_mode == "no_confirmation"
         result = SubmitResult(
             task_id=key,
@@ -92,8 +93,8 @@ class SimulatedAdapter(PortalAdapter):
                 else ApplicationStatus.CONFIRMED
             ),
             submitted_at=now,
-            confirmation_reference=None if uncertain else f"SIM-{key[:8]}",
-            evidence_url=None if uncertain else f"simulated://confirmation/{key[:8]}",
+            confirmation_reference=None if uncertain else f"SIM-{short}",
+            evidence_url=None if uncertain else f"simulated://confirmation/{short}",
             retry_allowed=False,
             next_action="check_application_history" if uncertain else "none",
         )

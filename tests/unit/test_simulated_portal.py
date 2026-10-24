@@ -59,3 +59,14 @@ async def test_capabilities_exclude_outreach_and_idempotency_key_stable() -> Non
 async def test_validate_requires_filled_fields() -> None:
     adapter = SimulatedAdapter()
     assert (await adapter.validate_form()).ok is False
+
+
+async def test_reference_uses_hex_after_prefix_and_form_is_per_instance() -> None:
+    app = _app()
+    result = await SimulatedAdapter().submit(app)
+    hex8 = app.idempotency_key.split(":", 1)[-1][:8]
+    assert result.confirmation_reference == f"SIM-{hex8}"
+    assert result.evidence_url == f"simulated://confirmation/{hex8}"
+    a, b = SimulatedAdapter(), SimulatedAdapter()
+    a.form.fields.pop()
+    assert len(b.form.fields) == 3

@@ -196,6 +196,22 @@ class ApprovalService:
                        actor="system", reason=reason)
         self.session.flush()
 
+    def active_approval_for(self, application_id: str) -> ApprovalRow | None:
+        approvals = self._approvals_containing(application_id)
+        return approvals[0] if approvals else None
+
+    def active_outreach_approval_for(self, outreach_id: str) -> ApprovalRow | None:
+        rows = self.session.execute(
+            select(ApprovalRow).where(
+                ApprovalRow.kind == ApprovalKind.OUTREACH.value,
+                ApprovalRow.revoked_at.is_(None),
+            ).order_by(ApprovalRow.approved_at.desc(), ApprovalRow.approval_id.desc())
+        ).scalars()
+        for r in rows:
+            if outreach_id in json.loads(r.approved_item_ids_json):
+                return r
+        return None
+
     def current_item_hash(self, application_id: str) -> str | None:
         approvals = self._approvals_containing(application_id)
         if not approvals:
