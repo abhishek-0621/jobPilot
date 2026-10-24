@@ -32,3 +32,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # Starlette TestClient nags about httpx2; httpx is the project-wide client.
+    "ignore:Using `httpx` with `starlette.testclient`",
+]
