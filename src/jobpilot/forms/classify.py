@@ -32,6 +32,9 @@ _DECLARATION = (
     "please sign",
     "read and understood",
     "have read",
+    "initial here",
+    "please initial",
+    "date signed",
 )
 _BACKGROUND = (
     "criminal record",
@@ -52,10 +55,21 @@ _BACKGROUND = (
     "noncompete",
     "non solicit",
     "nonsolicit",
+    "arrested",
+    "criminal charge",
+    "pending charge",
+    "former employee",
+    "previously employed by",
+    "terminated",
+    "dismissed",
+    "asked to resign",
+    "restrictive covenant",
+    "politically exposed",
 )
 _BACKGROUND_RE = (
     re.compile(
-        r"\b(?:relatives?|family members?)\s+(?:\w+\s+)?(?:working|employed)\s+(?:at|for|by|with)\b"
+        r"\b(?:relatives?|family members?)\s+(?:\w+\s+)?"
+        r"(?:work|worked|works|working|employed)\s+(?:at|for|by|with)\b"
     ),
     re.compile(r"\brelated to (?:anyone|anybody|any)\b"),
     re.compile(r"\bemployed (?:by|with) (?:a |the |any )?(?:\w+\s+)?government\b"),

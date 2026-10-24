@@ -82,6 +82,21 @@ POSITIVES = [
     ("I have read and understood the above", "declaration"),
     ("Do you have any physical or mental impairment?", "demographic"),
     ("Any medical condition we should know about?", "demographic"),
+    ("Have you ever been arrested?", "background"),
+    ("Do you have any pending charge?", "background"),
+    ("Have you faced a criminal charge?", "background"),
+    ("Has a family member worked at this company?", "background"),
+    ("Do any relatives work for us?", "background"),
+    ("Are you a former employee?", "background"),
+    ("Were you previously employed by Example Corp?", "background"),
+    ("Have you ever been terminated?", "background"),
+    ("Have you been dismissed from a job?", "background"),
+    ("Have you been asked to resign?", "background"),
+    ("Are you bound by a restrictive covenant?", "background"),
+    ("Are you a politically exposed person?", "background"),
+    ("Please initial", "declaration"),
+    ("Initial here", "declaration"),
+    ("Date signed", "declaration"),
 ]
 
 NEGATIVES = [
