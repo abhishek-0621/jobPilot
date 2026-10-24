@@ -109,26 +109,25 @@ def test_reimport_invalidates_artifact_citing_changed_fact(
 
 def test_regenerate_revokes_approval(factory: sessionmaker[Session], tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    orch = _orch(factory, cfg)
     with factory() as s:
         app_id = _approved_app(s)
         s.commit()
         assert ApprovalService(s).active_approval_for(app_id) is not None
-        regenerate_documents(s, orch, app_id)
+        regenerate_documents(s, app_id)
         app = s.get(ApplicationRow, app_id)
         assert app is not None and app.status == "DOCUMENTS_PENDING"
         assert ApprovalService(s).active_approval_for(app_id) is None
         assert _tasks(s, app_id) == [("TAILOR", "QUEUED")]
         with pytest.raises(ActionConflict):  # TAILOR already queued
-            regenerate_documents(s, orch, app_id)
+            regenerate_documents(s, app_id)
         s.rollback()
         done = make_app_row(s, status="SUBMITTED")
         s.commit()
         with pytest.raises(ActionConflict):
-            regenerate_documents(s, orch, done.application_id)
+            regenerate_documents(s, done.application_id)
         s.rollback()
         with pytest.raises(LookupError):
-            regenerate_documents(s, orch, "nope")
+            regenerate_documents(s, "nope")
     client = _client(factory, cfg)
     with factory() as s:
         fip = make_app_row(s, status="FORM_IN_PROGRESS").application_id

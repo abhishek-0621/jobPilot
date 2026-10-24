@@ -75,6 +75,14 @@ def compose(paragraphs: list[str], full_name: str) -> str:
     return f"{GREETING}\n\n{body}\n\n{CLOSING}\n{full_name}"
 
 
+def _mask(paragraph: str, company: str, role: str) -> str:
+    """Replace exact (case-insensitive) company/role occurrences, longest first."""
+    for text, token in sorted(((company, "the employer"), (role, "the position")),
+                              key=lambda t: -len(t[0])):
+        paragraph = re.sub(re.escape(text), token, paragraph, flags=re.IGNORECASE)
+    return paragraph
+
+
 def _violations(raw: _CoverLLM, verified: dict[str, str], company: str, role: str,
                 full_name: str, banned: list[str], others: list[str], skills: list[str],
                 terms: set[str]) -> list[str]:
@@ -87,9 +95,12 @@ def _violations(raw: _CoverLLM, verified: dict[str, str], company: str, role: st
         codes.append("empty_paragraph")
     codes += validate_cover_letter(compose(paragraphs, full_name), company, role, banned,
                                    others)
-    source = " ".join(verified[i] for i in ids if i in verified) + f" {company} {role}"
+    # The job's company/role strings are untrusted: they never widen the source text. Their
+    # exact occurrences are masked so a number or proper noun inside them cannot pass.
+    source = " ".join(verified[i] for i in ids if i in verified)
     allowed = set(skills) | _LETTER_WORDS
     for n, p in enumerate(paragraphs):
+        p = _mask(p, company, role)
         # Paragraph length is governed by the word limit, not the per-bullet ratio.
         codes += [f"p{n + 1}:{c}" for c in validate_rewrite(source, p, allowed, terms)
                   if c != "length"]
@@ -138,7 +149,7 @@ class CoverLetterAgent:
         others = list(app.get("other_companies") or [])
 
         base_instructions = (
-            f"Write a cover letter for the role \"{role}\" at the company \"{company}\".\n"
+            "Write a cover letter for the role and company given in the untrusted job block.\n"
             f"Candidate facts (verified): {canonical_json(evidence_facts)}\n"
             f"Verified skills: {canonical_json(skills)}\n"
             f"Preferred evidence fact_ids (used in the tailored resume): "

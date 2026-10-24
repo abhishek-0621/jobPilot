@@ -325,22 +325,29 @@ def test_tailor_handler_rejects_path_outside_storage(
         make_tailor_handler(cfg.storage_path)(s, task, plan)
 
 
-async def test_tailor_used_ids_include_summary_sources_after_fit_drop(
+async def test_tailor_summary_revalidated_after_fit_drop(
     factory: sessionmaker[Session], cfg: AppConfig, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed(factory)
+    calls: list[str] = []
 
     async def fit(doc: ResumeDoc, out: Path) -> tuple[ResumeDoc, list[str]]:
+        calls.append(doc.summary)
         doc = doc.model_copy(deep=True)
-        doc.projects = []
-        out.write_bytes(b"%PDF-fake")
-        return doc, ["fact_proj_001"]
+        dropped: list[str] = []
+        if len(calls) == 1:  # first fit drops the project bullet the summary cited
+            doc.projects = []
+            dropped = ["fact_proj_001"]
+        out.write_bytes(b"%PDF-fake " + doc.summary.encode())
+        return doc, dropped
 
     monkeypatch.setattr(tailor_mod, "fit_one_page", fit)
     monkeypatch.setattr(tailor_mod, "render_resume_docx", lambda d, o: o.write_bytes(b"d"))
     out = await run_agent(factory, cfg, FakeGateway())
-    assert out.summary == CANNED["summary"]
-    assert "fact_proj_001" in out.dropped_fact_ids and "fact_proj_001" in out.used_fact_ids
+    assert out.summary == "AI Engineer. 4+ years; Python, RAG."
+    assert len(calls) == 2 and calls[1] == out.summary  # re-rendered with the fallback
+    assert "fact_proj_001" in out.dropped_fact_ids and "fact_proj_001" not in out.used_fact_ids
+    assert Path(out.pdf_path).read_bytes().endswith(out.summary.encode())
 
 
 def test_skill_group_name_comes_from_fact_field() -> None:

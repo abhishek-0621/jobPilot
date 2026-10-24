@@ -228,13 +228,25 @@ class TailorAgent:
         pdf_path = out_dir / f"resume_v{n}.pdf"
         docx_path = out_dir / f"resume_v{n}.docx"
         fitted, fit_dropped = await fit_one_page(tailored, pdf_path)
+        if summary_ids:  # re-validate the summary against the bullets that survived the fit
+            survivors = _bullet_ids(fitted)
+            if validate_rewrite(" ".join(verified[f] for f in survivors), summary, allowed,
+                                terms):
+                summary_ids = []
+                summary = fallback_summary(base.headline, years,
+                                           list(req.get("required_skills") or []), skills)
+                fitted = fitted.model_copy(update={"summary": summary})
+                fitted, more = await fit_one_page(fitted, pdf_path)
+                fit_dropped = fit_dropped + more
+            else:
+                summary_ids = survivors
         render_resume_docx(fitted, docx_path)
 
         kept = set(_bullet_ids(fitted))
         dropped = [f for f in _bullet_ids(base) if f not in kept]
         used = _bullet_ids(fitted) + [e.fact_id for e in pf.education if e.fact_id in verified]
         used += [f["fact_id"] for f in facts if f["category"] == "skill"]
-        used += summary_ids  # the summary was validated against these (pre-fit) bullets
+        used += summary_ids  # the summary was validated against these surviving bullets
         diff = bullet_diff(base, fitted, set(rejected), set(dropped))
         return TailoringPlan(
             task_id=ctx.task_id, created_at=datetime.now(UTC),
@@ -274,16 +286,18 @@ def make_tailor_handler(storage_path: Path) -> Handler:
         diff_path.write_text(canonical_json([r.model_dump(mode="json") for r in out.diff]),
                              encoding="utf-8")
         ids = out.used_fact_ids
-        pdf_row = store.write_artifact(s, app.application_id, "resume", pdf, ids,
-                                       root=storage_path,
-                                       profile_version=out.profile_version)
-        store.write_artifact(s, app.application_id, "resume_docx", docx, ids,
-                             root=storage_path,
-                             profile_version=out.profile_version)
-        store.write_artifact(s, app.application_id, "resume_diff", diff_path, ids,
-                             root=storage_path,
-                             profile_version=out.profile_version)
-        mutations.set_artifact(s, app.application_id, "resume", pdf_row.artifact_id,
-                               actor=_ACTOR)
+        try:  # the diff file must exist to be hashed; don't leave it behind on failure
+            pdf_row = store.write_artifact(s, app.application_id, "resume", pdf, ids,
+                                           root=storage_path,
+                                           profile_version=out.profile_version)
+            store.write_artifact(s, app.application_id, "resume_docx", docx, ids,
+                                 root=storage_path, profile_version=out.profile_version)
+            store.write_artifact(s, app.application_id, "resume_diff", diff_path, ids,
+                                 root=storage_path, profile_version=out.profile_version)
+            mutations.set_artifact(s, app.application_id, "resume", pdf_row.artifact_id,
+                                   actor=_ACTOR)
+        except BaseException:
+            diff_path.unlink(missing_ok=True)
+            raise
         return [(TaskKind.COVER_LETTER, "application", app.application_id)]
     return tailor_handler

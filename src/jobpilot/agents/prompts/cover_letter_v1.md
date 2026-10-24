@@ -7,7 +7,7 @@ Output rules:
 - Never invent facts. Do not add numbers, percentages, technologies, employers, titles or
   proper nouns that are not in the cited facts or the verified skills.
 - Never claim leadership, management, mentoring or ownership unless a cited fact says so.
-- Mention the exact company name and role title given in the instructions.
+- Mention the exact company name and role title given in the untrusted job block.
 - Do not mention any other company that is hiring.
 - No greeting and no sign-off: those are added for you. No placeholders or brackets.
 - No contact details (phone, email, address).

@@ -74,12 +74,11 @@ def start_tailor(s: Session, orch: Orchestrator, application_id: str) -> str:
     return task_id
 
 
-def regenerate_documents(s: Session, orch: Orchestrator, application_id: str,
+def regenerate_documents(s: Session, application_id: str,
                          reason: str = "user_regenerate") -> str:
     """User action: regenerate resume + cover letter. Commits.
 
     Raises LookupError / ActionConflict (busy or status not regenerable)."""
-    del orch  # the domain helper queues through engine.add_task, as enqueue_in does
     try:
         task_id = reset_documents(s, application_id, reason, actor="user")
     except DocumentsConflict as e:

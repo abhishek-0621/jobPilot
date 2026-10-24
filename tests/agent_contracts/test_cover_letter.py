@@ -297,3 +297,29 @@ async def test_cover_letter_with_stale_versions_requeues_tailor(
         assert app is not None and app.status == "DOCUMENTS_PENDING"
         assert app.cover_letter_artifact_id is None
         assert [a.type for a in s.execute(select(DocumentArtifactRow)).scalars()] == ["resume"]
+
+
+def _retitle(factory: sessionmaker[Session], title: str) -> None:  # noqa: F811
+    with factory() as s:
+        job = s.get(JobRow, "job_1")
+        assert job is not None
+        job.title = title
+        s.commit()
+
+
+async def test_cover_letter_job_title_numbers_do_not_widen_source(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    _retitle(factory, "Lead of 40-person team")
+    p1 = "I am applying for the Lead of 40-person team role at Example AI."
+    bad = {**GOOD, "paragraphs": [p1, "I worked with a 40-person team on a retrieval pipeline."]}
+    gw = SeqGateway(bad)
+    with pytest.raises(OutputRejected, match="cover_letter_invalid"):
+        await run_agent(factory, cfg, gw)
+    system = gw.calls[0]["messages"][0]["content"]
+    trusted = gw.calls[0]["messages"][1]["content"].split("<untrusted_content>")[0]
+    assert "Lead of 40-person team" not in trusted + system
+    good = {**GOOD, "paragraphs": [p1, GOOD["paragraphs"][1]]}
+    ok = await run_agent(factory, cfg, SeqGateway(good))
+    assert ok.role == "Lead of 40-person team"

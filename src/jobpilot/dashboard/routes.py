@@ -308,9 +308,9 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
 
 
 @router.post("/ui/applications/{application_id}/regenerate", response_class=HTMLResponse)
-def regenerate_ui(request: Request, application_id: str, s: Db, orch: Orch) -> HTMLResponse:
+def regenerate_ui(request: Request, application_id: str, s: Db) -> HTMLResponse:
     try:
-        regenerate_documents(s, orch, application_id)
+        regenerate_documents(s, application_id)
     except LookupError as e:
         return _message(request, str(e), 404)
     except ActionConflict as e:
