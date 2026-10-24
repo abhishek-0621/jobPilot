@@ -120,3 +120,45 @@ def migrate(config_dir: ConfigDir = Path("config")) -> None:
     cfg = load_config(config_dir)
     _migrate(cfg)
     typer.echo(f"Database at {cfg.db_path} is at head.")
+
+
+profile_app = typer.Typer(help="Candidate profile commands.", no_args_is_help=True)
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command("import")
+def profile_import(
+    path: Annotated[Path, typer.Option(help="Profile YAML to import")] = Path(
+        "storage/profiles/profile.yaml"),
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Import the profile YAML as a new version. Prints counts only, never values."""
+    from jobpilot.profile.importer import active_profile, import_profile
+    from jobpilot.profile.schema import load_profile_file
+
+    if not path.exists():
+        typer.echo(f"Profile file not found: {path}. Create it (see "
+                   "tests/fixtures/profile_example.yaml for the layout) or pass --path.")
+        raise typer.Exit(1)
+    cfg = load_config(config_dir)
+    _migrate(cfg)
+    pf = load_profile_file(path)
+    engine = make_engine(cfg.db_path)
+    try:
+        with make_session_factory(engine)() as s:
+            version = import_profile(s, pf)
+            facts = active_profile(s)[1]
+            s.commit()
+    finally:
+        engine.dispose()
+    counts: dict[str, int] = {}
+    for f in facts:
+        counts[f.category] = counts.get(f.category, 0) + 1
+    typer.echo(f"Imported profile version {version}")
+    for cat in sorted(counts):
+        typer.echo(f"  {cat}: {counts[cat]}")
+    typer.echo(f"  verified (carried over): {sum(f.verified_by_user for f in facts)}")
+    if pf.open_questions:
+        typer.echo("Open questions:")
+        for q in pf.open_questions:
+            typer.echo(f"  - {q}")

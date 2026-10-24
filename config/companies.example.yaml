@@ -1,0 +1,5 @@
+# Example company boards. Real lists go in storage/profiles/companies.yaml (git-ignored),
+# which takes precedence over this file.
+companies:
+  - {name: Example AI, source: greenhouse, token: exampleai}
+  - {name: Sample Labs, source: lever, token: samplelabs}
