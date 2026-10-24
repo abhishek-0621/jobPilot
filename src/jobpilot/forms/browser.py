@@ -1,15 +1,18 @@
 """Isolated, headful-by-default Chromium profile per portal with a request allowlist."""
 
+import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from playwright.async_api import Page, Route, async_playwright
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page, Route, WebSocketRoute, async_playwright
 
 from jobpilot.config import AppConfig
 
+_log = logging.getLogger(__name__)
 _VIEWPORT = {"width": 1280, "height": 900}
 _TIMEOUT_MS = 20_000
 _ALWAYS_ALLOWED = ("data:", "blob:")
@@ -30,7 +33,8 @@ class PortalSession:
 
 def host_allowed(host: str, allowed_hosts: set[str]) -> bool:
     host = host.lower().rstrip(".")
-    return any(host == a.lower() or host.endswith("." + a.lower()) for a in allowed_hosts)
+    return bool(host) and any(
+        host == a.lower() or host.endswith("." + a.lower()) for a in allowed_hosts)
 
 
 @asynccontextmanager
@@ -38,6 +42,7 @@ async def portal_page(cfg: AppConfig, portal: str,
                       allowed_hosts: set[str]) -> AsyncIterator[PortalSession]:
     """Persistent per-portal context under storage/browser_state/<portal>; requests to
     hosts outside ``allowed_hosts`` are aborted and recorded in ``blocked``."""
+    allowed_hosts = {h.strip() for h in allowed_hosts if h.strip()}
     user_dir = cfg.browser_state_dir / portal
     user_dir.mkdir(parents=True, exist_ok=True)
     blocked: list[str] = []
@@ -51,15 +56,25 @@ async def portal_page(cfg: AppConfig, portal: str,
             blocked.append(url)
             await route.abort("blockedbyclient")
 
+    async def guard_ws(ws: WebSocketRoute) -> None:
+        if host_allowed(urlsplit(ws.url).hostname or "", allowed_hosts):
+            ws.connect_to_server()
+        else:
+            blocked.append(ws.url)
+            await ws.close()
+
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
-            user_data_dir=str(user_dir), headless=cfg.browser_headless, viewport=_VIEWPORT)
+            user_data_dir=str(user_dir), headless=cfg.browser_headless, viewport=_VIEWPORT,
+            service_workers="block")
         try:
             ctx.set_default_timeout(_TIMEOUT_MS)
             await ctx.route("**/*", guard)
+            await ctx.route_web_socket("**/*", guard_ws)
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             yield PortalSession(page=page, blocked=blocked)
         finally:
+            _log.debug("portal %s: blocked %d requests", portal, len(blocked))
             await ctx.close()
 
 
@@ -71,7 +86,11 @@ async def _visible(page: Page, selector: str) -> bool:
 async def detect_blockers(page: Page) -> list[str]:
     """Any of captcha, login, mfa, bot_check currently present on the page."""
     found: list[str] = []
-    text = await page.evaluate("document.body ? document.body.innerText : ''")
+    await page.wait_for_load_state("domcontentloaded")
+    try:
+        text = await page.evaluate("document.body ? document.body.innerText : ''")
+    except PlaywrightError:
+        text = ""
     if await page.locator(_CAPTCHA_SELECTOR).count():
         found.append("captcha")
     if await _visible(page, "input[type=password]"):

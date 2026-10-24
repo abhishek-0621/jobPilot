@@ -44,3 +44,28 @@ async def test_persistent_context_in_storage(form_server: str, tmp_path: Path) -
         await s.page.goto(f"{form_server}/lever.html")
     state = tmp_path / "storage" / "browser_state" / "lever"
     assert state.is_dir() and any(state.iterdir())
+
+
+async def test_websocket_to_disallowed_host_blocked(form_server: str, tmp_path: Path) -> None:
+    async with portal_page(_cfg(tmp_path), "greenhouse", {"127.0.0.1"}) as s:
+        await s.page.goto(f"{form_server}/websocket.html")
+        await s.page.wait_for_timeout(500)
+        assert s.blocked == ["ws://socket.example.invalid/"]
+
+
+async def test_detect_mfa(form_server: str, tmp_path: Path) -> None:
+    async with portal_page(_cfg(tmp_path), "lever", {"127.0.0.1"}) as s:
+        await s.page.goto(f"{form_server}/mfa.html")
+        assert await detect_blockers(s.page) == ["mfa"]
+
+
+async def test_detect_bot_check(form_server: str, tmp_path: Path) -> None:
+    async with portal_page(_cfg(tmp_path), "lever", {"127.0.0.1"}) as s:
+        await s.page.goto(f"{form_server}/bot_check.html")
+        assert await detect_blockers(s.page) == ["bot_check"]
+
+
+async def test_empty_allowed_host_ignored(form_server: str, tmp_path: Path) -> None:
+    async with portal_page(_cfg(tmp_path), "lever", {"", "127.0.0.1"}) as s:
+        await s.page.goto(f"{form_server}/external.html")
+        assert s.blocked == ["https://tracker.example.invalid/x.png"]
