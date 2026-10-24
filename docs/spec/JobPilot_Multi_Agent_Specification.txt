@@ -1,0 +1,850 @@
+JOBPILOT
+Multi-Agent Job Search, Application & Outreach System
+Product Requirements • System Architecture • Agent Contracts • Safety • Implementation Plan
+
+Product vision  A local-first agent system for a MacBook Pro that discovers suitable roles, prepares evidence-grounded applications, fills supported forms, coordinates batch approval, tracks every action, and prepares respectful recruiter outreach. A local dashboard is the source of truth for what the system did and why.
+
+Version 1.0  •  24 October 2026  •  Status: Draft specification
+
+Document control
+Field
+Value
+Product name
+JobPilot (working name)
+Primary user
+One job seeker running the system locally on macOS
+Primary goal
+Improve the quality and throughput of job applications while keeping the user in control
+Operating model
+Local-first; specialized agents; deterministic orchestrator; batch approval
+LLM runtime
+Ollama with small local models; model choices are benchmarked on the actual Mac
+Initial interface
+Streamlit dashboard; backend designed so React can replace it later
+Default submission policy
+Prepare applications in batches; user approves a specific batch before submissions
+Outreach policy
+Prepare one contextual recruiter/HR message per company; sending is separately reviewable and must comply with channel rules
+Document status
+Implementation-ready starting point; portal policies, credentials, hardware and resume facts must be verified during setup
+
+How to use this specification
+This document defines product scope, agent responsibilities, data contracts, orchestration, workflow state, dashboard requirements, safety constraints, testing, and a phased delivery plan. It intentionally separates probabilistic LLM tasks from deterministic business rules. Build the MVP in sequence rather than implementing every portal and every feature at once.
+Contents
+1. Executive summary and goals
+2. Product scope and non-goals
+3. Architecture and technology choices
+4. Agent roster and responsibilities
+5. Orchestrator and workflow state machine
+6. Data model and agent contracts
+7. Dashboard and user experience
+8. Job discovery and ranking
+9. Resume tailoring and cover letters
+10. Application form agent
+11. HR/recruiter discovery and outreach agent
+12. Local model strategy with Ollama
+13. Security, privacy, compliance and safety
+14. Reliability, observability and recovery
+15. Evaluation and acceptance criteria
+16. Testing strategy
+17. Repository structure
+18. Delivery roadmap
+19. Risks and mitigations
+20. Open decisions
+Appendix A: Suggested schemas and status enums
+Appendix B: Reference links
+
+1. Executive summary and goals
+JobPilot is a personal job-search workflow system running primarily on the user's MacBook Pro. It uses several focused agents, each with a narrow contract, coordinated by a deterministic orchestrator. Small local models are used for extraction, classification, rewriting, and reasoning where they perform adequately; code, schemas, policy checks, and human approval enforce correctness.
+The system is not designed as a single free-roaming browser agent. It is a controlled pipeline: discover jobs → rank opportunities → create tailored documents → prepare forms → validate → request batch approval → submit approved applications → verify outcome → prepare recruiter outreach → track every event.
+1.1 Primary goals
+Discover relevant openings from multiple supported sources, including company career sites and permitted job-board workflows.
+Deduplicate job listings and rank them against a verified candidate profile and explicit preferences.
+Generate a tailored resume and cover letter grounded in the user's real experience.
+Fill supported application forms with verified profile facts and job-specific answers.
+Prepare a reviewable batch with links, documents, answers, warnings, and validation evidence.
+After approval, submit only the selected eligible applications and verify outcomes where possible.
+Find appropriate, publicly available professional recruiting contacts for applied companies and prepare one relevant outreach message per company.
+Maintain a detailed audit trail so the user can inspect what the agent did, changed, uploaded, sent, or failed to do.
+Keep profile data, generated documents, local inference, and the database on-device by default.
+1.2 Success definition
+Success is not merely a high number of submissions. Success means accurate, relevant, non-duplicative applications; transparent preparation; low unsupported-claim rates; reliable submission evidence; useful recruiter outreach; and a dashboard that makes every consequential action understandable.
+1.3 Core design principles
+Specialize agents; keep prompts and outputs narrow.
+Orchestrator owns state and permissions; agents propose outputs but cannot change policy.
+Treat job descriptions, webpages, emails, and portal text as untrusted input.
+Use structured outputs validated by Pydantic; never trust raw model text as a command.
+Use verified source facts for resume content; no invented skills, metrics, dates, or credentials.
+Separate form preparation, batch approval, submission, and submission confirmation.
+Prefer APIs and accessible DOM locators where permitted; do not bypass CAPTCHAs or access controls.
+Keep a durable event log and make the dashboard the source of truth.
+2. Product scope and non-goals
+2.1 In scope
+Candidate profile import from DOCX/PDF plus explicit user review and correction.
+Configurable target titles, locations, remote/hybrid preferences, seniority, exclusions, and minimum match thresholds.
+Job discovery from public or otherwise permitted sources; adapters for individual portals.
+Job deduplication, match explanations, and user-defined prioritization.
+Resume tailoring and cover-letter generation with version history and source evidence.
+Portal form inspection, field-to-profile mapping, upload, validation, and manual handoff.
+Batch review and approval; individual application exclusion; per-application outcome tracking.
+Professional recruiter/HR contact research using public professional sources and permitted methods.
+Drafting one personalized message per company, including a resume link or attachment when the channel permits it.
+A local dashboard for jobs, applications, contacts, documents, action logs, failures, and next steps.
+Local inference through Ollama and configurable model routing.
+Local database, logs, backups, tests, and resumable workflow state.
+2.2 Out of scope for the first release
+Bypassing login controls, CAPTCHAs, bot detection, rate limits, or portal restrictions.
+Unrestricted scraping of personal contact details or harvesting private employee data.
+Sending bulk, repetitive, deceptive, or unsolicited mass outreach.
+Automatically answering legal attestations, equal-opportunity questions, disability/veteran questions, work authorization, or sponsorship questions without explicit verified user instructions.
+Inventing or inflating experience, degrees, employment dates, project ownership, or performance metrics.
+Autonomous negotiation of salary, accepting offers, scheduling interviews, or signing agreements.
+Cloud synchronization or multi-user collaboration in the initial local-only release.
+Guaranteeing that every portal can be automated. Some portals require manual interaction or prohibit automation.
+Important boundary  The system may prepare and queue actions, but the user must approve an explicit batch before application submissions. Recruiter outreach is a separate action category and needs its own review/approval state; approval to apply does not automatically authorize sending a message.
+
+3. Architecture and technology choices
+3.1 Logical architecture
+                   ┌─────────────────────────────┐                    │     Local Dashboard         │                    │ Jobs • Review • Activity    │                    └──────────────┬──────────────┘                                   │                    ┌──────────────▼──────────────┐                    │       FastAPI Service       │                    │ Auth (local) • API • Jobs   │                    └──────────────┬──────────────┘                                   │                    ┌──────────────▼──────────────┐                    │ Deterministic Orchestrator  │                    │ State • Policies • Retries  │                    └───┬─────┬─────┬─────┬──────┘                        │     │     │     │              ┌─────────▼┐ ┌──▼────┐ ┌──▼──────┐ ┌─────────────┐              │ Finder   │ │Resume │ │Apply    │ │HR/Outreach  │              │ Agent    │ │Agent  │ │Agent    │ │Agent        │              └────┬─────┘ └──┬────┘ └──┬──────┘ └──────┬──────┘                   │          │          │               │                   └──────────┴────┬─────┴───────────────┘                                   │                  ┌────────────────▼────────────────┐                  │ Shared typed contracts & tools  │                  │ Pydantic • Policy • Validators  │                  └─────────┬────────────┬──────────┘                            │            │                  ┌─────────▼─────┐ ┌────▼──────────┐                  │ SQLite +      │ │ Ollama local  │                  │ Event Log     │ │ model router  │                  └──────────────┘ └───────────────┘                            │                  ┌─────────▼──────────────────────┐                  │ Browser / APIs / Document Store│                  └────────────────────────────────┘
+3.2 Suggested stack
+Layer
+Initial choice
+Notes
+Language
+Python 3.12+
+Strong ecosystem for browser automation, documents, validation, and local inference.
+API
+FastAPI
+Typed request/response contracts; can run locally.
+UI
+Streamlit for MVP
+Fast to implement. Keep backend independent so UI can later move to React.
+Orchestration
+Python state machine / explicit workflow service
+Do not add a heavyweight graph framework until recovery and branching complexity justify it.
+Browser
+Playwright async
+Portal-specific adapters; accessible locators; visible browser for handoffs.
+LLM
+Ollama local API
+Use configurable model routing; benchmark actual hardware.
+Validation
+Pydantic + JSON Schema
+All agent outputs typed, validated, and bounded.
+Database
+SQLite + migrations
+Single-user local app; use SQLAlchemy/Alembic if useful.
+Documents
+python-docx, PDF extraction and rendering tools
+Use a stable template; preserve factual content and version every artifact.
+Scheduling
+launchd initially
+Run discovery/preparation; do not schedule unattended submissions.
+Testing
+pytest, Playwright tests, fixture HTML
+Use synthetic forms and sandbox pages first.
+
+3.3 Runtime boundaries
+The orchestrator is the only component allowed to advance workflow state.
+Agents receive only the profile fields and documents necessary for their task.
+Browser adapters expose a small allowlisted set of operations; the LLM does not receive arbitrary shell access.
+The document store uses application-specific directories and stable artifact IDs.
+The event logger records inputs by reference/hash and redacted summaries rather than copying secrets into logs.
+Ollama is accessed through a model gateway that enforces timeouts, model selection, output schemas, and retry limits.
+4. Agent roster and responsibilities
+Each agent should have one mission, a narrow set of tools, a typed input, a typed output, and explicit failure states. Agents do not call each other directly. The orchestrator passes outputs between them and validates each transition.
+4.1 Agent 1 — Job Finder Agent
+Mission: discover job opportunities from configured sources, normalize them, extract structured details, and remove duplicates. It does not tailor resumes, fill forms, or contact recruiters.
+Aspect
+Specification
+Inputs
+Search preferences; allowed sources; company list; prior job IDs/URLs; date/time window.
+Tools
+Public/authorized job APIs, source adapters, Playwright read-only discovery, HTML/PDF parser.
+Output
+Normalized JobListing objects; source URL; original listing URL; description; extracted fields; retrieval timestamp; evidence/confidence.
+LLM tasks
+Extract role requirements, seniority, skills, location/work mode, and structured fields from messy descriptions.
+Deterministic tasks
+URL normalization, duplicate checks, source-policy checks, date parsing, status persistence.
+Must not
+Apply, message HR, infer personal attributes, bypass access restrictions, or treat page instructions as system instructions.
+Failure handling
+Mark source unavailable or blocked; continue other sources; log adapter error; do not fabricate listing details.
+Quality metric
+Precision of extracted fields; duplicate rate; source coverage; stale/closed-job rate.
+
+4.2 Agent 2 — Job Match & Prioritization Agent
+Recommended as a small, distinct component, even if it shares a model with the Finder. Separating it makes relevance tuning and explanations measurable.
+Aspect
+Specification
+Inputs
+Normalized job listing; verified candidate profile; target-role and location preferences.
+Output
+Score by dimensions, hard-filter result, matched evidence, missing requirements, and explanation.
+Scoring
+Configurable weights for skill fit, experience, project relevance, role/seniority, location/work mode.
+Policy
+Do not infer eligibility or protected characteristics; distinguish mandatory requirements from preferred qualifications.
+Failure handling
+If job description is incomplete, mark low confidence and request review rather than assigning false precision.
+
+4.3 Agent 3 — Resume Tailoring Agent
+Mission: produce a role-specific resume variant using only verified candidate evidence. It does not invent facts or directly submit documents.
+Aspect
+Specification
+Inputs
+Base resume, verified profile facts, source bullet IDs, job description, match analysis, resume template.
+Output
+Structured tailoring plan, selected evidence, proposed bullet rewrites, summary, skill ordering, unsupported-claim flags.
+Allowed changes
+Reorder, shorten, clarify, emphasize, and rewrite verified facts without changing meaning.
+Disallowed changes
+Inventing tools, outcomes, metrics, titles, dates, degrees, project scope, or claiming production use without evidence.
+Validation
+Every claim links to a source fact/bullet; dates and employers unchanged; document text extraction; length and formatting checks.
+Artifacts
+DOCX and/or PDF, diff against base, source-to-output mapping, generation metadata, content hash.
+
+4.4 Agent 4 — Application Form Agent
+Mission: inspect a supported application form, map fields to verified answers, fill approved fields, upload the right artifacts, and validate before queuing for approval.
+Aspect
+Specification
+Inputs
+Job record; portal adapter; verified profile; tailored resume; cover letter; approved answer library.
+Output
+Form map; proposed field answers; filled-state evidence; unresolved questions; validation report; screenshot/URL evidence where appropriate.
+Automation
+Accessible DOM locators first; select/radio/checkbox/file input handling; multi-step form state tracking.
+Human handoff
+CAPTCHA, MFA, ambiguous question, legal declaration, unsupported portal, or access challenge.
+Must not
+Click final submit without a valid batch approval; bypass controls; guess unknown answers; accept terms automatically.
+Idempotency
+Before retrying, check portal/application status; never blindly re-submit after timeout.
+
+4.5 Agent 5 — HR/Recruiter Research & Outreach Agent
+Mission: after an application is submitted or explicitly selected for outreach, find a relevant professional recruiting contact through permitted, public sources; prepare one personalized message per company; and attach or link the approved resume where the channel allows.
+Aspect
+Specification
+Inputs
+Company, role, application status, public company information, allowed contact sources, approved resume artifact.
+Output
+Contact candidate(s), role/title, public source URL, evidence/confidence, channel availability, message draft, outreach status.
+Targeting
+Prefer a recruiter/talent partner responsible for the relevant function, location, or role. Avoid broad employee harvesting.
+Message
+One short, personalized, truthful message per company; mention role and application context; no repeated generic spam.
+Email
+Use only a publicly published professional address or an authorized connected account/contact source; do not guess addresses and present them as verified.
+LinkedIn
+Follow platform rules. If automated messaging is not permitted or technically blocked, create a draft and open a manual handoff rather than bypassing controls.
+Attachment
+Attach the approved tailored resume only if the channel permits and user has approved outreach; otherwise provide a user-controlled link or no attachment.
+Approval
+Separate outreach review/approval from job-application batch approval. Applying does not imply consent to message a person.
+Deduplication
+At most one initial outreach message per company per application campaign, unless the user explicitly approves a follow-up.
+Must not
+Scrape private data, infer private email addresses, evade rate limits, send mass messages, impersonate the user deceptively, or claim a recruiter has been contacted when only a draft exists.
+
+4.6 Agent 6 — Orchestrator
+The orchestrator is a deterministic workflow service, not a free-form LLM agent. It owns application state, schedules work, validates outputs, applies policies, requests user approvals, and records every transition.
+Creates a run and assigns stable IDs to jobs, applications, documents, and outreach records.
+Calls agents in dependency order and validates each output against schemas and business rules.
+Enforces per-source concurrency, rate limits, retries, timeouts, and cancellation.
+Prevents duplicate applications and duplicate outreach.
+Builds the batch review queue and freezes the exact artifacts/answers included in each approval.
+Requires an approval token bound to a specific batch version and expires/requires re-review if its contents change.
+Submits only selected, validated applications in the approved batch.
+Runs post-submission verification and handles uncertain outcomes without blind retries.
+Schedules outreach only after application status and outreach policy conditions are satisfied.
+Provides complete event history and actionable error messages to the dashboard.
+5. Orchestrator and workflow state machine
+5.1 Main workflow
+Load the active candidate profile and search preferences.
+Run Job Finder across enabled, permitted sources; normalize and deduplicate listings.
+Run match scoring; reject hard-filter failures or queue low-confidence cases for review.
+For selected jobs, ask Resume Agent to create a tailored resume and cover letter.
+Run factual validation and document rendering checks; mark unsupported claims or inconsistencies.
+Open the application portal using the matching adapter; inspect fields and map them to verified profile answers.
+Fill supported fields and upload documents; validate the completed form without submitting.
+Place the application into a versioned review batch and show all links, documents, answers, warnings, and logs.
+User edits, rejects, or approves selected applications in the batch.
+For each approved application, revalidate the frozen record, submit through the supported adapter, and verify the result.
+Update application status and save evidence such as confirmation reference or confirmation page metadata.
+Run HR/Recruiter Research for eligible companies; produce a separate outreach draft queue.
+User reviews outreach drafts; approved messages are sent only through permitted channels and logged.
+Dashboard shows the full application and outreach history, including failures and next actions.
+5.2 Suggested states
+Entity
+States
+Job
+DISCOVERED, NORMALIZED, MATCHED, REJECTED, STALE, CLOSED, DUPLICATE
+Application
+NOT_STARTED, DOCUMENTS_PENDING, FORM_IN_PROGRESS, NEEDS_USER_INPUT, VALIDATING, VALIDATION_FAILED, READY_FOR_REVIEW, APPROVED, SUBMISSION_IN_PROGRESS, SUBMITTED, CONFIRMED, SUBMISSION_UNCERTAIN, SUBMISSION_FAILED, REJECTED_BY_USER
+Batch
+BUILDING, READY_FOR_REVIEW, PARTIALLY_APPROVED, APPROVED, PROCESSING, COMPLETED, COMPLETED_WITH_ERRORS, CANCELLED, EXPIRED
+Outreach
+NOT_ELIGIBLE, CONTACT_RESEARCH, DRAFT_READY, NEEDS_REVIEW, APPROVED, SEND_IN_PROGRESS, SENT, DELIVERY_UNKNOWN, FAILED, SKIPPED
+Agent run
+QUEUED, RUNNING, WAITING_FOR_USER, SUCCEEDED, PARTIAL, FAILED, CANCELLED, TIMED_OUT
+
+5.3 Approval semantics
+An approval references a batch ID and a content hash covering selected application IDs, answers, document hashes, destination URLs, and planned actions.
+If a resume, answer, destination, or application changes after approval, invalidate that application's approval and request re-review.
+A batch can be partially approved. Only explicitly selected and eligible applications proceed.
+Outreach is a separate action with its own content hash and approval. It is not included implicitly in application approval.
+A user may pause or cancel the workflow. The orchestrator must stop new actions and finish or safely cancel in-flight operations.
+5.4 Idempotency and duplicate prevention
+Every side-effecting action receives an idempotency key derived from the application ID, portal, action type, and version. Before a retry after a timeout, the adapter checks the portal for evidence that the action succeeded. If the outcome cannot be established, the state becomes SUBMISSION_UNCERTAIN and requires investigation.
+# Conceptual approval gate def may_submit(app, approval, policy):     return all([         app.status == "READY_FOR_REVIEW",         app.validation_passed,         app.selected_for_batch,         approval.valid_for(app.id, app.content_hash),         policy.portal_submission_allowed(app.portal),         not app.duplicate_submission_detected,         not app.has_unresolved_required_answers,     ])
+6. Data model and agent contracts
+6.1 Core entities
+Entity
+Purpose / key fields
+CandidateProfile
+profile_id, version, verified facts, preferences, answer library, created_at, updated_at
+JobListing
+job_id, source, source_job_id, canonical_url, company, title, location, description, requirements, first_seen, last_seen, status
+MatchAssessment
+job_id, profile_version, total_score, dimension_scores, hard_filters, matched_evidence, gaps, confidence
+Application
+application_id, job_id, portal, status, batch_id, tailored_resume_id, cover_letter_id, application_url, timestamps
+DocumentArtifact
+artifact_id, application_id, type, path, content_hash, version, source_fact_ids, created_at
+FormFieldAnswer
+application_id, field_id, label, type, proposed_value, source_fact_id, confidence, decision, validation
+ApprovalBatch
+batch_id, version, selected_application_ids, content_hash, status, approved_at, approval_actor
+ContactCandidate
+contact_id, company_id, name, professional_title, public_source_url, channel, verified_at, confidence
+OutreachDraft
+outreach_id, application_id, contact_id, channel, message, resume_artifact_id, content_hash, status, sent_at
+AgentRun
+run_id, agent_name, task_id, status, model, prompt_version, input_ref, output_ref, latency, token_estimate, error
+AuditEvent
+event_id, timestamp, entity_type, entity_id, actor, action, outcome, redacted_details, evidence_ref
+
+6.2 Contract rules
+Use Pydantic models for all inter-agent inputs and outputs.
+Every output includes schema_version, task_id, created_at, confidence where relevant, and warnings.
+Use enums for status and decision fields rather than free-text status values.
+Use source_fact_ids for resume claims and profile answers whenever possible.
+Every contact record must include a source URL and a confidence/review status; a guessed email must never be marked verified.
+Persist model name, model tag, prompt version, and validation outcome for reproducibility.
+Do not store chain-of-thought. Store concise rationale, evidence references, and decisions needed for auditability.
+6.3 Example candidate fact model
+{   "fact_id": "fact_exp_004",   "category": "work_experience",   "field": "achievement",   "value": "Migrated a legacy web UI to a modern component framework",   "source_artifact": "base_resume_v1",   "source_location": "Experience / bullet 3",   "verified_by_user": true,   "allowed_for_resume": true,   "sensitivity": "professional",   "updated_at": "2026-10-24T00:00:00Z" }
+This example is illustrative. Actual facts must be extracted from the user's latest resume and verified before the system uses them.
+7. Dashboard and user experience
+7.1 Primary navigation
+Screen
+Required content and actions
+Overview
+Counts by state, recent agent runs, failures, items needing user input, next scheduled discovery.
+Job Feed
+Company, role, location, source, posted/first-seen dates, score, reason, original listing link, status, duplicate marker.
+Job Detail
+Full description, extracted requirements, match evidence, gaps, source URL, discovery log.
+Application Review
+Portal URL, resume/cover letter previews, form answers, warnings, validation results, select/reject/edit actions.
+Batch Review
+Applications grouped into a versioned batch; filters; approve selected; exclude; inspect diffs; approval confirmation.
+Application Detail
+All links, documents, questions/answers, source facts, status timeline, screenshots/evidence, errors, confirmation reference.
+Outreach Queue
+Contact source, professional relevance, message draft, resume artifact, channel, approval state, send outcome.
+Activity Log
+Chronological event stream with agent, action, status, duration, evidence, and expandable error details.
+Documents
+Base resume, tailored variants, cover letters, versions, diffs, content hashes, open/download actions.
+Settings
+Search preferences, model routing, portal toggles, rate limits, data retention, backup, pause/stop controls.
+
+7.2 Application detail page
+Every application row must lead to a detail page. The detail page should answer: What job is this? Where did it come from? Why was it selected? What did the agent change in my resume? What cover letter did it write? What did it answer on the form? Which fields were uncertain? Did I approve it? Was it submitted? What evidence proves the outcome? Was a recruiter contacted, or is the message only a draft?
+7.3 Audit event presentation
+Display human-readable events, e.g. 'Resume tailored', not only raw internal event codes.
+Show status badges and timestamps in local time, with a way to inspect exact UTC timestamps.
+Link each event to relevant artifacts or portal URLs.
+Display the before/after diff for every modified resume bullet and generated cover letter.
+Show field-level answers with source mapping, confidence, and 'why this answer' explanation.
+Show failures as actionable next steps rather than stack traces alone; retain detailed diagnostics for troubleshooting.
+Allow export of a per-application audit bundle as JSON plus documents.
+7.4 Dashboard acceptance criteria
+A user can find the original job listing and application portal in one click.
+A user can preview or open every document that was generated for an application.
+A user can inspect every proposed and entered form answer, including its source.
+A user can see whether a message was drafted, approved, sent, or had an uncertain outcome.
+The dashboard never counts a draft or an uncertain submission as a confirmed application.
+The user can stop all queued work and see which operations were in flight.
+8. Job discovery and ranking
+8.1 Source adapter model
+Create one adapter per source or portal family. Each adapter must declare supported capabilities: search, listing extraction, detail extraction, application opening, form inspection, submission, and recruiter contact discovery. Capability support is not implied by discovery support.
+Capability
+Definition
+DISCOVER
+Search and retrieve listings from a permitted source.
+READ_DETAIL
+Open a job detail page and extract requirements.
+PREPARE_APPLICATION
+Open a form and prepare fields without submitting.
+SUBMIT_APPLICATION
+Submit only if the portal's allowed method and approval gates are satisfied.
+CONTACT_RESEARCH
+Find public professional contact information through permitted methods.
+SEND_OUTREACH
+Send only when the channel supports it and separate outreach approval is present.
+
+8.2 Search configuration
+search:   target_titles:     - GenAI Engineer     - Applied AI Engineer     - AI Engineer     - Search / RAG Engineer   locations:     - Pune     - Bengaluru     - Hyderabad     - Remote India   work_modes: [remote, hybrid, onsite]   sources:     - company_careers     - greenhouse     - lever     - linkedin     - naukri   min_match_score: 70   max_jobs_per_run: 100   exclude_keywords:     - unpaid   require_user_review_for_new_sources: true
+This is an example configuration only. Each source must be enabled only after its access rules and automation capabilities have been checked.
+8.3 Match score
+Start with a configurable weighted score, then tune it using user feedback. Suggested initial dimensions: skill fit 30%, relevant experience 25%, project relevance 20%, role/seniority 15%, location/work arrangement 10%. Hard constraints such as unacceptable location or role type should be applied separately. The score is a prioritization aid, not a prediction of hiring success.
+8.4 Deduplication
+Prefer source job ID plus source name when stable.
+Normalize URLs by removing tracking parameters and canonicalizing host/path.
+Use company + normalized title + location as a secondary fuzzy duplicate signal.
+Retain duplicate records as source references to one canonical job rather than silently dropping provenance.
+Re-check status and last-seen time before application preparation.
+9. Resume tailoring and cover letters
+9.1 Evidence-grounded generation
+Create a candidate evidence bank from verified resume/profile facts and project records.
+Store source locations for each fact: resume page/section/bullet or user-confirmed profile field.
+Have the model propose a tailoring plan before generating the final document.
+Validate every generated factual claim against evidence; block unsupported metrics or skills.
+Keep original employer names, job titles, dates, education credentials, and factual metrics stable unless the user explicitly corrects them.
+Generate a readable ATS-friendly format using a stable template; do not optimize solely for keyword stuffing.
+Produce a diff and keep the base resume immutable.
+9.2 Tailoring output contract
+{   "job_id": "job_123",   "profile_version": 4,   "summary": "...",   "selected_fact_ids": ["fact_exp_004", "fact_project_002"],   "bullet_rewrites": [     {       "source_fact_id": "fact_exp_004",       "original_text": "...",       "proposed_text": "...",       "meaning_preserved": true     }   ],   "skills_reordered": ["Python", "RAG", "FastAPI"],   "unsupported_claims": [],   "requires_user_review": true }
+9.3 Cover letter policy
+Use the role, company, job requirements, and 2–3 relevant verified evidence points.
+Avoid generic flattery and unsupported claims about the company's strategy or culture.
+Do not state that the candidate has already spoken to a recruiter unless true.
+Do not create fake personal connections or imply referrals that do not exist.
+Save both the final letter and its plain-text content for form fields.
+Validate name, company, role, and placeholders before marking the artifact ready.
+10. Application form agent
+10.1 Form inspection pipeline
+Open the application URL in a visible, isolated browser context.
+Detect login, CAPTCHA, MFA, consent gates, unsupported portal states, and bot/access restrictions.
+Extract visible labels, accessible names, field types, options, required status, and help text.
+Map fields to trusted profile facts or approved answer templates.
+Return unknown/ambiguous fields as NEEDS_USER_INPUT; do not guess.
+Fill only permitted fields using robust locators; upload the application-specific resume and cover letter.
+Re-read the form to verify values, required fields, file names, and validation errors.
+Capture a form summary and evidence reference; stop before final submit.
+Add the application to the review batch.
+10.2 Field decision categories
+Decision
+Meaning
+Example
+AUTO_FILL
+Exact trusted profile value; safe to populate.
+Name, email, current employer.
+FILL_AND_REVIEW
+Known value but high-impact or context-dependent.
+Expected salary, notice period if employer-specific.
+ASK_USER
+Unknown, ambiguous, or not verified.
+Work authorization, sponsorship, relocation.
+USER_ONLY
+Requires explicit personal choice or legal consent.
+Declarations, demographic questions, terms acceptance.
+BLOCKED
+Portal requires disallowed bypass or unsupported action.
+CAPTCHA bypass, automation prohibited.
+NOT_APPLICABLE
+Field does not apply and portal supports a valid explicit option.
+Only if supported and confirmed by user profile.
+
+10.3 Browser adapter contract
+class PortalAdapter(Protocol):     async def capabilities(self) -> PortalCapabilities: ...     async def open_job(self, job: JobListing) -> None: ...     async def inspect_form(self) -> FormSnapshot: ...     async def fill_fields(self, answers: list[FieldAnswer]) -> FillReport: ...     async def validate_form(self) -> ValidationReport: ...     async def submit(self, approved_application: ApprovedApplication) -> SubmitResult: ...     async def verify_submission(self) -> SubmissionEvidence: ...
+The protocol is conceptual. Implementations should use portal-specific selectors and must not expose arbitrary browser actions to the LLM.
+10.4 Submission and retry
+Submission requires valid approval for the exact application content hash.
+Immediately before submit, re-check job/application URL, required answers, documents, and portal capability.
+After submit, inspect confirmation page or other evidence; save reference ID and timestamp.
+On timeout, do not click submit again automatically. Check application history or ask the user.
+If a portal's rules do not permit automation, provide a manual handoff with a prepared form/document package.
+11. HR/recruiter research and outreach agent
+11.1 Purpose and sequence
+The outreach agent should operate after an application is submitted or the user explicitly requests outreach for a company. It researches a small number of relevant professional contacts, chooses the strongest evidence-backed contact, and creates a single message draft. It should not independently blast multiple people at the same employer.
+Confirm the application is submitted/confirmed or explicitly selected for outreach.
+Search allowed public company pages and professional sources for recruiting contacts relevant to the role/location.
+Store the source URL and evidence for each candidate; rank by role relevance and confidence.
+Prefer a company recruiter or talent partner responsible for the relevant job family/location.
+Draft a short message that references the actual role and application, with one or two relevant evidence points.
+Attach the approved resume or use a user-controlled link only when permitted and approved.
+Add the draft to the separate Outreach Review queue.
+After explicit outreach approval, send through a permitted channel or hand off for manual sending.
+Record sent/failed/uncertain status and do not send duplicates.
+11.2 Message quality guidelines
+One message per company per campaign by default.
+Personalize using publicly available professional context; do not pretend to know the recipient.
+Keep the message concise, respectful, and easy to ignore or decline.
+State the role applied for and the application date only if those facts are accurate.
+Include the resume only after review; never attach the wrong role-specific version.
+Do not send repeated follow-ups unless the user separately approves a follow-up policy.
+If no reliable contact is found, record 'No suitable public contact found' rather than guessing.
+11.3 Example draft
+Illustrative draft  Hi [Name] — I recently applied for the [Role] position at [Company]. My experience includes [one verified relevant area] and [one relevant project/achievement]. I thought this might be relevant to the team’s work. I’ve included my role-specific resume for context. Thanks for your time.
+
+The agent must replace placeholders with verified values and require review before sending. The example is not a message that has been sent.
+11.4 Contact data policy
+Use public professional information and sources that permit the intended use.
+Do not scrape behind login, circumvent platform controls, or infer personal addresses from naming patterns.
+A public generic recruiting inbox can be recorded as a business contact when clearly published by the company.
+Treat email deliverability and LinkedIn message delivery as uncertain unless evidence is available.
+Store only the contact details needed for this campaign and define a retention/deletion policy.
+12. Local model strategy with Ollama
+12.1 Model routing, not one model per agent by default
+Use a model router with task-specific profiles. Different agents can initially share the same installed model, while each task has a separate system prompt, schema, context budget, temperature, timeout, and evaluation set. This avoids loading several large models simultaneously on a laptop.
+Task
+Preferred model class
+Why
+Job field extraction
+Small/efficient model
+Structured extraction, short output, low latency.
+Job matching explanation
+Small-to-mid reasoning model
+Must compare requirements to evidence and explain gaps.
+Resume tailoring
+Mid-size instruction model if hardware allows
+Quality and factual consistency matter more than raw speed.
+Cover letter
+Small-to-mid instruction model
+Short grounded generation; templates and validators do much of the work.
+Form field mapping
+Small model + deterministic matching
+Most mappings should be rules; use model only for ambiguous labels.
+Contact relevance and outreach draft
+Small model
+Short message grounded in known public facts.
+Quality review
+Different model or second pass
+Independent check can catch unsupported claims, but adds latency.
+
+12.2 Gemma 4 and Qwen 3.6
+The current Ollama library pages list Gemma 4 variants and Qwen 3.6 variants. The exact tags, download sizes, quantization options, and memory requirements can change, so the setup script should query or document the selected tags rather than assume an alias is stable.
+Gemma 4 offers smaller E2B/E4B variants as well as larger 12B/26B/31B options in the Ollama library. Smaller variants are better starting candidates for constrained memory; larger variants may improve quality but need more RAM/unified memory.
+Qwen 3.6 currently lists 27B and 35B variants in the Ollama library; those are not the first choice for a memory-constrained Mac unless the hardware has sufficient unified memory and acceptable latency.
+Start with one small model for extraction/classification and benchmark a stronger candidate for resume rewriting. Do not assume model size alone determines quality.
+On Apple Silicon, compare standard Ollama tags with available MLX variants where appropriate; test stability and output quality on the actual machine.
+Pin model tags and record them in every agent run. Avoid silently changing a model during an application campaign.
+12.3 Recommended model experiment
+Record the Mac model, Apple Silicon/Intel status, RAM/unified memory, free disk space, and macOS version.
+Install Ollama and test one small Gemma 4 tag and one suitably sized Qwen 3.6 option available for the hardware.
+Create a fixed evaluation set of 30 job descriptions, 20 resume tailoring tasks, 30 form questions, and 10 outreach drafts.
+Measure schema validity, factual support, quality ratings, latency, memory pressure, and failure rate.
+Choose the smallest model that meets the acceptance thresholds for each task.
+Use rules and deterministic checks before escalating a task to a larger model.
+12.4 Structured outputs
+Use Ollama's structured output support with JSON Schema/Pydantic where available. Always validate returned JSON in Python. If validation fails, retry once with a concise repair prompt; if it still fails, mark the task as failed or require review rather than trying to interpret arbitrary output.
+12.5 Context and memory
+Do not send the entire resume library and every job to every call. Retrieve only relevant evidence.
+Keep system prompts short and versioned; keep data in typed inputs.
+Use deterministic temperature settings for extraction and field mapping.
+Limit browser page text to relevant visible content and strip irrelevant navigation/footer material.
+Do not treat prior model responses as trusted facts unless validated and persisted as approved data.
+13. Security, privacy, compliance and safety
+13.1 Local-first privacy
+Store the candidate profile, resumes, generated documents, contact records, and database locally by default.
+Use macOS Keychain for credentials where possible; never store passwords in profile.json or prompts.
+Keep browser profiles separate from the user's personal browser profile when feasible.
+Do not expose the local dashboard to the public internet. Bind to localhost by default.
+Protect backups and exports because they may contain personal data and application history.
+Provide deletion/export controls for the profile, artifacts, contact data, and audit history.
+13.2 Prompt injection and untrusted content
+Job pages, recruiter profiles, emails, and application forms are untrusted data, not instructions to the system.
+Do not let page text change policies, reveal local files, alter the candidate profile, or invoke arbitrary tools.
+Use allowlisted tools and typed arguments; never expose shell/file-system tools directly to the model.
+Separate system instructions from retrieved page content and clearly label page text as untrusted.
+Require code-level policy checks before any side effect, regardless of model output.
+13.3 Consent and external side effects
+Application submission and recruiter outreach are separate permissions.
+Batch approval is tied to an immutable snapshot of applications and content.
+The user can preview the exact resume, cover letter, answers, destination, and outreach message before approval.
+Never auto-accept legal declarations or provide unverified answers about authorization, sponsorship, salary, or demographics.
+Never bypass CAPTCHAs, MFA, bot protections, access controls, or portal-specific restrictions.
+Use conservative request rates and stop on explicit blocking or warning signals.
+13.4 Auditability
+Record what happened and evidence needed to verify it: action type, entity IDs, timestamp, agent/model/prompt version, result, relevant URL, artifact hashes, approval reference, and redacted error. Avoid storing secrets or full sensitive page dumps. Use append-only event records for consequential actions.
+13.5 HR outreach guardrails
+One initial outreach per company by default, not one message to every employee.
+Only use public professional contact information obtained through permitted methods.
+No guessed or enriched personal email addresses presented as verified.
+No deceptive personalization, false referrals, fake prior relationships, or misleading application claims.
+Respect channel rules and user approval. If automation is not permitted, produce a manual draft.
+Record the exact message and resume artifact associated with a sent message.
+14. Reliability, observability and recovery
+14.1 Reliability requirements
+All agent tasks have deadlines, timeouts, bounded retries, and explicit terminal statuses.
+The system can resume after a crash from persisted workflow state.
+A source failure does not prevent other source adapters from running.
+Document generation is deterministic enough to reproduce from stored inputs/model versions where practical.
+A browser failure leaves the application in a recoverable state and does not imply submission.
+Every side-effecting operation is idempotent or has a preflight duplicate check.
+14.2 Event fields
+{   "event_id": "evt_...",   "timestamp_utc": "2026-10-24T04:00:00Z",   "entity_type": "application",   "entity_id": "app_...",   "run_id": "run_...",   "agent": "application_form_agent",   "action": "fill_field",   "result": "success",   "field_id": "email",   "evidence_ref": "artifact://form_snapshot/...",   "duration_ms": 420,   "error_code": null }
+14.3 Error taxonomy
+Code family
+Examples
+Recovery
+SOURCE_*
+Timeout, rate limit, changed HTML, source unavailable
+Backoff, disable source temporarily, show source status.
+MODEL_*
+Ollama unavailable, timeout, invalid schema
+Retry boundedly; fall back to smaller/alternate model only if configured.
+DOC_*
+Render error, unsupported font, factual validation failure
+Regenerate or require manual edit; do not queue invalid artifact.
+FORM_*
+Unknown field, validation message, portal layout changed
+Pause and request user input or adapter update.
+AUTH_*
+Login expired, MFA required
+Manual handoff; never request the user to place secrets in chat/logs.
+SUBMIT_*
+Timeout after submit, confirmation absent
+Mark uncertain; inspect status before retry.
+OUTREACH_*
+No verified contact, sending unavailable, delivery unknown
+Keep draft or mark uncertain; do not claim sent without evidence.
+
+14.4 Local health checks
+Ollama server and configured model availability.
+Disk space and document-store write permissions.
+Database integrity and migration version.
+Browser installation and adapter smoke tests.
+Last successful discovery per source.
+Queue depth, stuck tasks, and pending approvals.
+15. Evaluation and acceptance criteria
+15.1 Quality metrics
+Area
+Metric
+Initial target
+Discovery
+Duplicate listing rate after normalization
+< 3% in the evaluated fixture set
+Extraction
+Required job-field accuracy
+>= 95% on a manually labeled test set
+Matching
+User-rated relevance of top-ranked jobs
+>= 4/5 average after initial tuning
+Resume
+Unsupported factual claims
+0 accepted unsupported claims
+Resume
+Source traceability of factual bullets
+100% of factual claims mapped or explicitly user-approved
+Cover letter
+Unresolved placeholders / wrong company or role
+0
+Form filling
+Correct field mapping on supported fixtures
+>= 95%; unknown fields safely abstain
+Submission
+Duplicate submissions caused by retry logic
+0 in test suite
+Audit
+Consequential actions with event records
+100%
+Outreach
+Duplicate initial messages per company/campaign
+0
+Privacy
+Secrets in logs
+0
+
+Targets are proposed acceptance thresholds and should be adjusted based on measured baseline performance. For high-risk fields and claims, safe abstention is preferable to a high completion rate.
+15.2 Acceptance criteria by agent
+Finder: emits normalized job records with source URL, retrieval time, and duplicate key; cannot call submission tools.
+Matcher: provides dimension scores and evidence; marks insufficient descriptions low-confidence.
+Resume Agent: every changed factual bullet is traceable; output is readable and has no placeholders.
+Application Agent: unknown fields are not guessed; no submit action is available in preparation mode.
+Outreach Agent: each contact has source evidence; message is personalized and truthful; no send occurs without separate approval.
+Orchestrator: rejects invalid agent outputs, enforces state transitions, and resumes after restart.
+Dashboard: user can inspect each job, application, artifact, answer, event, approval, and submission evidence.
+15.3 Model evaluation harness
+Create versioned fixtures for jobs, resumes, portal fields, and recruiter profiles. Run the same fixture set against each candidate model/tag. Score schema validity, extraction correctness, claim grounding, writing quality, abstention behavior, latency, and memory usage. Record the model tag and prompt version alongside each result.
+15.4 Human feedback loop
+Allow user to mark job match as good/bad and choose a reason.
+Allow edits to resume bullets and cover letters; store edits as examples only with explicit opt-in.
+Record rejected/edited form mappings to improve deterministic rules.
+Do not automatically learn or alter the candidate profile from model-generated content.
+16. Testing strategy
+16.1 Test layers
+Unit tests: URL normalization, score calculation, policy gates, document diff, schema validation, deduplication.
+Agent contract tests: fixed inputs produce valid schemas and expected abstentions.
+Prompt injection tests: hostile job text cannot change tool permissions or exfiltrate local files.
+Fixture browser tests: local mock forms for text fields, dropdowns, radio buttons, uploads, multi-step forms, and errors.
+Portal adapter smoke tests: read-only or explicitly authorized testing; no real submission during CI.
+End-to-end dry run: discover → match → generate docs → fill mock form → review batch → approve simulation → simulated submission.
+Recovery tests: crash/restart, timeout after submit, database lock, Ollama unavailable, browser closed, model invalid JSON.
+Privacy tests: scan logs and exported artifacts for secrets and unapproved personal data.
+16.2 Mandatory dry-run mode
+The application must ship with DRY_RUN enabled by default. In dry-run mode, the system can discover jobs, generate artifacts, fill local mock forms, and simulate submission events, but it cannot submit a real application or send outreach. Real side effects require an explicit setting change and user approval.
+16.3 Definition of done for MVP
+At least one job source adapter is working within its permitted access model.
+Candidate profile can be imported, edited, and versioned.
+Job matching produces inspectable evidence and scores.
+Resume and cover letter artifacts can be generated and previewed.
+One mock or permitted portal adapter can fill and validate a form without submission.
+Dashboard displays per-job links, documents, answers, activity log, and failures.
+Batch review supports selecting, excluding, editing, and approving applications.
+Submission gate and outreach gate are tested and cannot be bypassed by model output.
+17. Suggested repository structure
+jobpilot/   pyproject.toml   README.md   .env.example   .gitignore   config/     app.yaml     search_preferences.yaml     model_routes.yaml   src/jobpilot/     api/       main.py       routes_jobs.py       routes_applications.py       routes_batches.py       routes_outreach.py     dashboard/       app.py       pages/     orchestrator/       engine.py       state_machine.py       approval.py       policies.py       scheduler.py     agents/       job_finder.py       job_matcher.py       resume_tailor.py       application_form.py       hr_outreach.py     portals/       base.py       greenhouse.py       lever.py       linkedin.py       naukri.py       generic_playwright.py     llm/       ollama_client.py       model_router.py       prompts/       schemas.py     documents/       parser.py       resume_renderer.py       cover_letter.py       diff.py     data/       models.py       repositories.py       migrations/     observability/       events.py       redaction.py     security/       secrets.py       local_permissions.py   templates/     resume_template.docx   storage/     profiles/     artifacts/     browser_state/   tests/     unit/     agent_contracts/     fixtures/     browser/     e2e/   scripts/     setup_mac.sh     health_check.py
+17.1 Configuration files
+app.yaml: local bind address, database path, storage path, dry-run defaults, concurrency, retention.
+search_preferences.yaml: target titles, locations, exclusions, source list, minimum match score.
+model_routes.yaml: model tags by task, timeouts, context budgets, temperature, fallback policy.
+.env: local-only secrets if unavoidable; do not commit.
+17.2 Coding conventions
+Async I/O for browser, HTTP, and model calls where useful; keep concurrency bounded.
+Type hints and Pydantic contracts for public module boundaries.
+No model-generated SQL, shell commands, or arbitrary Python execution.
+No hidden global state; pass dependencies and repositories explicitly.
+All state changes go through orchestrator services and are accompanied by audit events.
+18. Delivery roadmap
+Phase
+Deliverable
+Exit criteria
+0. Setup & discovery
+Hardware inventory, candidate profile schema, portal policy review, local Ollama benchmark
+Model tags chosen; profile facts verified; dry-run environment works.
+1. Foundation
+SQLite models, event log, FastAPI skeleton, Streamlit dashboard shell
+Jobs and events persist; dashboard shows statuses.
+2. Finder + Matcher
+First source adapters, normalization, dedupe, scoring
+Repeatable job feed with links and explanations.
+3. Resume + Cover Letter
+Evidence bank, templates, versioning, factual validator
+No unsupported claims in accepted fixture tests.
+4. Form preparation
+Portal adapter interface, mock form, Playwright field mapping
+Can fill and validate without submit; unknown fields abstain.
+5. Batch review
+Versioned batch approval and immutable content hash
+Approval applies only to reviewed artifacts.
+6. Submission proof
+One permitted portal adapter, post-submit verification and uncertain state
+No blind retry; confirmation evidence persisted.
+7. HR research/outreach
+Public contact research, draft generation, separate approval queue
+One message/company; no send without outreach approval.
+8. Additional portals
+Add LinkedIn, Naukri, Greenhouse, Lever, company-specific adapters as permitted
+Each adapter has capability declarations, tests, and policy review.
+9. Hardening
+Scheduling, backups, privacy controls, recovery tests
+End-to-end dry run and documented restore procedure.
+
+18.1 Build order recommendation
+Do not begin with browser submission or recruiter messaging. Start with data contracts, job discovery, and the dashboard because they create the audit foundation. Add document generation next, then form preparation, then approval-gated submission. Add outreach last because it creates a second category of external side effects and requires separate policy and deduplication.
+18.2 Initial MVP boundary
+MVP  One verified candidate profile, one or two permitted job sources, local model inference, job scoring, tailored resume and cover letter, one mock or permitted application form, a batch-review dashboard, and a complete event log. The first release should not send real applications or recruiter messages until dry-run acceptance tests pass.
+
+19. Risks and mitigations
+Risk
+Impact
+Mitigation
+Portal DOM changes
+Form filling breaks
+Portal adapters, robust locators, fixture tests, fail closed, alert user.
+Portal automation restrictions
+Blocked or disallowed automation
+Capability registry, policy review, manual handoff; no bypass.
+Small-model hallucinations
+False resume claims or wrong answers
+Evidence bank, structured output, deterministic validators, abstention.
+Local hardware limits
+Slow inference or memory pressure
+Benchmark small models, sequential model loading, context limits, task routing.
+Duplicate applications
+Damaged candidate experience
+Stable dedupe keys, pre-submit check, idempotency, uncertain state.
+Wrong resume attached
+Application quality issue
+Artifact ID and content hash bound to application and approval.
+Wrong recruiter/contact
+Privacy/reputation risk
+Public-source evidence, role relevance scoring, human review, one contact per company.
+Unwanted outreach
+Spam/reputation risk
+Separate approval, one message/company, no auto-follow-up, respect platform rules.
+Sensitive data leakage
+Privacy harm
+Local storage, keychain, redaction, least privilege, export controls.
+Prompt injection
+Unauthorized tool actions
+Untrusted-content isolation, allowlisted tools, deterministic permission gates.
+False success reporting
+User loses trust
+Separate submitted/confirmed/uncertain; require evidence for success.
+Crash during side effect
+Unknown submission outcome
+Persist before/after action, recovery protocol, no blind retries.
+
+20. Open decisions
+Decision
+Default recommendation
+When to finalize
+Mac hardware profile
+Inventory model, chip and memory before selecting model sizes.
+Before model benchmark.
+Initial UI
+Streamlit MVP, backend/UI separation.
+At repository setup.
+Database access layer
+SQLAlchemy + migrations, or lightweight repository layer.
+At foundation phase.
+Document template
+ATS-friendly DOCX with predictable headings and restrained formatting.
+Before resume generation.
+Initial portal
+Choose the easiest permitted source with reliable listing access and a testable application flow.
+After policy and access review.
+Recruiter contact sources
+Public company pages and permitted professional sources; manual fallback.
+Before outreach phase.
+Outreach delivery
+Draft-first, separate batch approval, manual handoff where automation is not permitted.
+Before sending is enabled.
+Retention
+Keep application artifacts and logs locally; configurable deletion/export.
+Before real personal data is loaded.
+Model fallback
+One configured small model plus one optional stronger model; no silent provider/cloud fallback.
+After benchmark.
+
+
+Appendix A — Suggested schemas and status enums
+A.1 Job listing contract
+class JobListing:     job_id: str     source: str     source_job_id: str | None     canonical_url: str     application_url: str | None     company: str     title: str     location: str | None     work_mode: str | None     description_text: str     required_skills: list[str]     preferred_skills: list[str]     experience_min_years: float | None     experience_max_years: float | None     posted_at: str | None     first_seen_at: str     last_seen_at: str     extraction_confidence: float     source_evidence: list[str]
+A.2 Match assessment contract
+class MatchAssessment:     job_id: str     profile_version: int     total_score: float     skill_fit: float     experience_fit: float     project_fit: float     role_seniority_fit: float     location_fit: float     hard_filter_passed: bool     matched_evidence_fact_ids: list[str]     missing_requirements: list[str]     concerns: list[str]     explanation: str     confidence: float
+A.3 Field answer contract
+class FieldAnswer:     field_id: str     label: str     field_type: str     proposed_value: str | list[str] | bool | None     decision: str  # AUTO_FILL, FILL_AND_REVIEW, ASK_USER, USER_ONLY, BLOCKED     source_fact_id: str | None     confidence: float     rationale: str     validation_errors: list[str]
+A.4 Submission result contract
+class SubmitResult:     application_id: str     status: str  # SUBMITTED, CONFIRMED, SUBMISSION_UNCERTAIN, SUBMISSION_FAILED     submitted_at: str | None     confirmation_reference: str | None     evidence_url: str | None     evidence_artifact_id: str | None     error_code: str | None     retry_allowed: bool     next_action: str
+A.5 Outreach result contract
+class OutreachDraft:     outreach_id: str     company_id: str     application_id: str     contact_id: str | None     channel: str  # linkedin, email, manual     contact_source_url: str | None     message_text: str     resume_artifact_id: str | None     status: str  # DRAFT_READY, NEEDS_REVIEW, APPROVED, SENT, DELIVERY_UNKNOWN     content_hash: str     user_approved_at: str | None     sent_at: str | None     evidence_ref: str | None
+Appendix B — Reference links
+These references inform implementation details. Confirm current documentation and the terms/policies of each target portal before enabling a source or side effect.
+Ollama model library — Gemma 4 — Available tags and model variants. https://ollama.com/library/gemma4
+Ollama model library — Qwen 3.6 — Available tags and model variants. https://ollama.com/library/qwen3.6
+Ollama structured outputs — JSON Schema-constrained outputs and Pydantic integration. https://github.com/ollama/ollama/blob/main/docs/capabilities/structured-outputs.mdx
+Ollama API documentation — Local API, tool calls and structured output request formats. https://github.com/ollama/ollama/blob/main/docs/api.md
+Google Gemma documentation — Ollama — Running Gemma variants with Ollama. https://ai.google.dev/gemma/docs/integrations/ollama
+Playwright Python locators — Accessible locators and browser automation. https://playwright.dev/python/docs/locators
+Greenhouse Job Board API — Public job listing/application integration reference; verify authorization requirements. https://docs.greenhouse.io/job-board
+Lever Postings API — Job posting and application integration reference; verify current requirements. https://github.com/lever/postings-api
+Final implementation note
+Treat this as the baseline product specification. Before real applications or outreach are enabled, verify the candidate profile, review portal rules, benchmark local models on the actual MacBook, and complete the dry-run test suite. The orchestrator, audit log, content-hash approvals, and human review gates are core requirements—not optional polish.
