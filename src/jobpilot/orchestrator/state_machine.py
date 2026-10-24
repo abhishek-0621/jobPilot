@@ -12,7 +12,7 @@ from jobpilot.contracts.enums import (
 )
 from jobpilot.observability.events import record_event
 
-J, A, B, O, R = JobStatus, ApplicationStatus, BatchStatus, OutreachStatus, AgentRunStatus
+J, A, B, O, R = JobStatus, ApplicationStatus, BatchStatus, OutreachStatus, AgentRunStatus  # noqa: E741 - short aliases keep the transition table readable
 
 
 class IllegalTransition(Exception):

@@ -92,7 +92,8 @@ def test_edit_after_approval_invalidates(db_session):
     assert svc.application_hash(a1) != before
     assert get_application(db_session, a1).status == "READY_FOR_REVIEW"
     assert svc.current_item_hash(a1) is None
-    assert any(e.action == "approval_revoked" for e in list_events(db_session, approval.approval_id))
+    assert any(e.action == "approval_revoked"
+               for e in list_events(db_session, approval.approval_id))
     assert not may_submit(get_application(db_session, a1), approval, svc.application_hash(a1),
                           0, False, policy_ok(), simulated=True).allowed
 
@@ -181,7 +182,7 @@ def test_outreach_hash_tracks_resume_content(db_session):
     from jobpilot.data.tables import DocumentArtifactRow
     art = db_session.query(DocumentArtifactRow).first()
     if art is None:
-        a1 = seed_ready_apps(db_session, 1)[0]
+        seed_ready_apps(db_session, 1)
         art = db_session.query(DocumentArtifactRow).first()
     assert art is not None
     draft = _draft(db_session)

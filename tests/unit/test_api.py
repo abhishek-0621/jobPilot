@@ -238,3 +238,118 @@ def test_approve_endpoint_enqueues_submit(
     with factory() as s:
         tasks = s.execute(select(TaskRow)).scalars().all()
     assert [(t.kind, t.entity_id) for t in tasks] == [("SUBMIT", ids[0])]
+
+
+def _seed_job(factory: sessionmaker[Session], status: str = "MATCHED",
+              job_id: str = "job_m1") -> str:
+    from datetime import UTC, datetime
+
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    with factory() as s:
+        s.add(JobRow(job_id=job_id, source="greenhouse", source_job_id=job_id,
+                     canonical_url=f"https://example.com/{job_id}", company="Example AI",
+                     title="GenAI Engineer", location="Bengaluru",
+                     description_text="desc", status=status, first_seen_at=t0,
+                     last_seen_at=t0))
+        s.commit()
+    return job_id
+
+
+def test_discovery_endpoint_conflict_when_running(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    from jobpilot.data.tables import TaskRow
+
+    client = make_client(factory, tmp_path)
+    r = client.post("/runs/discovery")
+    assert r.status_code == 200 and r.json()["task_id"].startswith("task")
+    with factory() as s:
+        task = s.get(TaskRow, r.json()["task_id"])
+        assert task is not None and task.kind == "DISCOVER" and task.entity_type == "run"
+        assert task.entity_id.startswith("run")
+    assert client.post("/runs/discovery").status_code == 409
+    ui = client.post("/ui/runs/discovery")
+    assert ui.status_code == 409 and "already queued or running" in ui.text
+    with factory() as s:
+        s.get(TaskRow, r.json()["task_id"]).status = "RUNNING"  # type: ignore[union-attr]
+        s.commit()
+    assert client.post("/runs/discovery").status_code == 409
+    with factory() as s:
+        s.get(TaskRow, r.json()["task_id"]).status = "SUCCEEDED"  # type: ignore[union-attr]
+        s.commit()
+    ok = client.post("/ui/runs/discovery")
+    assert ok.status_code == 200 and "Discovery started" in ok.text
+
+
+def test_select_requires_matched(factory: sessionmaker[Session], tmp_path: Path) -> None:
+    from sqlalchemy import select
+
+    from jobpilot.data.tables import ApplicationRow, AuditEventRow
+
+    client = make_client(factory, tmp_path)
+    _seed_job(factory, "NORMALIZED", "job_n1")
+    _seed_job(factory, "MATCHED", "job_m1")
+    assert client.post("/jobs/job_n1/select").status_code == 409
+    assert client.post("/jobs/nope/select").status_code == 404
+    r = client.post("/jobs/job_m1/select")
+    assert r.status_code == 200
+    with factory() as s:
+        app = s.execute(select(ApplicationRow)).scalar_one()
+        assert (app.job_id, app.status, app.portal) == ("job_m1", "NOT_STARTED", "greenhouse")
+        assert app.application_id == r.json()["application_id"]
+        assert s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "job_selected")).scalar_one().entity_id == "job_m1"
+    assert client.post("/jobs/job_m1/select").status_code == 409
+    assert client.post("/ui/jobs/job_m1/select").status_code == 409
+
+
+def test_job_detail_renders_scores_and_evidence(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    import json
+
+    from jobpilot.data.tables import CandidateFactRow, MatchAssessmentRow
+
+    _seed_job(factory)
+    with factory() as s:
+        s.add(CandidateFactRow(fact_id="fact_exp_001", profile_version=1,
+                               category="work_experience", field="fact",
+                               value="Built a RAG pipeline for Example Corp",
+                               verified_by_user=True))
+        s.add(MatchAssessmentRow(
+            job_id="job_m1", profile_version=1, total_score=81.5, skill_fit=90.0,
+            experience_fit=70.0, project_fit=80.0, role_seniority_fit=75.0,
+            location_fit=100.0, hard_filter_passed=True, confidence=0.8,
+            evidence_json=json.dumps({
+                "matched_evidence_fact_ids": ["fact_exp_001"],
+                "missing_requirements": ["Kubernetes"], "concerns": ["short tenure"],
+                "explanation": "Strong GenAI overlap " + "x" * 200})))
+        s.commit()
+    client = make_client(factory, tmp_path)
+    page = client.get("/ui/jobs/job_m1")
+    assert page.status_code == 200
+    for text in ("GenAI Engineer", "Example AI", "81.5", "90.0", "100.0",
+                 "Built a RAG pipeline for Example Corp", "Kubernetes", "short tenure",
+                 "Strong GenAI overlap", 'href="https://example.com/job_m1"',
+                 "/ui/jobs/job_m1/select"):
+        assert text in page.text, text
+    assert client.get("/ui/jobs/nope").status_code == 404
+    listing = client.get("/ui/jobs").text
+    assert "81.5" in listing and 'href="/ui/jobs/job_m1"' in listing
+    assert "x" * 130 not in listing and "Strong GenAI overlap" in listing
+
+
+def test_jobs_page_has_discover_button(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    _seed_job(factory, "MATCHED", "job_m1")
+    _seed_job(factory, "DUPLICATE", "job_d1")
+    _seed_job(factory, "REJECTED", "job_r1")
+    client = make_client(factory, tmp_path)
+    page = client.get("/ui/jobs").text
+    assert 'hx-post="/ui/runs/discovery"' in page and ">Discover<" in page
+    assert "job_m1" in page and "job_r1" in page and "job_d1" not in page
+    assert "/ui/jobs/job_m1/select" in page and "/ui/jobs/job_r1/select" not in page
+    assert "job_d1" in client.get("/ui/jobs?show_duplicates=1").text
+    only = client.get("/ui/jobs?status=REJECTED").text
+    assert "job_r1" in only and "job_m1" not in only

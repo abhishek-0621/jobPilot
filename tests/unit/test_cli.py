@@ -67,6 +67,7 @@ def test_setup_installs_pulls_missing_and_migrates(
         ["ollama", "pull", "m3:tiny"],
     ]
     assert (tmp_path / "storage" / "jobpilot.db").exists()
+    assert "Run `uv run jobpilot bench` once to pick model tags for your Mac." in r.output
     # Idempotent: everything present -> no pulls, still succeeds.
     monkeypatch.setattr(cli.httpx, "get", _tags("m1:small", "m2:big", "m3:tiny"))
     fake_run.calls.clear()
@@ -133,3 +134,66 @@ def test_start_binds_configured_host_and_port(
     assert seen["host"] == "127.0.0.1" and seen["port"] == 9911
     assert "http://127.0.0.1:9911" in r.output
     assert (tmp_path / "storage" / "jobpilot.db").exists()
+
+
+def test_discover_enqueues_and_refuses_second(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.httpx, "get", _down)
+    d = _config(tmp_path)
+    r = runner.invoke(cli.app, ["discover", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    assert "Queued discovery run run" in r.output
+    assert "Run `uv run jobpilot start` to process it." in r.output
+    r2 = runner.invoke(cli.app, ["discover", "--config-dir", str(d)])
+    assert r2.exit_code == 1 and "already queued or running" in r2.output
+
+
+def test_sources_check_reports_per_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _config(tmp_path)
+    prof = tmp_path / "storage" / "profiles"
+    prof.mkdir(parents=True)
+    (prof / "companies.yaml").write_text(yaml.safe_dump({"companies": [
+        {"name": "Example AI", "source": "greenhouse", "token": "exampleai"},
+        {"name": "Sample Labs", "source": "lever", "token": "samplelabs"}]}))
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    gh = (fixtures / "greenhouse_jobs.json").read_text()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "boards-api.greenhouse.io":
+            return httpx.Response(200, text=gh)
+        return httpx.Response(503)
+
+    monkeypatch.setattr(cli, "_sources_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)))
+    r = runner.invoke(cli.app, ["sources", "check", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    n = len(__import__("json").loads(gh)["jobs"])
+    assert f"Example AI (greenhouse:exampleai): ok {n} postings" in r.output
+    assert "Sample Labs (lever:samplelabs): SOURCE_UNAVAILABLE" in r.output
+
+
+def test_bench_exits_when_ollama_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.httpx, "get", _down)
+    r = runner.invoke(cli.app, ["bench", "--route", "a", "--config-dir", str(_config(tmp_path))])
+    assert r.exit_code == 1 and "Start Ollama" in r.output
+
+
+def test_bench_default_tags_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.bench import BenchResult
+
+    monkeypatch.setattr(cli.httpx, "get", _tags("m2:big"))
+    seen: dict[str, Any] = {}
+
+    async def fake(cfg: Any, tags: list[str], route: str, fixtures: Path) -> list[BenchResult]:
+        seen["tags"] = tags
+        return [BenchResult(t, 1.0, 0.5, 0.5, 10, 20) for t in tags]
+
+    import jobpilot.bench as b
+    monkeypatch.setattr(b, "run_bench", fake)
+    r = runner.invoke(cli.app, ["bench", "--route", "c", "--config-dir", str(_config(tmp_path))])
+    assert r.exit_code == 0, r.output
+    assert seen["tags"] == ["m2:big", "m3:tiny"]
+    assert "m3:tiny" in r.output and str(tmp_path / "storage" / "bench") in r.output

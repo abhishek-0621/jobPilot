@@ -1,0 +1,23 @@
+{
+  "jobs": [
+    {
+      "id": 1001,
+      "title": "Senior Applied ML Engineer",
+      "updated_at": "2026-10-01T10:00:00-04:00",
+      "location": {"name": "Bengaluru, India"},
+      "absolute_url": "https://boards.greenhouse.io/exampleai/jobs/1001?gh_src=abc",
+      "content": "&lt;p&gt;Build &lt;strong&gt;LLM&lt;/strong&gt; systems.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Python&lt;/li&gt;&lt;/ul&gt;",
+      "company_name": "Example AI"
+    },
+    {
+      "id": 1002,
+      "title": "Office Manager",
+      "updated_at": "2026-10-02T09:30:00+00:00",
+      "location": {"name": "Remote"},
+      "absolute_url": "https://boards.greenhouse.io/exampleai/jobs/1002",
+      "content": "&lt;p&gt;Run the office.&lt;/p&gt;",
+      "company_name": "Example AI"
+    }
+  ],
+  "meta": {"total": 2}
+}

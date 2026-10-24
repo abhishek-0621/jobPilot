@@ -71,18 +71,22 @@ class ModelGateway:
             "keep_alive": route.keep_alive,
         }
         try:
-            resp = await self._client.post(self._url("/api/chat"), json=body, timeout=route.timeout_s)
+            resp = await self._client.post(
+                self._url("/api/chat"), json=body, timeout=route.timeout_s)
         except httpx.TimeoutException as e:
             raise ModelError(ErrorCode.MODEL_TIMEOUT, f"model {model_tag} timed out") from e
         except httpx.HTTPError as e:
-            raise ModelError(ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} unreachable: {e}") from e
+            raise ModelError(
+                ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} unreachable: {e}"
+            ) from e
         if resp.status_code >= 500 or resp.status_code == 404:
             raise ModelError(
                 ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} returned HTTP {resp.status_code}"
             )
         if resp.status_code != 200:
             raise ModelError(
-                ErrorCode.MODEL_INVALID_SCHEMA, f"model {model_tag} returned HTTP {resp.status_code}"
+                ErrorCode.MODEL_INVALID_SCHEMA,
+                f"model {model_tag} returned HTTP {resp.status_code}",
             )
         try:
             data = resp.json()
@@ -125,17 +129,23 @@ class ModelGateway:
         raise AssertionError("unreachable")  # pragma: no cover
 
     async def generate(
-        self, route: str, messages: list[dict], schema: type[T], prompt_version: str
+        self,
+        route: str,
+        messages: list[dict],
+        schema: type[T],
+        prompt_version: str,
+        model_tag: str | None = None,
     ) -> tuple[T, GenerationMeta]:
         if route not in self._cfg.model_routes:
             raise ValueError(f"unknown model route: {route}")
         cfg = self._cfg.model_routes[route]
         start = time.monotonic()
-        model_tag = cfg.model_tag
+        override = model_tag is not None
+        model_tag = model_tag or cfg.model_tag
         try:
             out, attempts, eval_count = await self._generate_with(cfg, model_tag, messages, schema)
         except ModelError as e:
-            if cfg.fallback is None or e.code not in (
+            if override or cfg.fallback is None or e.code not in (
                 ErrorCode.MODEL_UNAVAILABLE,
                 ErrorCode.MODEL_TIMEOUT,
             ):

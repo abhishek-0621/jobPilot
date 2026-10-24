@@ -1,0 +1,14 @@
+{
+  "title": "Frontend Engineer",
+  "company": "Brightfern Studio",
+  "location": "Hyderabad, India (Hybrid)",
+  "description": "Craft accessible web interfaces. Requirements: TypeScript, React, CSS, HTML, web accessibility, Jest. Nice to have: Next.js, Storybook.",
+  "expected_required_skills": [
+    "TypeScript",
+    "React",
+    "CSS",
+    "HTML",
+    "Web Accessibility",
+    "Jest"
+  ]
+}

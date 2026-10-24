@@ -2,9 +2,17 @@
 {% block title %}Jobs{% endblock %}
 {% block content %}
 <h1>Jobs</h1>
-{% if jobs %}
-<div class="table-wrap"><table><thead><tr><th>Company</th><th>Title</th><th>Location</th><th>Status</th><th>Score</th><th>Original listing</th></tr></thead><tbody>
-{% for job, score in jobs %}<tr><td>{{ job.company }}</td><td>{{ job.title }}</td><td>{{ job.location or "" }}</td><td>{{ job.status }}</td><td>{{ "%.0f"|format(score) if score is not none else "—" }}</td><td><a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ job.canonical_url }}</a></td></tr>{% endfor %}
+<p><button type="button" hx-post="/ui/runs/discovery" hx-target="#discover-result" hx-swap="innerHTML">Discover</button></p>
+<div id="discover-result"></div>
+<form method="get" action="/ui/jobs">
+<label>Status <select name="status"><option value="">All</option>{% for st in statuses %}<option value="{{ st }}"{% if st == status %} selected{% endif %}>{{ st }}</option>{% endfor %}</select></label>
+<label><input type="checkbox" name="show_duplicates" value="1"{% if show_duplicates %} checked{% endif %}> Show duplicates</label>
+<button type="submit">Filter</button>
+</form>
+{% if rows %}
+<div class="table-wrap"><table><thead><tr><th>Company</th><th>Title</th><th>Location</th><th>Status</th><th>Score</th><th>Explanation</th><th>Original listing</th><th></th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.job.company }}</td><td><a href="/ui/jobs/{{ r.job.job_id }}">{{ r.job.title }}</a></td><td>{{ r.job.location or "" }}</td><td>{{ r.job.status }}</td><td>{{ "%.1f"|format(r.score) if r.score is not none else "—" }}</td><td>{{ r.explanation }}</td><td><a href="{{ r.job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ r.job.canonical_url }}</a></td>
+<td>{% if r.selectable %}<button type="button" hx-post="/ui/jobs/{{ r.job.job_id }}/select" hx-target="#select-{{ loop.index0 }}" hx-swap="innerHTML">Select</button><span id="select-{{ loop.index0 }}"></span>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<p class="muted">No jobs discovered yet.</p>{% endif %}
 {% endblock %}

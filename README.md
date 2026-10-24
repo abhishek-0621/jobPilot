@@ -35,6 +35,31 @@ something is wrong.
 To see the dashboard with sample data: `uv run python scripts/seed_dry_run.py`, then
 `uv run jobpilot start`.
 
+## Profile & discovery
+
+Put your own files in `storage/profiles/` (git-ignored; never commit them):
+
+- `profile.yaml` — your candidate profile (see `tests/fixtures/profile_example.yaml` for the
+  layout; that file is a fictional example).
+- `search_preferences.yaml` — target titles, locations, work modes, `min_match_score`
+  (defaults come from `config/search_preferences.yaml`).
+- `companies.yaml` — the Greenhouse/Lever boards to watch (layout as in
+  `config/companies.example.yaml`).
+
+```sh
+uv run jobpilot profile import   # stores a new profile version; prints counts only
+uv run jobpilot sources check    # checks each board in companies.yaml is reachable
+uv run jobpilot start
+```
+
+Then, in the dashboard:
+
+1. Open **Profile** (`/ui/profile`) and verify each fact. Matching uses verified facts only;
+   until at least one is verified a banner is shown and jobs are not scored.
+2. On **Jobs** (`/ui/jobs`), click **Discover**. Jobs are fetched from the public boards,
+   de-duplicated, extracted and scored by the local model; those below `min_match_score`
+   or failing a hard filter (location, seniority, excluded keyword, experience gap) are rejected with a reason.
+
 ## Where data lives
 
 All state lives in `storage/` (SQLite database `storage/jobpilot.db`, generated artifacts).

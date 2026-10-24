@@ -25,6 +25,7 @@ from jobpilot.data.tables import (
 )
 from jobpilot.ids import new_id
 from jobpilot.observability.events import record_event
+from jobpilot.orchestrator.policies import revoked_items
 from jobpilot.orchestrator.state_machine import transition
 from jobpilot.util.hashing import canonical_json, content_hash
 
@@ -182,14 +183,28 @@ class ApprovalService:
                 ApprovalRow.revoked_at.is_(None),
             ).order_by(ApprovalRow.approved_at.desc(), ApprovalRow.approval_id.desc())
         ).scalars()
-        return [r for r in rows if application_id in json.loads(r.approved_item_ids_json)]
+        out: list[ApprovalRow] = []
+        for r in rows:
+            revoked = revoked_items(r)
+            if revoked is None or application_id in revoked:
+                continue
+            if application_id in json.loads(r.approved_item_ids_json):
+                out.append(r)
+        return out
 
     def invalidate_application(self, application_id: str, reason: str) -> None:
         for approval in self._approvals_containing(application_id):
-            approval.revoked_at = utcnow()
+            revoked = sorted({*(revoked_items(approval) or []), application_id})
+            approval.revoked_item_ids_json = canonical_json(revoked)
             record_event(self.session, entity_type="approval", entity_id=approval.approval_id,
-                         actor="system", action="approval_revoked", outcome="ok",
+                         actor="system", action="approval_item_revoked", outcome="ok",
                          details={"application_id": application_id, "reason": reason})
+            if set(json.loads(approval.approved_item_ids_json)) <= set(revoked):
+                approval.revoked_at = utcnow()
+                record_event(self.session, entity_type="approval",
+                             entity_id=approval.approval_id, actor="system",
+                             action="approval_revoked", outcome="ok",
+                             details={"application_id": application_id, "reason": reason})
         app = get_application(self.session, application_id)
         if app.status == ApplicationStatus.APPROVED:
             transition(self.session, app, ApplicationStatus.READY_FOR_REVIEW,

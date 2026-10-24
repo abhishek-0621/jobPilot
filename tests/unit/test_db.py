@@ -79,9 +79,10 @@ def test_audit_insert_or_replace_blocked(db_session):
     db_session.commit()
     with pytest.raises((IntegrityError, OperationalError)):
         db_session.execute(text(
-            "INSERT OR REPLACE INTO audit_event (event_id, timestamp_utc, entity_type, entity_id, actor, "
-            "action, outcome, redacted_details_json) VALUES (:i, CURRENT_TIMESTAMP, 'job', 'job_r', 'evil', 'forged', 'ok', "
-            "'{}')"), {"i": ev.event_id})
+            "INSERT OR REPLACE INTO audit_event (event_id, timestamp_utc, entity_type, "
+            "entity_id, actor, action, outcome, redacted_details_json) VALUES "
+            "(:i, CURRENT_TIMESTAMP, 'job', 'job_r', 'evil', 'forged', 'ok', '{}')"),
+            {"i": ev.event_id})
         db_session.commit()
     db_session.rollback()
     rows = list_events(db_session, "job_r")

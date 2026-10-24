@@ -1,0 +1,13 @@
+{
+  "title": "Backend Engineer (Python)",
+  "company": "Quillstone Software",
+  "location": "Pune, India (Onsite)",
+  "description": "Own our REST services. Requirements: Python, Django, PostgreSQL, REST APIs, Redis, unit testing. Nice to have: AWS, Celery.",
+  "expected_required_skills": [
+    "Python",
+    "Django",
+    "PostgreSQL",
+    "REST APIs",
+    "Redis"
+  ]
+}

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import shutil
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -12,17 +12,17 @@ from typing import Annotated, Any, Literal
 from alembic.runtime.migration import MigrationContext
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp
-from sqlalchemy import select
-from sqlalchemy.exc import NoResultFound
-from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.api import schemas as sc
-from jobpilot.api.actions import approve_and_queue
+from jobpilot.api.actions import ActionConflict, approve_and_queue, select_job, start_discovery
 from jobpilot.config import AppConfig, load_config
 from jobpilot.dashboard.routes import router as dashboard_router
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
@@ -49,8 +49,7 @@ from jobpilot.data.tables import (
 from jobpilot.llm.ollama_client import ModelGateway
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
-from jobpilot.portals.simulated import SimulatedAdapter
-
+from jobpilot.runtime import Runtime, build_runtime
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
@@ -139,6 +138,7 @@ def create_app(
     orchestrator: Orchestrator,
     gateway: ModelGateway | None = None,
     start_worker: bool = True,
+    runtime: Runtime | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -153,6 +153,8 @@ def create_app(
             stop.set()
             if task is not None:
                 await task
+            if runtime is not None:
+                await runtime.aclose()
 
     app = FastAPI(title="JobPilot", lifespan=lifespan)
     app.add_middleware(LocalOriginMiddleware, port=cfg.port)
@@ -202,6 +204,24 @@ def create_app(
             description_text=job.description_text, match=match,
             events=[_event_out(e) for e in list_events(s, job_id)],
         )
+
+    @app.post("/runs/discovery")
+    def run_discovery(s: Db) -> dict[str, str]:
+        try:
+            task_id, _run_id = start_discovery(s, orchestrator)
+        except ActionConflict as e:
+            raise HTTPException(409, str(e)) from e
+        return {"task_id": task_id}
+
+    @app.post("/jobs/{job_id}/select")
+    def select_api(job_id: str, s: Db) -> dict[str, str]:
+        try:
+            a = select_job(s, job_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ActionConflict as e:
+            raise HTTPException(409, str(e)) from e
+        return {"application_id": a.application_id}
 
     @app.get("/applications/{application_id}", response_model=sc.ApplicationDetail)
     def application_detail(application_id: str, s: Db) -> sc.ApplicationDetail:
@@ -298,6 +318,7 @@ def app_from_config(config_dir: Path = Path("config")) -> FastAPI:
     upgrade_to_head(cfg.db_path)
     factory = make_session_factory(make_engine(cfg.db_path))
     gateway = ModelGateway(cfg)
-    orch = Orchestrator(factory, cfg, {}, {"simulated": SimulatedAdapter()},
-                        handlers={}, gateway=gateway)
-    return create_app(cfg, factory, orch, gateway)
+    rt = build_runtime(cfg, factory)
+    orch = Orchestrator(factory, cfg, rt.agents, rt.adapters, handlers=rt.handlers,
+                        gateway=gateway, tools=rt.tools)
+    return create_app(cfg, factory, orch, gateway, runtime=rt)

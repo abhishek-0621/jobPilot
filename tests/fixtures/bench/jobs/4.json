@@ -1,0 +1,14 @@
+{
+  "title": "Data Engineer",
+  "company": "Veridian Metrics",
+  "location": "Remote",
+  "description": "Build batch and streaming data pipelines. Requirements: SQL, Python, Apache Spark, Airflow, data modeling, Kafka. Nice to have: dbt, Snowflake.",
+  "expected_required_skills": [
+    "SQL",
+    "Python",
+    "Apache Spark",
+    "Airflow",
+    "Data Modeling",
+    "Kafka"
+  ]
+}

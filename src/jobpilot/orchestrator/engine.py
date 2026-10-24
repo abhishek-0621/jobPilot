@@ -61,6 +61,7 @@ _UNRESOLVED_DECISIONS = (FieldDecision.ASK_USER.value, FieldDecision.BLOCKED.val
 
 class TaskKind(StrEnum):
     DISCOVER = "DISCOVER"
+    EXTRACT = "EXTRACT"
     MATCH = "MATCH"
     TAILOR = "TAILOR"
     PREPARE_FORM = "PREPARE_FORM"
@@ -98,6 +99,17 @@ class AgentContext:
     task_id: str
     gateway: ModelGateway | None
     tools: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Provided:
+    """A tool whose value is produced fresh for every task (e.g. files re-read per run)."""
+
+    factory: Callable[[], Any]
+
+
+def resolve_tool(value: Any) -> Any:
+    return value.factory() if isinstance(value, Provided) else value
 
 
 class Agent(Protocol[I, O]):
@@ -285,7 +297,8 @@ class Orchestrator:
             return
         declared = tuple(getattr(agent, "tools", ()))
         ctx = AgentContext(task_id=task.task_id, gateway=self._gateway,
-                           tools={k: v for k, v in self._tools.items() if k in declared})
+                           tools={k: resolve_tool(v) for k, v in self._tools.items()
+                                  if k in declared})
         inp = TaskInput(task_id=task.task_id, kind=kind, entity_type=task.entity_type,
                         entity_id=task.entity_id, attempt=task.attempts)
         started = time.monotonic()
@@ -295,6 +308,14 @@ class Orchestrator:
             code = e.code if isinstance(e, ModelError) else ErrorCode.MODEL_TIMEOUT
             self._record_run(s, task, agent, AgentRunStatus.FAILED, started, code)
             self._handle_model_error(s, task, code)
+            s.commit()
+            return
+        except OutputRejected as e:
+            self._record_run(s, task, agent, AgentRunStatus.FAILED, started,
+                             ErrorCode.MODEL_INVALID_SCHEMA)
+            self._fail(s, task, "output_rejected",
+                       {"error_type": type(e).__name__, "reason": str(e)},
+                       ErrorCode.MODEL_INVALID_SCHEMA)
             s.commit()
             return
 
@@ -310,7 +331,10 @@ class Orchestrator:
             assert task is not None
             self._record_run(s, task, agent, AgentRunStatus.FAILED, started,
                              ErrorCode.MODEL_INVALID_SCHEMA)
-            self._fail(s, task, "output_rejected", {"error_type": type(e).__name__},
+            details = {"error_type": type(e).__name__}
+            if isinstance(e, OutputRejected):
+                details["reason"] = str(e)
+            self._fail(s, task, "output_rejected", details,
                        ErrorCode.MODEL_INVALID_SCHEMA)
             s.commit()
             return
@@ -540,7 +564,8 @@ class Orchestrator:
                            reason="stranded_in_progress")
 
     def _requeue_orphaned_approvals(self, s: Session) -> None:
-        """APPROVED apps with no live SUBMIT task get one; the gate re-checks approval."""
+        """APPROVED apps with a valid approval and no live SUBMIT task get one; those
+        whose approval was item-revoked return to review."""
         live = set(s.execute(select(TaskRow.entity_id).where(
             TaskRow.kind == TaskKind.SUBMIT.value,
             TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)),
@@ -548,8 +573,12 @@ class Orchestrator:
         apps = s.execute(select(ApplicationRow.application_id).where(
             ApplicationRow.status == ApplicationStatus.APPROVED.value
         ).order_by(ApplicationRow.application_id)).scalars().all()
+        svc = ApprovalService(s)
         for app_id in apps:
-            if app_id not in live:
+            if svc.active_approval_for(app_id) is None:
+                transition(s, get_application(s, app_id), ApplicationStatus.READY_FOR_REVIEW,
+                           actor=_ACTOR, reason="approval_item_revoked")
+            elif app_id not in live:
                 self._add_task(s, TaskKind.SUBMIT, "application", app_id)
 
     def _recover_side_effect(self, s: Session, task: TaskRow, kind: TaskKind) -> None:

@@ -173,7 +173,8 @@ async def test_valid_output_runs_handler_and_enqueues_followup(factory) -> None:
     assert runs[0].status == "SUCCEEDED" and runs[0].task_id == tid
 
 
-@pytest.mark.parametrize("behaviour", [returns_extra_field, returns_invalid_value, returns_wrong_type])
+@pytest.mark.parametrize(
+    "behaviour", [returns_extra_field, returns_invalid_value, returns_wrong_type])
 async def test_invalid_agent_output_rejected(factory, behaviour) -> None:
     clock = FakeClock()
     job_id = seed_job(factory)
@@ -272,8 +273,8 @@ async def test_restart_marks_inflight_submit_uncertain(factory) -> None:
     orch = make_orch(factory, clock)
     tid = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
     with factory() as s:
-        from jobpilot.orchestrator.state_machine import transition
         from jobpilot.contracts.enums import ApplicationStatus
+        from jobpilot.orchestrator.state_machine import transition
         transition(s, get_application(s, app_id), ApplicationStatus.SUBMISSION_IN_PROGRESS,
                    actor="system", reason="test")
         t = s.get(TaskRow, tid)

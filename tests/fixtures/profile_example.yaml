@@ -1,0 +1,68 @@
+# Synthetic example profile. Fictional person; no real data.
+profile_version: 1
+default_resume: resume_asha_example.pdf
+identity:
+  full_name: Asha Example
+  first_name: Asha
+  last_name: Example
+  email: asha@example.com
+  phone_country_code: "+91"
+  phone_national: "9000000000"
+  phone_e164: "+919000000000"
+  location_display: Bengaluru, India
+  address:
+    line1: 1 Example Street
+    line2: Example Layout
+    city: Bengaluru
+    state: Karnataka
+    postal_code: "560000"
+    country: India
+    country_code: IN
+  source: synthetic
+links:
+  linkedin: https://www.linkedin.com/in/asha-example
+  github: https://github.com/asha-example
+  portfolio: https://asha.example.com
+  source: synthetic
+languages: [English, Hindi]
+current_employment:
+  employer: Example Corp
+  location: Bengaluru
+  title: AI Engineer
+  since: 2023-01
+  company_start: 2023-01
+  total_experience_years: 3.5
+education:
+  - fact_id: fact_edu_001
+    degree: M.Tech
+    field: Computer Science
+    institution: Example Institute of Technology
+    end: 2022
+    source: resume
+experience:
+  - role_id: role_001
+    employer: Example Corp
+    title: AI Engineer
+    start: 2023-01
+    end: present
+    facts:
+      - {fact_id: fact_exp_001, value: Built a retrieval pipeline serving 10k queries per day, source: resume}
+      - {fact_id: fact_exp_002, value: Reduced inference latency by 30 percent, source: resume}
+projects:
+  - project_id: proj_001
+    name: Example RAG Assistant
+    start: 2024-01
+    end: 2024-06
+    facts:
+      - {fact_id: fact_proj_001, value: Built a document question answering assistant, source: resume}
+skills:
+  languages: [Python, SQL]
+  genai: [RAG, LLM evaluation]
+achievements:
+  - {fact_id: fact_ach_001, value: Won an internal hackathon, source: resume}
+answer_library:
+  notice_period: 30 days
+  willing_to_relocate: null
+  preferred_cities: [Bengaluru, Hyderabad]
+open_questions:
+  - Confirm expected CTC range
