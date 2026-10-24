@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import shutil
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, suppress
@@ -10,23 +11,30 @@ from typing import Annotated, Any, Literal
 
 from alembic.runtime.migration import MigrationContext
 from fastapi import Depends, FastAPI, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.api import schemas as sc
+from jobpilot.api.actions import approve_and_queue
 from jobpilot.config import AppConfig, load_config
-from jobpilot.contracts.enums import BatchStatus
+from jobpilot.dashboard.routes import router as dashboard_router
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
 from jobpilot.data.repositories import (
+    batch_items,
     counts_by_status,
     get_application,
+    jobs_with_scores,
+    latest_batch,
     list_events,
+    pending_batches,
+    recent_failures,
 )
 from jobpilot.data.tables import (
     ApplicationRow,
     ApprovalBatchRow,
     AuditEventRow,
-    BatchItemRow,
     DocumentArtifactRow,
     FormFieldAnswerRow,
     JobRow,
@@ -39,9 +47,19 @@ from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.portals.simulated import SimulatedAdapter
 
 
+log = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
+
+
 async def worker_loop(orch: Orchestrator, stop: asyncio.Event) -> None:
     while not stop.is_set():
-        did_work = await orch.run_once()
+        try:
+            did_work = await orch.run_once()
+        except Exception:  # the worker must never die; log and back off
+            log.exception("worker loop iteration failed")
+            with suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=1.0)
+            continue
         if not did_work:
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=1.0)
@@ -56,9 +74,7 @@ def _event_out(e: AuditEventRow) -> sc.EventOut:
 
 
 def _batch_out(s: Session, batch: ApprovalBatchRow) -> sc.BatchOut:
-    items = s.execute(select(BatchItemRow).where(
-        BatchItemRow.batch_id == batch.batch_id, BatchItemRow.version == batch.version,
-    ).order_by(BatchItemRow.application_id)).scalars()
+    items = batch_items(s, batch.batch_id, batch.version)
     return sc.BatchOut(
         batch_id=batch.batch_id, version=batch.version, status=batch.status,
         content_hash=batch.content_hash,
@@ -73,7 +89,7 @@ def _job_summary(job: JobRow, score: float | None) -> dict[str, Any]:
                 total_score=score)
 
 
-def _health(cfg: AppConfig, session_factory: sessionmaker[Session],
+def compute_health(cfg: AppConfig, session_factory: sessionmaker[Session],
             available: set[str] | None) -> sc.HealthOut:
     wanted: set[str] = set()
     for route in cfg.model_routes.values():
@@ -118,6 +134,10 @@ def create_app(
                 await task
 
     app = FastAPI(title="JobPilot", lifespan=lifespan)
+    app.state.session_factory = session_factory
+    app.state.orchestrator = orchestrator
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.include_router(dashboard_router)
 
     def get_session() -> Iterator[Session]:
         with session_factory() as s:
@@ -133,22 +153,13 @@ def create_app(
                 available = await gateway.available_models()
             except Exception:
                 available = None
-        return await asyncio.to_thread(_health, cfg, session_factory, available)
+        return await asyncio.to_thread(compute_health, cfg, session_factory, available)
 
     @app.get("/jobs", response_model=list[sc.JobSummary])
     def jobs(s: Db, status: str | None = None,
              min_score: float | None = None) -> list[sc.JobSummary]:
-        q = select(JobRow, func.max(MatchAssessmentRow.total_score)).outerjoin(
-            MatchAssessmentRow, MatchAssessmentRow.job_id == JobRow.job_id
-        ).group_by(JobRow.job_id).order_by(JobRow.first_seen_at.desc(), JobRow.job_id)
-        if status is not None:
-            q = q.where(JobRow.status == status)
-        out: list[sc.JobSummary] = []
-        for job, score in s.execute(q).all():
-            if min_score is not None and (score is None or score < min_score):
-                continue
-            out.append(sc.JobSummary(**_job_summary(job, score)))
-        return out
+        return [sc.JobSummary(**_job_summary(job, score))
+                for job, score in jobs_with_scores(s, status, min_score)]
 
     @app.get("/jobs/{job_id}", response_model=sc.JobDetail)
     def job_detail(job_id: str, s: Db) -> sc.JobDetail:
@@ -173,7 +184,7 @@ def create_app(
     def application_detail(application_id: str, s: Db) -> sc.ApplicationDetail:
         try:
             a = get_application(s, application_id)
-        except Exception:
+        except NoResultFound:
             raise HTTPException(404, "application not found") from None
         job = s.get(JobRow, a.job_id)
         assert job is not None
@@ -212,8 +223,7 @@ def create_app(
 
     @app.get("/batches/{batch_id}", response_model=sc.BatchOut)
     def get_batch(batch_id: str, s: Db) -> sc.BatchOut:
-        batch = s.execute(select(ApprovalBatchRow).where(ApprovalBatchRow.batch_id == batch_id)
-                          .order_by(ApprovalBatchRow.version.desc())).scalars().first()
+        batch = latest_batch(s, batch_id)
         if batch is None:
             raise HTTPException(404, "batch not found")
         return _batch_out(s, batch)
@@ -221,19 +231,13 @@ def create_app(
     @app.post("/batches/{batch_id}/approve", response_model=sc.ApprovalOut)
     def approve(batch_id: str, body: sc.ApproveIn, s: Db) -> sc.ApprovalOut:
         try:
-            approval = ApprovalService(s).approve(
-                batch_id, body.version, body.content_hash, body.application_ids)
+            res = approve_and_queue(s, orchestrator, batch_id, body.version,
+                                    body.content_hash, body.application_ids)
         except StaleApprovalError as e:
-            s.rollback()
             raise HTTPException(409, "stale") from e
         except ValueError as e:
-            s.rollback()
             raise HTTPException(422, str(e)) from e
-        batch = s.get(ApprovalBatchRow, (batch_id, body.version))
-        assert batch is not None
-        out = sc.ApprovalOut(approval_id=approval.approval_id, batch_status=batch.status)
-        s.commit()
-        return out
+        return sc.ApprovalOut(approval_id=res.approval_id, batch_status=res.batch_status)
 
     @app.get("/events", response_model=list[sc.EventOut])
     def events(s: Db, entity_id: str | None = None,
@@ -253,31 +257,20 @@ def create_app(
 
     @app.get("/overview", response_model=sc.OverviewOut)
     def overview(s: Db) -> sc.OverviewOut:
-        latest = select(ApprovalBatchRow.batch_id, func.max(ApprovalBatchRow.version).label("v")
-                        ).group_by(ApprovalBatchRow.batch_id).subquery()
-        pending = s.execute(select(func.count()).select_from(ApprovalBatchRow).join(
-            latest, (ApprovalBatchRow.batch_id == latest.c.batch_id)
-            & (ApprovalBatchRow.version == latest.c.v)
-        ).where(ApprovalBatchRow.status.in_((BatchStatus.READY_FOR_REVIEW.value,
-                                             BatchStatus.PARTIALLY_APPROVED.value)))
-        ).scalar_one()
-        failures = s.execute(select(AuditEventRow).where(AuditEventRow.error_code.is_not(None))
-                             .order_by(AuditEventRow.timestamp_utc.desc(),
-                                       AuditEventRow.event_id.desc()).limit(10)).scalars()
         return sc.OverviewOut(
             jobs=counts_by_status(s, JobRow),
             applications=counts_by_status(s, ApplicationRow),
             outreach=counts_by_status(s, OutreachDraftRow),
             batches=counts_by_status(s, ApprovalBatchRow),
-            pending_approvals=pending,
-            recent_failures=[_event_out(e) for e in failures],
+            pending_approvals=len(pending_batches(s)),
+            recent_failures=[_event_out(e) for e in recent_failures(s)],
         )
 
     return app
 
 
-def app_from_config() -> FastAPI:
-    cfg = load_config(Path("config"))
+def app_from_config(config_dir: Path = Path("config")) -> FastAPI:
+    cfg = load_config(config_dir)
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
     upgrade_to_head(cfg.db_path)
     factory = make_session_factory(make_engine(cfg.db_path))

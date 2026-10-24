@@ -176,3 +176,64 @@ def test_lifespan_runs_and_stops_worker(
     orch = Orchestrator(factory, cfg, {}, {})
     with TestClient(create_app(cfg, factory, orch)) as client:
         assert client.get("/overview").status_code == 200
+
+
+async def test_worker_loop_survives_run_once_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from jobpilot.api import main
+
+    stop = asyncio.Event()
+    calls: list[int] = []
+
+    class Boom:
+        async def run_once(self) -> bool:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("db locked")
+            stop.set()
+            return False
+
+    real_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(aw: Any, timeout: float) -> Any:
+        return await real_wait_for(aw, timeout=0.01)
+
+    monkeypatch.setattr(main.asyncio, "wait_for", fast_wait_for)
+    await real_wait_for(main.worker_loop(Boom(), stop), timeout=5)  # type: ignore[arg-type]
+    assert len(calls) == 2
+
+
+def test_application_detail_404_only_for_missing(
+    factory: sessionmaker[Session], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jobpilot.api import main
+
+    client = make_client(factory, tmp_path)
+    assert client.get("/applications/app_missing").status_code == 404
+
+    def broken(s: Any, application_id: str) -> Any:
+        raise RuntimeError("db corrupted")
+
+    monkeypatch.setattr(main, "get_application", broken)
+    with pytest.raises(RuntimeError):
+        client.get("/applications/app_missing")
+
+
+def test_approve_endpoint_enqueues_submit(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    from sqlalchemy import select
+
+    from jobpilot.data.tables import TaskRow
+
+    ids, batch_id, h = seed_batch(factory)
+    client = make_client(factory, tmp_path)
+    ok = client.post(f"/batches/{batch_id}/approve",
+                     json={"version": 1, "content_hash": h, "application_ids": ids[:1]})
+    assert ok.status_code == 200
+    with factory() as s:
+        tasks = s.execute(select(TaskRow)).scalars().all()
+    assert [(t.kind, t.entity_id) for t in tasks] == [("SUBMIT", ids[0])]

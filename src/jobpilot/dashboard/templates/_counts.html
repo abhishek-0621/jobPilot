@@ -1,0 +1,13 @@
+<section id="counts" hx-get="/ui/overview/counts" hx-trigger="every 5s" hx-swap="outerHTML">
+<div class="grid">
+{% for name, counts in sections %}
+<div class="card"><h3>{{ name }}</h3>
+{% for status, n in counts|dictsort %}<div class="kv"><span>{{ status }}</span><span>{{ n }}</span></div>
+{% else %}<div class="muted">None yet</div>{% endfor %}
+</div>
+{% endfor %}
+</div>
+<h2>Pending approvals ({{ pending|length }})</h2>
+{% if pending %}<ul>{% for b in pending %}<li><a href="/ui/batches/{{ b.batch_id }}">{{ b.batch_id }}</a> v{{ b.version }} · {{ b.status }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">Nothing waiting for review.</p>{% endif %}
+</section>
