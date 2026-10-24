@@ -2,7 +2,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
-    DateTime,
     Float,
     ForeignKey,
     Index,
@@ -13,11 +12,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from jobpilot.data.db import Base, utcnow
+from jobpilot.data.db import Base, UTCDateTime, utcnow
 
 
 def _ts(**kw: object) -> Mapped[datetime]:
-    return mapped_column(DateTime(timezone=True), **kw)  # type: ignore[arg-type]
+    return mapped_column(UTCDateTime(), **kw)  # type: ignore[arg-type]
 
 
 class CandidateProfileRow(Base):

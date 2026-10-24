@@ -45,3 +45,29 @@ def test_upsert_job_dedupes_on_source_id(db_session):
     _, created2 = upsert_job(db_session, make_listing(source="greenhouse", source_job_id="42"))
     assert created1 and not created2
     assert counts_by_status(db_session, JobRow) == {"DISCOVERED": 1}
+
+
+def test_datetimes_round_trip_aware(db_session):
+    from datetime import UTC, datetime, timedelta, timezone
+
+    job, _ = upsert_job(db_session, make_listing())
+    db_session.commit()
+    db_session.expire_all()
+    assert job.first_seen_at.tzinfo is not None
+    assert job.first_seen_at.utcoffset() == timedelta(0)
+    ev = record_event(db_session, entity_type="job", entity_id="j", actor="t",
+                      action="a", outcome="ok")
+    db_session.commit()
+    db_session.expire_all()
+    assert ev.timestamp_utc.tzinfo is not None
+    # aware non-UTC values are normalised to UTC
+    est = timezone(timedelta(hours=-5))
+    job.last_seen_at = datetime(2026, 1, 1, 7, tzinfo=est)
+    db_session.commit()
+    db_session.expire_all()
+    assert job.last_seen_at == datetime(2026, 1, 1, 12, tzinfo=UTC)
+    # naive values are rejected
+    job.last_seen_at = datetime(2026, 1, 1)
+    with pytest.raises(Exception, match="naive datetime"):
+        db_session.commit()
+    db_session.rollback()

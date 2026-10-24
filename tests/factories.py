@@ -85,3 +85,17 @@ def make_listing(**overrides: Any) -> JobListing:
         "source_evidence": [],
     }
     return JobListing(**{**base, **overrides})
+
+
+def make_app_row(db_session: Any, status: str = "NOT_STARTED") -> Any:
+    from jobpilot.data.repositories import upsert_job
+    from jobpilot.data.tables import ApplicationRow
+    from jobpilot.ids import new_id
+
+    job, _ = upsert_job(
+        db_session, make_listing(source_job_id=new_id("src"), job_id=new_id("job"))
+    )
+    app = ApplicationRow(application_id=new_id("app"), job_id=job.job_id, status=status)
+    db_session.add(app)
+    db_session.flush()
+    return app
