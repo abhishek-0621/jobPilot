@@ -92,8 +92,11 @@ def make_app_row(db_session: Any, status: str = "NOT_STARTED") -> Any:
     from jobpilot.data.tables import ApplicationRow
     from jobpilot.ids import new_id
 
+    uid = new_id("src")
     job, _ = upsert_job(
-        db_session, make_listing(source_job_id=new_id("src"), job_id=new_id("job"))
+        db_session,
+        make_listing(source_job_id=uid, job_id=new_id("job"), company=f"Acme {uid}",
+                     canonical_url=f"https://example.com/jobs/{uid}"),
     )
     app = ApplicationRow(application_id=new_id("app"), job_id=job.job_id, status=status)
     db_session.add(app)

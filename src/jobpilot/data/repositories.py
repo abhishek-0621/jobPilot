@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from jobpilot.contracts.enums import ApplicationStatus, BatchStatus, JobStatus
@@ -11,7 +11,9 @@ from jobpilot.data.tables import (
     JobRow,
     MatchAssessmentRow,
 )
+from jobpilot.discovery.normalize import dedupe_key, normalize_url
 from jobpilot.ids import new_id
+from jobpilot.observability.events import record_event
 from jobpilot.util.hashing import canonical_json
 
 
@@ -49,11 +51,18 @@ def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
             existing.last_seen_at = listing.last_seen_at
             s.flush()
             return existing, False
+    url = normalize_url(listing.canonical_url)
+    key = dedupe_key(listing.company, listing.title, listing.location)
+    canonical = _find_canonical(s, JobRow.canonical_url == url)
+    match = "url"
+    if canonical is None:
+        canonical = _find_canonical(s, JobRow.dedupe_key == key)
+        match = "dedupe_key"
     row = JobRow(
         job_id=new_id("job"),
         source=listing.source,
         source_job_id=listing.source_job_id,
-        canonical_url=listing.canonical_url,
+        canonical_url=url,
         application_url=listing.application_url,
         company=listing.company,
         title=listing.title,
@@ -61,13 +70,27 @@ def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
         work_mode=listing.work_mode,
         description_text=listing.description_text,
         extracted_json=canonical_json(listing),
-        status=JobStatus.DISCOVERED.value,
+        dedupe_key=key,
+        canonical_job_id=canonical.job_id if canonical is not None else None,
+        status=(JobStatus.DUPLICATE if canonical is not None else JobStatus.DISCOVERED).value,
         first_seen_at=listing.first_seen_at,
         last_seen_at=listing.last_seen_at,
     )
     s.add(row)
     s.flush()
+    if canonical is not None:
+        record_event(s, entity_type="job", entity_id=row.job_id, actor="discovery",
+                     action="job_duplicate", outcome="ok",
+                     details={"canonical_job_id": canonical.job_id, "match": match})
+        return row, False
     return row, True
+
+
+def _find_canonical(s: Session, clause: ColumnElement[bool]) -> JobRow | None:
+    return s.execute(
+        select(JobRow).where(clause, JobRow.status != JobStatus.DUPLICATE.value)
+        .order_by(JobRow.first_seen_at, JobRow.job_id).limit(1)
+    ).scalar_one_or_none()
 
 
 def jobs_with_scores(

@@ -39,8 +39,11 @@ def set_artifact(s: Session, application_id: str,
                  kind: Literal["resume", "cover_letter"], artifact_id: str, *,
                  actor: str) -> None:
     app = get_application(s, application_id)
-    if s.get(DocumentArtifactRow, artifact_id) is None:
+    artifact = s.get(DocumentArtifactRow, artifact_id)
+    if artifact is None:
         raise LookupError(f"unknown artifact {artifact_id}")
+    if artifact.application_id != application_id or artifact.type != kind:
+        raise ValueError(f"artifact {artifact_id} is not a {kind} of {application_id}")
     if kind == "resume":
         app.resume_artifact_id = artifact_id
     elif kind == "cover_letter":

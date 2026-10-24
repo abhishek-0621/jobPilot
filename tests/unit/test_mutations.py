@@ -210,3 +210,37 @@ def test_mutations_are_only_writers() -> None:
         and any(rx.search(p.read_text(encoding="utf-8")) for rx in patterns)
     ]
     assert offenders == []
+
+
+def test_set_artifact_rejects_foreign_or_wrong_kind(db_session: Session) -> None:
+    a1, a2 = seed_ready_apps(db_session, 2)
+    approval = _approve(db_session, [a1])
+    foreign = get_application(db_session, a2).resume_artifact_id
+    assert foreign is not None
+    before = get_application(db_session, a1).resume_artifact_id
+    with pytest.raises(ValueError):
+        set_artifact(db_session, a1, "resume", foreign, actor="user")
+    own = get_application(db_session, a1).resume_artifact_id
+    assert own is not None
+    with pytest.raises(ValueError):
+        set_artifact(db_session, a1, "cover_letter", own, actor="user")
+    assert get_application(db_session, a1).resume_artifact_id == before
+    assert get_application(db_session, a1).cover_letter_artifact_id is None
+    assert approval.revoked_at is None
+    assert get_application(db_session, a1).status == "APPROVED"
+
+
+def test_orphan_sweep_returns_item_revoked_to_review(
+    factory: sessionmaker[Session],
+) -> None:
+    with factory() as s:
+        a1, a2 = seed_ready_apps(s, 2)
+        approval = _approve(s, [a1, a2])
+        approval.revoked_item_ids_json = f'["{a1}"]'
+        s.commit()
+    orch = Orchestrator(factory, AppConfig(model_routes={}), {},
+                        {"simulated": SimulatedAdapter()})
+    orch.recover_on_startup()
+    with factory() as s:
+        assert get_application(s, a1).status == "READY_FOR_REVIEW"
+        assert get_application(s, a2).status == "APPROVED"
