@@ -64,6 +64,24 @@ POSITIVES = [
     ("What are your pay expectations?", "compensation"),
     ("Desired compensation", "compensation"),
     ("Expected pay range", "compensation"),
+    ("Will you require employer support to work in India?", "authorization"),
+    ("What is your current immigration status?", "authorization"),
+    ("Do you hold a green card?", "authorization"),
+    ("Are you a permanent resident?", "authorization"),
+    ("Current work status", "authorization"),
+    ("Are you a US Person for export control purposes?", "authorization"),
+    ("Do you have a criminal record?", "background"),
+    ("Have you ever been convicted of a felony?", "background"),
+    ("Are you currently employed by a government entity?", "background"),
+    ("Do you have any relatives working at the company?", "background"),
+    ("Are you related to anyone at Acme?", "background"),
+    ("Are you subject to a non-compete agreement?", "background"),
+    ("E-signature", "declaration"),
+    ("Signature", "declaration"),
+    ("Type your full name to sign", "declaration"),
+    ("I have read and understood the above", "declaration"),
+    ("Do you have any physical or mental impairment?", "demographic"),
+    ("Any medical condition we should know about?", "demographic"),
 ]
 
 NEGATIVES = [
@@ -83,6 +101,8 @@ NEGATIVES = [
     "Cover letter",
     "How did you hear about us?",
     "Website",
+    "Design systems experience",
+    "Describe your design process",
 ]
 
 

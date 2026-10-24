@@ -24,6 +24,41 @@ _DECLARATION = (
     "accurate and complete",
     "false information",
     "false statements",
+    "signature",
+    "e signature",
+    "esignature",
+    "to sign",
+    "sign here",
+    "please sign",
+    "read and understood",
+    "have read",
+)
+_BACKGROUND = (
+    "criminal record",
+    "criminal history",
+    "convicted",
+    "conviction",
+    "convictions",
+    "felony",
+    "misdemeanor",
+    "offence",
+    "offense",
+    "government employee",
+    "government official",
+    "government entity",
+    "public official",
+    "conflict of interest",
+    "non compete",
+    "noncompete",
+    "non solicit",
+    "nonsolicit",
+)
+_BACKGROUND_RE = (
+    re.compile(
+        r"\b(?:relatives?|family members?)\s+(?:\w+\s+)?(?:working|employed)\s+(?:at|for|by|with)\b"
+    ),
+    re.compile(r"\brelated to (?:anyone|anybody|any)\b"),
+    re.compile(r"\bemployed (?:by|with) (?:a |the |any )?(?:\w+\s+)?government\b"),
 )
 _AUTHORIZATION = (
     "authorized to work",
@@ -48,9 +83,18 @@ _AUTHORIZATION = (
     "citizenship",
     "national",
     "nationality",
+    "employer support",
+    "immigration",
+    "green card",
+    "permanent resident",
+    "residency status",
+    "work status",
+    "export control",
+    "us person",
 )
 _AUTHORIZATION_RE = (
     re.compile(r"\blegally (?:able|eligible|permitted|entitled|authori[sz]ed)\b"),
+    re.compile(r"\bto work in\b"),
     re.compile(r"\b(?:authori[sz]ed|eligible|able|permitted|legally)\s+(?:to\s+)?work\s+in\b"),
 )
 _DEMOGRAPHIC = (
@@ -89,6 +133,8 @@ _DEMOGRAPHIC = (
     "how do you identify",
     "self identify",
     "identify as",
+    "impairment",
+    "medical condition",
 )
 _DEMOGRAPHIC_OPTIONS = (
     "prefer not to say",
@@ -127,11 +173,13 @@ def _any(text: str, phrases: tuple[str, ...]) -> bool:
 def classify_sensitive(
     label: str, help_text: str = "", options: list[str] | None = None
 ) -> str | None:
-    """Return ``declaration``, ``authorization``, ``demographic``, ``compensation`` or ``None``."""
+    """Return a category (declaration, background, authorization, ...) or None."""
     text = f"{_normalize(label)} {_normalize(help_text)}"
     opts = _normalize(" | ".join(options)) if options else ""
     if _any(text, _DECLARATION):
         return "declaration"
+    if _any(text, _BACKGROUND) or any(r.search(text) for r in _BACKGROUND_RE):
+        return "background"
     if _any(text, _AUTHORIZATION) or any(r.search(text) for r in _AUTHORIZATION_RE):
         return "authorization"
     if _any(text, _DEMOGRAPHIC) or (opts and _any(opts, _DEMOGRAPHIC_OPTIONS)):
