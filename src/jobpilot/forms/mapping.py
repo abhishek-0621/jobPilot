@@ -14,6 +14,7 @@ from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.model import AliasConfig, AliasEntry, MappingContext
 from jobpilot.llm.prompts import build_messages
 from jobpilot.portals.base import FormField, FormSnapshot
+from jobpilot.util.textmatch import has_phrase
 
 PROMPT_VERSION = "field_map_v1"
 ROUTE = "form_mapping"
@@ -29,6 +30,9 @@ _NON_WORD = re.compile(r"[\W_]+")
 _PATH_PART = re.compile(r"^(\w+)(?:\[(\d+)\])?$")
 _RANGE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)")
 _PLUS = re.compile(r"(\d+(?:\.\d+)?)\s*\+")
+_THIRD_PARTY = ("referrer", "referral", "referred", "reference", "references", "manager",
+                "supervisor", "emergency", "recruiter", "spouse", "partner", "parent",
+                "guardian", "kin", "contact person", "hiring manager", "interviewer")
 _ARTIFACT_ATTR = {"resume": "resume_path", "cover_letter": "cover_letter_path",
                   "cover_letter_text": "cover_letter_text"}
 
@@ -41,6 +45,12 @@ class Gateway(Protocol):
 def normalize_label(s: str) -> str:
     """Lowercase, drop '*'/'(required)'/'(optional)', strip punctuation, collapse spaces."""
     return " ".join(_NON_WORD.sub(" ", _NOISE.sub(" ", s).casefold()).split())
+
+
+def _is_third_party(label: str) -> bool:
+    """Label asks about someone other than the applicant (referrer, manager, ...)."""
+    norm = normalize_label(label)
+    return any(has_phrase(norm, t) for t in _THIRD_PARTY)
 
 
 def _clip(text: str) -> str:
@@ -171,7 +181,7 @@ def _value_for(key: str, entry: AliasEntry, f: FormField, ctx: MappingContext,
         if f.field_type in _CHOICE_TYPES:
             return _Resolved(value=_band(years, f.options), source=src, note="band")
         if f.field_type == "number":
-            return _Resolved(value=str(int(years)), source=src)
+            return _Resolved(value=str(round(years)), source=src)
         return _Resolved(value=f"{years:g}", source=src)
     if isinstance(entry.profile, list):
         parts = [_resolve_one(p, ctx) for p in entry.profile]
@@ -183,7 +193,8 @@ def _value_for(key: str, entry: AliasEntry, f: FormField, ctx: MappingContext,
         if _is_empty(e164):
             nat, _ = _resolve_one("identity.phone_national", ctx)
             cc, _ = _resolve_one("identity.phone_country_code", ctx)
-            e164 = f"{cc}{nat}" if not _is_empty(nat) and not _is_empty(cc) else None
+            e164 = (f"+{str(cc).lstrip('+')}{nat}"
+                    if not _is_empty(nat) and not _is_empty(cc) else None)
         return _Resolved(value=None if e164 is None else str(e164), source=src)
     value, src = _resolve_one(entry.profile, ctx)
     lib = entry.profile.startswith("answer_library.")
@@ -230,6 +241,8 @@ def _answer_for_key(f: FormField, key: str, confidence: float, how: str,
         decision = forced
     elif r.from_library:
         decision = FieldDecision.FILL_AND_REVIEW
+    elif confidence < _EXACT:
+        decision = FieldDecision.FILL_AND_REVIEW
     else:
         decision = entry.decision or FieldDecision.AUTO_FILL
     return _answer(f, decision, f"{why} ({r.source})", value=r.value, source=r.source,
@@ -241,7 +254,8 @@ def _answer_for_key(f: FormField, key: str, confidence: float, how: str,
 
 def _has_country_code(snapshot: FormSnapshot, aliases: AliasConfig) -> bool:
     return any(_match_key(f.label, aliases, files=False)[0] == _PHONE_CC_KEY
-               for f in snapshot.fields if f.field_type != "file")
+               for f in snapshot.fields
+               if f.field_type != "file" and not _is_third_party(f.label))
 
 
 def map_fields(snapshot: FormSnapshot,
@@ -258,22 +272,23 @@ def map_fields(snapshot: FormSnapshot,
             else:
                 answers.append(_answer_for_key(f, key, _EXACT, "File upload", ctx, has_cc))
             continue
-        category = classify_sensitive(f.label, "", f.options)
+        category = classify_sensitive(f.label, f.help_text, f.options)
         if category is not None and category != "compensation":
             answers.append(_answer(f, FieldDecision.USER_ONLY,
                                    f"Sensitive ({category}): user only"))
+            continue
+        if _is_third_party(f.label):
+            answers.append(_missing(f, "Asks about another person; not mapped"))
             continue
         key, conf, how = _match_key(f.label, ctx.aliases, files=False)
         if category == "compensation":
             answers.append(_compensation(f, key, conf, how, ctx))
             continue
         if key is None:
-            if how == "ambiguous":
-                answers.append(_answer(f, FieldDecision.ASK_USER,
-                                       "Ambiguous: several aliases match equally"))
-            else:
-                answers.append(_missing(f, "No alias matched"))
-                unmatched.append(f)
+            why = ("Ambiguous: several aliases match equally" if how == "ambiguous"
+                   else "No alias matched")
+            answers.append(_missing(f, why))
+            unmatched.append(f)
             continue
         answers.append(_answer_for_key(f, key, conf, how, ctx, has_cc))
     return answers, unmatched
@@ -307,23 +322,18 @@ def _suggestable_keys(aliases: AliasConfig) -> list[str]:
             and e.decision not in (FieldDecision.USER_ONLY, FieldDecision.ASK_USER)]
 
 
-def _default_aliases() -> AliasConfig:
-    from jobpilot.forms.model import load_aliases
-    return load_aliases(Path(__file__).resolve().parents[3] / "config" / "field_aliases.yaml")
-
-
 def _system_prompt() -> str:
     return (resources.files("jobpilot.agents.prompts") / "field_map_v1.md").read_text("utf-8")
 
 
 def _is_sensitive(f: FormField) -> bool:
-    return f.field_type == "file" or classify_sensitive(f.label, "", f.options) is not None
+    return (f.field_type == "file" or _is_third_party(f.label)
+            or classify_sensitive(f.label, f.help_text, f.options) is not None)
 
 
 async def suggest_keys(unmatched: list[FormField], gateway: Gateway,
-                       aliases: AliasConfig | None = None) -> dict[str, str]:
+                       aliases: AliasConfig) -> dict[str, str]:
     """Ask the model which canonical key each unmatched field means. Keys only, no values."""
-    aliases = aliases or _default_aliases()
     candidates = [f for f in unmatched if not _is_sensitive(f)]
     if not candidates:
         return {}
@@ -332,8 +342,8 @@ async def suggest_keys(unmatched: list[FormField], gateway: Gateway,
         "For each form field in the untrusted content block, choose the canonical key it "
         "asks for, or \"none\". Allowed keys: " + ", ".join(keys) + ", none.")
     untrusted = "\n".join(
-        json.dumps({"field_id": f.field_id, "label": f.label, "options": f.options},
-                   ensure_ascii=False) for f in candidates)
+        json.dumps({"field_id": f.field_id, "label": f.label, "help_text": f.help_text,
+                    "options": f.options}, ensure_ascii=False) for f in candidates)
     messages = build_messages(_system_prompt(), instructions, untrusted=untrusted)
     raw, _meta = await gateway.generate(ROUTE, messages, _SuggestLLM, PROMPT_VERSION)
     ids = {f.field_id for f in candidates}
@@ -344,7 +354,13 @@ async def suggest_keys(unmatched: list[FormField], gateway: Gateway,
 
 def apply_suggestions(snapshot: FormSnapshot, unmatched: list[FormField],
                       suggestions: dict[str, str], ctx: MappingContext) -> list[FieldAnswer]:
-    """Answers for model-suggested keys (FILL_AND_REVIEW); fields with no value are omitted."""
+    """Answers for model-suggested keys, one per suggested unmatched field.
+
+    Merge contract: the caller replaces the answer from ``map_fields`` that has the same
+    ``field_id``. A suggestion with a value is FILL_AND_REVIEW; one whose key has no value
+    yields the ASK_USER (required) / NOT_APPLICABLE (optional) answer. Sensitive,
+    third-party and unknown-key suggestions produce nothing (the original answer stands).
+    """
     has_cc = _has_country_code(snapshot, ctx.aliases)
     allowed = set(_suggestable_keys(ctx.aliases))
     out: list[FieldAnswer] = []
@@ -355,6 +371,7 @@ def apply_suggestions(snapshot: FormSnapshot, unmatched: list[FormField],
         a = _answer_for_key(f, key, _SUGGESTED, "Model", ctx, has_cc,
                             forced=FieldDecision.FILL_AND_REVIEW)
         if a.proposed_value is None:
+            out.append(a)  # ASK_USER / NOT_APPLICABLE from the shared resolver
             continue
         out.append(a.model_copy(update={"rationale": "Model-suggested mapping"}))
     return out

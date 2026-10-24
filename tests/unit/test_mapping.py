@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from jobpilot.config import load_config
 from jobpilot.contracts.enums import FieldDecision
 from jobpilot.forms.mapping import (
     apply_suggestions,
@@ -11,7 +12,7 @@ from jobpilot.forms.mapping import (
     normalize_label,
     suggest_keys,
 )
-from jobpilot.forms.model import MappingContext, load_aliases
+from jobpilot.forms.model import AliasConfig, MappingContext, load_aliases
 from jobpilot.llm.ollama_client import GenerationMeta
 from jobpilot.portals.base import FormField, FormSnapshot
 from jobpilot.profile.schema import load_profile_file
@@ -119,6 +120,61 @@ def test_token_subset_tie_is_ask_user() -> None:
     tok = run(field("m", "Your mobile number please"))["m"]
     assert tok.confidence == 0.8
     assert tok.proposed_value == "+919000000000"
+    assert tok.decision == FieldDecision.FILL_AND_REVIEW
+
+
+def test_tie_routes_to_unmatched_and_optional_is_na() -> None:
+    out = run(field("t", "Company name", required=True), field("o", "Company name"))
+    assert out["o"].decision == FieldDecision.NOT_APPLICABLE
+    assert out["_unmatched"] == ["t", "o"]
+
+
+def test_token_match_never_auto_fills() -> None:
+    a = run(field("e", "Your personal email please"))["e"]
+    assert a.proposed_value == "asha@example.com"
+    assert a.confidence == 0.8
+    assert a.decision == FieldDecision.FILL_AND_REVIEW
+
+
+@pytest.mark.parametrize("label", ["Referrer email", "Manager's email address",
+                                   "Emergency contact phone number", "Recruiter name",
+                                   "Reference name", "Hiring manager"])
+async def test_third_party_fields_ask_user(label: str) -> None:
+    out = run(field("r", label, required=True), field("o", label))
+    assert out["r"].decision == FieldDecision.ASK_USER
+    assert out["r"].proposed_value is None
+    assert out["o"].decision == FieldDecision.NOT_APPLICABLE
+    assert out["_unmatched"] == []
+    gw = FakeGateway({"suggestions": [{"field_id": "r", "key": "email"}]})
+    assert await suggest_keys([field("r", label)], gw, ALIASES) == {}
+    assert gw.calls == []
+    assert apply_suggestions(FormSnapshot(url="u", fields=[field("r", label)]),
+                             [field("r", label)], {"r": "email"}, make_ctx()) == []
+
+
+def test_help_text_reaches_classifier() -> None:
+    f = FormField(field_id="q", label="Question 3", field_type="text", required=True,
+                  help_text="Are you authorized to work in India?")
+    assert run(f)["q"].decision == FieldDecision.USER_ONLY
+
+
+def test_e164_fallback_adds_plus_and_number_rounds() -> None:
+    ident = PROFILE.identity.model_copy(update={"phone_e164": None, "phone_country_code": "91"})
+    assert run(field("p", "Phone"), ctx=make_ctx(identity=ident))["p"].proposed_value == \
+        "+919000000000"
+    out = run(field("n", "Years of experience", "number"), ctx=make_ctx(years_experience=3.6))
+    assert out["n"].proposed_value == "4"
+
+
+def test_duplicate_alias_rejected() -> None:
+    with pytest.raises(ValueError, match="'a' and 'b'"):
+        AliasConfig.model_validate({"fields": {"a": {"aliases": ["x"]},
+                                               "b": {"aliases": ["X"]}}})
+
+
+def test_config_exposes_aliases_path(tmp_path: Path) -> None:
+    (tmp_path / "model_routes.yaml").write_text("routes: {}\n")
+    assert load_config(tmp_path).field_aliases_path == tmp_path / "field_aliases.yaml"
 
 
 def test_list_profile_join() -> None:
@@ -144,7 +200,7 @@ def test_experience_select_band() -> None:
               field("n", "Years of experience", "number"),
               field("t", "Total years of experience"))
     assert out["s"].proposed_value == "3-5 years"
-    assert out["n"].proposed_value == "3"
+    assert out["n"].proposed_value == "4"
     assert out["t"].proposed_value == "3.5"
     high = run(field("s", "Total experience", "select", options=["1 to 3", "5+"]),
                ctx=make_ctx(years_experience=7.0))
@@ -180,6 +236,12 @@ async def test_llm_suggests_key_not_value() -> None:
     _, unmatched = map_fields(FormSnapshot(url="u", fields=[f]), ctx)
     sugg = await suggest_keys(unmatched, gw, ALIASES)
     assert sugg == {"h": "email"}
+    none = apply_suggestions(FormSnapshot(url="u", fields=[f]), unmatched, {"h": "middle_name"},
+                             ctx)
+    assert none == []  # null-profile key is not suggestable
+    gh = apply_suggestions(FormSnapshot(url="u", fields=[f]), unmatched, {"h": "github"},
+                           make_ctx(links={}))
+    assert [x.decision for x in gh] == [FieldDecision.ASK_USER]
     assert gw.calls[0]["route"] == "form_mapping"
     assert gw.calls[0]["prompt_version"] == "field_map_v1"
     assert "Contact handle" in gw.calls[0]["messages"][1]["content"].split("<untrusted_content>")[1]

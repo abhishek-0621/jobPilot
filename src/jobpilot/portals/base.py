@@ -14,6 +14,7 @@ class FormField(Contract):
     field_type: str
     required: bool
     options: list[str] = []
+    help_text: str = ""
 
 
 class FormSnapshot(Contract):

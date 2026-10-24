@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jobpilot.contracts.enums import FieldDecision
 from jobpilot.profile.schema import Education, Employment, Identity
@@ -26,6 +26,17 @@ class AliasEntry(_Frozen):
 class AliasConfig(_Frozen):
     version: int = 1
     fields: dict[str, AliasEntry]
+
+    @model_validator(mode="after")
+    def _unique_aliases(self) -> "AliasConfig":
+        seen: dict[str, str] = {}
+        for key, entry in self.fields.items():
+            for alias in entry.aliases:
+                norm = " ".join(alias.casefold().split())
+                if norm in seen and seen[norm] != key:
+                    raise ValueError(f"alias '{alias}' appears under '{seen[norm]}' and '{key}'")
+                seen[norm] = key
+        return self
 
 
 class BoundArtifacts(_Frozen):
