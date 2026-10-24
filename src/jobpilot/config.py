@@ -25,7 +25,12 @@ class AppConfig(BaseModel):
     storage_path: Path = Path("storage")
     dry_run: bool = True
     ollama_url: str = "http://127.0.0.1:11434"
+    browser_headless: bool = False
     model_routes: dict[str, ModelRoute]
+
+    @property
+    def browser_state_dir(self) -> Path:
+        return self.storage_path / "browser_state"
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Greenhouse-like application</title></head>
+<body>
+<h1>Apply for Backend Engineer</h1>
+<form id="application_form" onsubmit="return false">
+  <div class="field"><label for="first_name">First Name *</label>
+    <input type="text" id="first_name" name="job_application[first_name]" required></div>
+  <div class="field"><label for="last_name">Last Name *</label>
+    <input type="text" id="last_name" name="job_application[last_name]" required></div>
+  <div class="field"><label for="email">Email *</label>
+    <input type="email" id="email" name="job_application[email]" required></div>
+  <div class="field"><label for="phone">Phone</label>
+    <input type="tel" id="phone" name="job_application[phone]"></div>
+  <div class="field"><label for="resume">Resume/CV *</label>
+    <input type="file" id="resume" name="job_application[resume]"></div>
+  <div class="field"><label for="cover_letter">Cover Letter</label>
+    <textarea id="cover_letter" name="job_application[cover_letter_text]"></textarea></div>
+  <div class="field"><label for="question_1001">Why do you want to work here? *</label>
+    <textarea id="question_1001" name="job_application[answers][question_1001]" required></textarea></div>
+  <div class="field"><label for="question_1002">How did you hear about this job?</label>
+    <select id="question_1002" name="job_application[answers][question_1002]">
+      <option value="">Please select</option>
+      <option value="board">Job board</option>
+      <option value="referral">Referral</option>
+      <option value="other">Other</option>
+    </select></div>
+  <fieldset class="field"><legend>Are you legally authorized to work in this country? *</legend>
+    <label><input type="radio" name="question_1003" value="yes"> Yes</label>
+    <label><input type="radio" name="question_1003" value="no"> No</label></fieldset>
+  <div class="field"><label><input type="checkbox" id="question_1004" name="question_1004">
+    I agree to the privacy policy</label></div>
+  <button type="submit" id="submit_app"
+    onclick="window.__submitted = true; event.preventDefault();">Submit Application</button>
+</form>
+</body></html>
