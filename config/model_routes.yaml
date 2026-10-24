@@ -1,0 +1,13 @@
+routes:
+  job_extraction:
+    model_tag: gemma4:e4b
+  job_matching:
+    model_tag: gemma4:e4b
+  resume_tailoring:
+    model_tag: gemma4:12b
+  cover_letter:
+    model_tag: gemma4:12b
+  form_mapping:
+    model_tag: gemma4:e4b
+  outreach_draft:
+    model_tag: gemma4:e4b

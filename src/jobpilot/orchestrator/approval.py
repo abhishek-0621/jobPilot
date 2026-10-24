@@ -1,0 +1,257 @@
+"""Content-hash bound batch approvals: users approve exactly what they saw."""
+
+import json
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from jobpilot.contracts.enums import (
+    ApplicationStatus,
+    ApprovalKind,
+    BatchStatus,
+    OutreachStatus,
+)
+from jobpilot.data.db import utcnow
+from jobpilot.data.repositories import get_application
+from jobpilot.data.tables import (
+    ApprovalBatchRow,
+    ApprovalRow,
+    BatchItemRow,
+    DocumentArtifactRow,
+    FormFieldAnswerRow,
+    JobRow,
+    OutreachDraftRow,
+)
+from jobpilot.ids import new_id
+from jobpilot.observability.events import record_event
+from jobpilot.orchestrator.state_machine import transition
+from jobpilot.util.hashing import canonical_json, content_hash
+
+PLANNED_ACTIONS = ["upload_resume", "upload_cover_letter", "submit"]
+
+
+class StaleApprovalError(Exception):
+    pass
+
+
+class ApprovalService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    # ---- hashing -------------------------------------------------------
+    def _artifact_hash(self, artifact_id: str | None) -> str | None:
+        if artifact_id is None:
+            return None
+        art = self.session.get(DocumentArtifactRow, artifact_id)
+        return art.content_hash if art is not None else None
+
+    def application_hash(self, application_id: str) -> str:
+        app = get_application(self.session, application_id)
+        job = self.session.get(JobRow, app.job_id)
+        answers = self.session.execute(
+            select(FormFieldAnswerRow).where(
+                FormFieldAnswerRow.application_id == application_id
+            )
+        ).scalars()
+        answer_list: list[Any] = sorted(
+            [a.field_id, json.loads(a.proposed_value_json), a.decision] for a in answers
+        )
+        return content_hash({
+            "application_id": application_id,
+            "application_url": job.application_url if job is not None else None,
+            "resume_artifact_hash": self._artifact_hash(app.resume_artifact_id),
+            "cover_letter_artifact_hash": self._artifact_hash(app.cover_letter_artifact_id),
+            "answers": answer_list,
+            "planned_actions": PLANNED_ACTIONS,
+        })
+
+    @staticmethod
+    def _batch_hash(items: list[BatchItemRow]) -> str:
+        return content_hash(sorted([i.application_id, i.item_hash] for i in items))
+
+    def _items(self, batch_id: str, version: int) -> list[BatchItemRow]:
+        return list(self.session.execute(
+            select(BatchItemRow).where(
+                BatchItemRow.batch_id == batch_id, BatchItemRow.version == version
+            )
+        ).scalars())
+
+    def _latest_version(self, batch_id: str) -> int | None:
+        return self.session.execute(
+            select(func.max(ApprovalBatchRow.version)).where(
+                ApprovalBatchRow.batch_id == batch_id
+            )
+        ).scalar()
+
+    # ---- batches -------------------------------------------------------
+    def _freeze(self, batch_id: str, version: int, application_ids: list[str]) -> ApprovalBatchRow:
+        ids = sorted(set(application_ids))
+        if not ids:
+            raise ValueError("batch must contain at least one application")
+        for app_id in ids:
+            status = get_application(self.session, app_id).status
+            if status != ApplicationStatus.READY_FOR_REVIEW:
+                raise ValueError(f"application {app_id} is {status}, not READY_FOR_REVIEW")
+        batch = ApprovalBatchRow(batch_id=batch_id, version=version,
+                                 status=BatchStatus.BUILDING.value)
+        self.session.add(batch)
+        items = [
+            BatchItemRow(batch_id=batch_id, version=version, application_id=a,
+                         item_hash=self.application_hash(a), selected=False)
+            for a in ids
+        ]
+        self.session.add_all(items)
+        batch.content_hash = self._batch_hash(items)
+        self.session.flush()
+        transition(self.session, batch, BatchStatus.READY_FOR_REVIEW, actor="system",
+                   reason="batch_frozen", details={"version": version, "items": len(items)})
+        self.session.flush()
+        return batch
+
+    def build_batch(self, application_ids: list[str]) -> ApprovalBatchRow:
+        return self._freeze(new_id("batch"), 1, application_ids)
+
+    def rebuild_batch(self, batch_id: str) -> ApprovalBatchRow:
+        latest = self._latest_version(batch_id)
+        if latest is None:
+            raise ValueError(f"unknown batch {batch_id}")
+        ids = [i.application_id for i in self._items(batch_id, latest)]
+        return self._freeze(batch_id, latest + 1, ids)
+
+    def approve(
+        self,
+        batch_id: str,
+        version: int,
+        presented_hash: str,
+        application_ids: list[str],
+        actor: str = "user",
+    ) -> ApprovalRow:
+        batch = self.session.get(ApprovalBatchRow, (batch_id, version))
+        if batch is None:
+            raise ValueError(f"unknown batch {batch_id} v{version}")
+        if version != self._latest_version(batch_id):
+            raise StaleApprovalError("batch version is not the latest")
+        items = {i.application_id: i for i in self._items(batch_id, version)}
+        if not presented_hash or presented_hash != batch.content_hash \
+                or presented_hash != self._batch_hash(list(items.values())):
+            raise StaleApprovalError("presented hash does not match batch")
+        selected = sorted(set(application_ids))
+        if not selected:
+            raise ValueError("no applications selected")
+        missing = [a for a in selected if a not in items]
+        if missing:
+            raise ValueError(f"applications not in batch: {missing}")
+        if batch.status not in (BatchStatus.READY_FOR_REVIEW, BatchStatus.PARTIALLY_APPROVED):
+            raise ValueError(f"batch {batch_id} v{version} is {batch.status}")
+        apps = {a: get_application(self.session, a) for a in selected}
+        for a, app in apps.items():
+            if app.status != ApplicationStatus.READY_FOR_REVIEW:
+                raise ValueError(f"application {a} is {app.status}, not READY_FOR_REVIEW")
+        for a in selected:
+            if self.application_hash(a) != items[a].item_hash:
+                raise StaleApprovalError(f"application {a} changed since batch was built")
+        # All checks passed; mutate from here on. Never clear earlier selections.
+        for a in selected:
+            items[a].selected = True
+        approval = ApprovalRow(
+            approval_id=new_id("apr"), batch_id=batch_id, batch_version=version,
+            kind=ApprovalKind.APPLICATION.value, content_hash=batch.content_hash,
+            approved_item_ids_json=canonical_json(selected),
+        )
+        self.session.add(approval)
+        for a in selected:
+            transition(self.session, apps[a], ApplicationStatus.APPROVED, actor=actor,
+                       reason="batch_approved", details={"approval_id": approval.approval_id})
+        target = (BatchStatus.APPROVED if all(i.selected for i in items.values())
+                  else BatchStatus.PARTIALLY_APPROVED)
+        if batch.status != target:
+            transition(self.session, batch, target, actor=actor, reason="approved",
+                       details={"approval_id": approval.approval_id})
+        record_event(self.session, entity_type="approval", entity_id=approval.approval_id,
+                     actor=actor, action="approval_granted", outcome="ok",
+                     details={"batch_id": batch_id, "version": version, "items": selected})
+        self.session.flush()
+        return approval
+
+    # ---- invalidation / lookup ------------------------------------------
+    def _approvals_containing(self, application_id: str) -> list[ApprovalRow]:
+        rows = self.session.execute(
+            select(ApprovalRow).where(
+                ApprovalRow.kind == ApprovalKind.APPLICATION.value,
+                ApprovalRow.revoked_at.is_(None),
+            ).order_by(ApprovalRow.approved_at.desc(), ApprovalRow.approval_id.desc())
+        ).scalars()
+        return [r for r in rows if application_id in json.loads(r.approved_item_ids_json)]
+
+    def invalidate_application(self, application_id: str, reason: str) -> None:
+        for approval in self._approvals_containing(application_id):
+            approval.revoked_at = utcnow()
+            record_event(self.session, entity_type="approval", entity_id=approval.approval_id,
+                         actor="system", action="approval_revoked", outcome="ok",
+                         details={"application_id": application_id, "reason": reason})
+        app = get_application(self.session, application_id)
+        if app.status == ApplicationStatus.APPROVED:
+            transition(self.session, app, ApplicationStatus.READY_FOR_REVIEW,
+                       actor="system", reason=reason)
+        self.session.flush()
+
+    def active_approval_for(self, application_id: str) -> ApprovalRow | None:
+        approvals = self._approvals_containing(application_id)
+        return approvals[0] if approvals else None
+
+    def active_outreach_approval_for(self, outreach_id: str) -> ApprovalRow | None:
+        rows = self.session.execute(
+            select(ApprovalRow).where(
+                ApprovalRow.kind == ApprovalKind.OUTREACH.value,
+                ApprovalRow.revoked_at.is_(None),
+            ).order_by(ApprovalRow.approved_at.desc(), ApprovalRow.approval_id.desc())
+        ).scalars()
+        for r in rows:
+            if outreach_id in json.loads(r.approved_item_ids_json):
+                return r
+        return None
+
+    def current_item_hash(self, application_id: str) -> str | None:
+        approvals = self._approvals_containing(application_id)
+        if not approvals:
+            return None
+        item = self.session.get(
+            BatchItemRow, (approvals[0].batch_id, approvals[0].batch_version, application_id)
+        )
+        return item.item_hash if item is not None else None
+
+    # ---- outreach -------------------------------------------------------
+    def outreach_hash(self, outreach_id: str) -> str:
+        d = self.session.get(OutreachDraftRow, outreach_id)
+        if d is None:
+            raise ValueError(f"unknown outreach draft {outreach_id}")
+        return content_hash({
+            "outreach_id": d.outreach_id, "contact_id": d.contact_id, "channel": d.channel,
+            "message_text": d.message_text,
+            "resume_artifact_hash": self._artifact_hash(d.resume_artifact_id),
+        })
+
+    def approve_outreach(
+        self, outreach_id: str, presented_hash: str, actor: str = "user"
+    ) -> ApprovalRow:
+        current = self.outreach_hash(outreach_id)
+        if not presented_hash or presented_hash != current:
+            raise StaleApprovalError("outreach draft changed since it was presented")
+        draft = self.session.get(OutreachDraftRow, outreach_id)
+        if draft is None:
+            raise ValueError(f"unknown outreach draft {outreach_id}")
+        approval = ApprovalRow(
+            approval_id=new_id("apr"), batch_id=outreach_id, batch_version=1,
+            kind=ApprovalKind.OUTREACH.value, content_hash=current,
+            approved_item_ids_json=canonical_json([outreach_id]),
+        )
+        self.session.add(approval)
+        draft.content_hash = current
+        transition(self.session, draft, OutreachStatus.APPROVED, actor=actor,
+                   reason="outreach_approved", details={"approval_id": approval.approval_id})
+        record_event(self.session, entity_type="approval", entity_id=approval.approval_id,
+                     actor=actor, action="approval_granted", outcome="ok",
+                     details={"outreach_id": outreach_id})
+        self.session.flush()
+        return approval

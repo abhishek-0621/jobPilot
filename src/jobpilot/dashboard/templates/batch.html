@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Batch {{ batch.batch_id }}{% endblock %}
+{% block content %}
+<h1>Review batch</h1>
+<p><span class="mono">{{ batch.batch_id }}</span> · version {{ batch.version }} · {{ batch.status }}</p>
+<p class="muted">Content hash: <code>{{ batch.content_hash }}</code></p>
+<form hx-post="/ui/batches/{{ batch.batch_id }}/approve" hx-target="#approve-result" hx-swap="innerHTML" method="post" action="/ui/batches/{{ batch.batch_id }}/approve">
+<input type="hidden" name="content_hash" value="{{ batch.content_hash }}">
+<input type="hidden" name="version" value="{{ batch.version }}">
+<div class="table-wrap"><table><thead><tr><th></th><th>Company</th><th>Role</th><th>Status</th><th>Item hash</th></tr></thead><tbody>
+{% for r in rows %}<tr>
+<td>{% if r.item.selected %}✓{% elif r.app and r.app.status == "READY_FOR_REVIEW" %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" checked aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
+<td>{{ r.job.company if r.job else "" }}</td><td>{% if r.job %}<a href="{{ r.job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ r.job.title }}</a>{% endif %}</td>
+<td>{{ r.app.status if r.app else "" }}</td><td class="mono">{{ r.item.item_hash }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if batch.status in ("READY_FOR_REVIEW", "PARTIALLY_APPROVED") %}<p><button type="submit">Approve selected</button></p>{% endif %}
+</form>
+<div id="approve-result"></div>
+{% endblock %}

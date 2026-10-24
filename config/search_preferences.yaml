@@ -1,0 +1,22 @@
+search:
+  target_titles:
+    - GenAI Engineer
+    - Applied AI Engineer
+    - AI Engineer
+    - Search / RAG Engineer
+  locations:
+    - Bengaluru
+    - Hyderabad
+    - Remote India
+  work_modes: [remote, hybrid, onsite]
+  sources:
+    - company_careers
+    - greenhouse
+    - lever
+    - linkedin
+    - naukri
+  min_match_score: 70
+  max_jobs_per_run: 100
+  exclude_keywords:
+    - unpaid
+  require_user_review_for_new_sources: true
