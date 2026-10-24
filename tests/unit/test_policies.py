@@ -192,3 +192,34 @@ def test_outreach_hash_status_capability_dry_run():
     ).reasons
     assert "dry_run" in may_send_outreach(**ok_outreach_args(dry_run=True)).reasons
     assert may_send_outreach(**ok_outreach_args(dry_run=True, simulated=True)).allowed
+
+
+def test_malformed_approved_ids_not_approved_without_raising():
+    for bad in ["not json", "null", '{"a": 1}', '[1, 2]', '"app1"']:
+        args = ok_args()
+        args["approval"].approved_item_ids_json = bad
+        assert "not_approved" in may_submit(**args).reasons
+    args = ok_args()
+    args["approval"].approved_item_ids_json = None
+    assert "not_approved" in may_submit(**args).reasons
+
+
+def test_empty_hashes_are_mismatch():
+    assert "hash_mismatch" in may_submit(**ok_args(current_hash="", approved_item_hash="")).reasons
+    assert "hash_mismatch" in may_send_outreach(
+        **ok_outreach_args(current_hash="", approval_hash="")
+    ).reasons
+
+
+def test_policy_models_frozen_and_strict():
+    import pydantic
+    import pytest
+
+    p = _policy()
+    with pytest.raises(pydantic.ValidationError):
+        p.dry_run = True
+    with pytest.raises(pydantic.ValidationError):
+        PolicyConfig(dry_run=False, portal_capabilities={}, extra=1)
+    r = may_submit(**ok_args())
+    with pytest.raises(pydantic.ValidationError):
+        r.allowed = False

@@ -99,3 +99,55 @@ def make_app_row(db_session: Any, status: str = "NOT_STARTED") -> Any:
     db_session.add(app)
     db_session.flush()
     return app
+
+
+def seed_ready_apps(db_session: Any, n: int) -> list[str]:
+    from jobpilot.data.tables import DocumentArtifactRow, FormFieldAnswerRow
+    from jobpilot.ids import new_id
+    from jobpilot.util.hashing import canonical_json
+
+    ids: list[str] = []
+    for _ in range(n):
+        app = make_app_row(db_session, status="READY_FOR_REVIEW")
+        art = DocumentArtifactRow(
+            artifact_id=new_id("art"),
+            application_id=app.application_id,
+            type="resume",
+            path=f"/tmp/{app.application_id}.pdf",
+            content_hash="sha256:resume",
+        )
+        db_session.add(art)
+        app.resume_artifact_id = art.artifact_id
+        db_session.add(
+            FormFieldAnswerRow(
+                application_id=app.application_id,
+                field_id="notice_period",
+                label="Notice period",
+                field_type="text",
+                proposed_value_json=canonical_json("30 days"),
+                decision="AUTO_FILL",
+                confidence=0.9,
+                rationale="From profile.",
+            )
+        )
+        db_session.flush()
+        ids.append(app.application_id)
+    return ids
+
+
+def edit_answer(db_session: Any, application_id: str, field_id: str, value: Any) -> None:
+    from sqlalchemy import select
+
+    from jobpilot.data.tables import FormFieldAnswerRow
+    from jobpilot.orchestrator.approval import ApprovalService
+    from jobpilot.util.hashing import canonical_json
+
+    row = db_session.execute(
+        select(FormFieldAnswerRow).where(
+            FormFieldAnswerRow.application_id == application_id,
+            FormFieldAnswerRow.field_id == field_id,
+        )
+    ).scalar_one()
+    row.proposed_value_json = canonical_json(value)
+    db_session.flush()
+    ApprovalService(db_session).invalidate_application(application_id, reason="answer_edited")

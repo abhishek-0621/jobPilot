@@ -2,7 +2,7 @@
 
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from jobpilot.contracts.enums import (
     ApplicationStatus,
@@ -14,11 +14,15 @@ from jobpilot.data.tables import ApplicationRow, ApprovalRow, OutreachDraftRow
 
 
 class PolicyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     dry_run: bool
     portal_capabilities: dict[str, frozenset[PortalCapability]]
 
 
 class GateResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     allowed: bool
     reasons: list[str]
 
@@ -34,7 +38,17 @@ def _approval_valid(
         return False
     if approval.kind != kind:
         return False
-    return item_id in json.loads(approval.approved_item_ids_json)
+    try:
+        ids = json.loads(approval.approved_item_ids_json)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return False
+    return item_id in ids
+
+
+def _hashes_match(approved: str | None, current: str | None) -> bool:
+    return bool(approved) and bool(current) and approved == current
 
 
 def _has_capability(
@@ -59,7 +73,7 @@ def may_submit(
     reasons: list[str] = []
     if policy.dry_run and not simulated:
         reasons.append("dry_run")
-    if approved_item_hash is None or approved_item_hash != current_hash:
+    if not _hashes_match(approved_item_hash, current_hash):
         reasons.append("hash_mismatch")
     if not _approval_valid(approval, ApprovalKind.APPLICATION, app.application_id):
         reasons.append("not_approved")
@@ -86,7 +100,7 @@ def may_send_outreach(
     reasons: list[str] = []
     if policy.dry_run and not simulated:
         reasons.append("dry_run")
-    if approval is None or approval.content_hash != current_hash:
+    if approval is None or not _hashes_match(approval.content_hash, current_hash):
         reasons.append("hash_mismatch")
     if not _approval_valid(approval, ApprovalKind.OUTREACH, draft.outreach_id):
         reasons.append("not_approved")
