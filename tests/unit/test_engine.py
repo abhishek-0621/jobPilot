@@ -430,3 +430,114 @@ async def test_run_until_idle_counts_steps(factory) -> None:
     for _ in range(3):
         orch.enqueue(TaskKind.MATCH, "job", new_id("job"))
     assert await orch.run_until_idle() == 3
+
+
+async def test_submit_adapter_runtime_error_marks_uncertain(factory) -> None:
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+
+    class Broken(SimulatedAdapter):
+        async def submit(self, approved_application):  # type: ignore[no-untyped-def]
+            self.submit_calls += 1
+            raise RuntimeError("token=abc123")
+
+    adapter = Broken()
+    orch = make_orch(factory, clock, adapter=adapter)
+    tid = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    await orch.run_until_idle()
+    clock.advance(3600)
+    await orch.run_until_idle()
+    with factory() as s:
+        assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
+        ev = [e for e in list_events(s, app_id) if e.action == "submit_error"]
+    assert ev and ev[0].error_code == "SUBMIT_NO_CONFIRMATION"
+    assert "abc123" not in ev[0].redacted_details_json
+    assert adapter.submit_calls == 1
+    assert task(factory, tid).status == TaskStatus.FAILED
+
+
+async def test_recovery_sweeps_stranded_in_progress(factory) -> None:
+    from jobpilot.contracts.enums import ApplicationStatus
+    from jobpilot.orchestrator.state_machine import transition
+
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+    with factory() as s:
+        transition(s, get_application(s, app_id), ApplicationStatus.SUBMISSION_IN_PROGRESS,
+                   actor="system", reason="test")
+        s.add(OutreachDraftRow(outreach_id="o2", company_key="acme", campaign_id="c2",
+                               message_text="hi", status="SEND_IN_PROGRESS"))
+        s.commit()
+    make_orch(factory, clock).recover_on_startup()
+    with factory() as s:
+        assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
+        assert s.get(OutreachDraftRow, "o2").status == "DELIVERY_UNKNOWN"  # type: ignore[union-attr]
+
+
+async def test_outreach_send_error_marks_delivery_unknown(factory, monkeypatch) -> None:
+    clock = FakeClock()
+    with factory() as s:
+        s.add(OutreachDraftRow(outreach_id="o1", company_key="acme", campaign_id="c1",
+                               channel="email", message_text="hi", status="NEEDS_REVIEW"))
+        s.flush()
+        svc = ApprovalService(s)
+        svc.approve_outreach("o1", svc.outreach_hash("o1"))
+        s.commit()
+    orch = make_orch(factory, clock)
+
+    def boom(s: Session, d: OutreachDraftRow) -> None:
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(orch, "_simulated_send", boom)
+    tid = orch.enqueue(TaskKind.OUTREACH_SEND, "outreach", "o1")
+    await orch.run_once()
+    with factory() as s:
+        assert s.get(OutreachDraftRow, "o1").status == "DELIVERY_UNKNOWN"  # type: ignore[union-attr]
+        ev = [e for e in list_events(s, "o1") if e.action == "send_error"]
+    assert ev and ev[0].error_code == "OUTREACH_DELIVERY_UNKNOWN"
+    assert task(factory, tid).status == TaskStatus.FAILED
+
+
+async def test_dry_run_rejects_non_simulated_adapter(factory) -> None:
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+    calls: list[str] = []
+
+    class RealAdapter:
+        name = "simulated"
+
+        async def capabilities(self):  # type: ignore[no-untyped-def]
+            calls.append("capabilities")
+            return frozenset()
+
+        async def submit(self, approved_application):  # type: ignore[no-untyped-def]
+            calls.append("submit")
+
+        async def find_existing_submission(self, key):  # type: ignore[no-untyped-def]
+            calls.append("find")
+
+    orch = Orchestrator(factory, cfg(), {}, {"simulated": RealAdapter()},  # type: ignore[dict-item]
+                        clock=clock)
+    tid = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    await orch.run_once()
+    assert calls == []
+    with factory() as s:
+        assert get_application(s, app_id).status == "APPROVED"
+        ev = [e for e in list_events(s, app_id) if e.action == "gate_denied"]
+    assert ev and "dry_run" in ev[0].redacted_details_json
+    assert task(factory, tid).status == TaskStatus.FAILED
+
+
+async def test_second_submit_task_gate_denied(factory) -> None:
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+    adapter = SimulatedAdapter()
+    orch = make_orch(factory, clock, adapter=adapter)
+    orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    t2 = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    await orch.run_until_idle()
+    assert adapter.submit_calls == 1
+    with factory() as s:
+        ev = [e for e in list_events(s, app_id) if e.action == "gate_denied"]
+    assert ev and "wrong_status" in ev[0].redacted_details_json
+    assert task(factory, t2).status == TaskStatus.FAILED

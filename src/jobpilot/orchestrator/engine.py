@@ -104,6 +104,7 @@ class Agent(Protocol[I, O]):
     name: str
     prompt_version: str
     output_model: type[BaseModel]
+    tools: tuple[str, ...]
 
     async def run(self, inp: I, ctx: AgentContext) -> O: ...
 
@@ -332,6 +333,10 @@ class Orchestrator:
     async def _run_submit(self, s: Session, task: TaskRow) -> None:
         app = get_application(s, task.entity_id)
         adapter, simulated = self._adapter_for(app)
+        if self._cfg.dry_run and not isinstance(adapter, SimulatedAdapter):
+            self._fail(s, task, "gate_denied", {"reasons": ["dry_run"]})
+            s.commit()
+            return
         svc = ApprovalService(s)
         approved_hash = svc.current_item_hash(app.application_id)
         caps = await adapter.capabilities() if adapter is not None else frozenset()
@@ -377,8 +382,32 @@ class Orchestrator:
                        ErrorCode.SUBMIT_TIMEOUT)
             s.commit()
             return
-        self._apply_submit_result(s, app, result)
-        self._finish(s, task, TaskStatus.SUCCEEDED)
+        except Exception as exc:
+            self._submit_error(s, task.task_id, app.application_id, exc, None)
+            return
+        try:
+            self._apply_submit_result(s, app, result)
+            self._finish(s, task, TaskStatus.SUCCEEDED)
+            s.commit()
+        except Exception as exc:
+            self._submit_error(s, task.task_id, app.application_id, exc, result)
+
+    def _submit_error(self, s: Session, task_id: str, application_id: str,
+                      exc: Exception, result: SubmitResult | None) -> None:
+        """Adapter outcome unknown after write-ahead: never leave IN_PROGRESS."""
+        log.exception("submit for %s errored after write-ahead", application_id)
+        s.rollback()
+        app = get_application(s, application_id)
+        task = s.get(TaskRow, task_id)
+        assert task is not None
+        if app.status in (ApplicationStatus.SUBMISSION_IN_PROGRESS,
+                          ApplicationStatus.SUBMITTED):
+            transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
+                       reason="submit_error")
+        details: dict[str, Any] = {"error_type": type(exc).__name__}
+        if result is not None:
+            details["confirmation_reference"] = result.confirmation_reference
+        self._fail(s, task, "submit_error", details, ErrorCode.SUBMIT_NO_CONFIRMATION)
         s.commit()
 
     def _apply_submit_result(self, s: Session, app: ApplicationRow, r: SubmitResult) -> None:
@@ -428,11 +457,28 @@ class Orchestrator:
                      action="send_started", outcome="ok",
                      details={"task_id": task.task_id, "simulated": True})
         s.commit()  # write-ahead
+        task_id, outreach_id = task.task_id, draft.outreach_id
+        try:
+            self._simulated_send(s, draft)
+            self._finish(s, task, TaskStatus.SUCCEEDED)
+            s.commit()
+        except Exception as exc:
+            log.exception("send for %s errored after write-ahead", outreach_id)
+            s.rollback()
+            d = s.get(OutreachDraftRow, outreach_id)
+            t = s.get(TaskRow, task_id)
+            assert d is not None and t is not None
+            if d.status == OutreachStatus.SEND_IN_PROGRESS:
+                transition(s, d, OutreachStatus.DELIVERY_UNKNOWN, actor=_ACTOR,
+                           reason="send_error")
+            self._fail(s, t, "send_error", {"error_type": type(exc).__name__},
+                       ErrorCode.OUTREACH_DELIVERY_UNKNOWN)
+            s.commit()
+
+    def _simulated_send(self, s: Session, draft: OutreachDraftRow) -> None:
         draft.sent_at = self._clock()
         draft.evidence_ref = "simulated"
         transition(s, draft, OutreachStatus.SENT, actor=_ACTOR, reason="simulated_send")
-        self._finish(s, task, TaskStatus.SUCCEEDED)
-        s.commit()
 
     # ---- recovery & control ---------------------------------------------
     def recover_on_startup(self) -> list[str]:
@@ -458,8 +504,26 @@ class Orchestrator:
                 record_event(s, entity_type="task", entity_id=task.task_id, actor=_ACTOR,
                              action="task_interrupted", outcome="error",
                              details={"reason": "lease_expired", "kind": kind})
+            self._sweep_stranded(s)
             s.commit()
         return affected
+
+    def _sweep_stranded(self, s: Session) -> None:
+        """Entities left mid-side-effect with no RUNNING task to own them."""
+        running = {(t.kind, t.entity_id) for t in s.execute(select(TaskRow).where(
+            TaskRow.status == TaskStatus.RUNNING.value)).scalars()}
+        apps = s.execute(select(ApplicationRow).where(
+            ApplicationRow.status == ApplicationStatus.SUBMISSION_IN_PROGRESS.value)).scalars()
+        for app in apps.all():
+            if (TaskKind.SUBMIT.value, app.application_id) not in running:
+                transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
+                           reason="stranded_in_progress")
+        drafts = s.execute(select(OutreachDraftRow).where(
+            OutreachDraftRow.status == OutreachStatus.SEND_IN_PROGRESS.value)).scalars()
+        for d in drafts.all():
+            if (TaskKind.OUTREACH_SEND.value, d.outreach_id) not in running:
+                transition(s, d, OutreachStatus.DELIVERY_UNKNOWN, actor=_ACTOR,
+                           reason="stranded_in_progress")
 
     def _recover_side_effect(self, s: Session, task: TaskRow, kind: TaskKind) -> None:
         if kind is TaskKind.SUBMIT:
