@@ -455,3 +455,26 @@ Wireshark
 Express.js
 Spring Framework
 Oracle Database
+
+# Aliases and spelling variants
+k8s
+tf
+js
+ts
+mongo
+psql
+pg
+gke
+aks
+llm ops
+ml ops
+dev ops
+postgres sql
+node
+nodejs
+reactjs
+vuejs
+golang
+py
+sklearn
+tf-idf
