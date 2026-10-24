@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Form answers{% if job %} · {{ job.title }} · {{ job.company }}{% endif %}</h1>
 <p><strong>{{ app.status }}</strong> · <a href="/ui/applications/{{ app.application_id }}">Application</a></p>
+{% if editable_status %}<form method="post" action="/ui/applications/{{ app.application_id }}/reread"><button type="submit">Re-read form</button></form>{% endif %}
 {% if missing %}<p>Required and still unanswered: {% for r in rows if r.field_id in missing %}{{ r.label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% if not rows %}<p class="muted">The form has not been read yet.</p>{% else %}
 <form method="post" action="/ui/applications/{{ app.application_id }}/answers">

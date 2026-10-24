@@ -20,6 +20,7 @@ from jobpilot.api.actions import (
     ActionConflict,
     approve_and_queue,
     regenerate_documents,
+    reread_form,
     save_user_answers,
     select_job,
     start_discovery,
@@ -372,6 +373,18 @@ async def save_answers_ui(request: Request, application_id: str, s: Db,
     except LookupError as e:
         raise HTTPException(404, str(e)) from e
     except ActionConflict as e:
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/reread")
+def reread_ui(application_id: str, s: Db, orch: Orch) -> RedirectResponse:
+    try:
+        reread_form(s, orch, application_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
         raise HTTPException(409, str(e)) from e
     return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
 

@@ -440,3 +440,55 @@ def test_answers_page_read_only_outside_answerable(env: Env) -> None:
     assert answer_user(env, {"v:q": "x"}) == 409  # FORM_IN_PROGRESS
     assert canonical_json(None) in {r.proposed_value_json for r in
                                     env.rows(env.factory()).values()}
+
+
+# ---- fix round 1 ----------------------------------------------------------------------
+
+
+async def test_layout_changed_then_user_save_requeues_prepare(env: Env) -> None:
+    await run(env, TaskKind.PREPARE_FORM)
+    answer_user(env, {"v:q_auth": "Yes"})
+    env.portal.snap = snapshot([FormField(field_id="new", label="New", field_type="text",
+                                          required=False)])
+    await env.orch.run_once()  # VALIDATE -> layout changed
+    with env.factory() as s:
+        assert env.app(s).status == "NEEDS_USER_INPUT"
+        assert env.app(s).form_snapshot_hash is None
+    assert answer_user(env, {"v:q_auth": "No"}) == 303
+    with env.factory() as s:
+        assert [t.status for t in env.tasks(s, TaskKind.PREPARE_FORM)] == ["SUCCEEDED",
+                                                                           "QUEUED"]
+        assert [t.status for t in env.tasks(s, TaskKind.VALIDATE)] == ["SUCCEEDED"]
+
+
+async def test_reread_form_button_queues_prepare(env: Env) -> None:
+    await run(env, TaskKind.PREPARE_FORM)
+    c = env.client()
+    assert "Re-read form" in c.get(f"/ui/applications/{env.app_id}/answers").text
+    assert c.post(f"/ui/applications/{env.app_id}/reread",
+                  follow_redirects=False).status_code == 303
+    with env.factory() as s:
+        assert env.app(s).status == "FORM_IN_PROGRESS"
+        assert [t.status for t in env.tasks(s, TaskKind.PREPARE_FORM)] == ["SUCCEEDED",
+                                                                           "QUEUED"]
+    assert c.post(f"/ui/applications/{env.app_id}/reread",
+                  follow_redirects=False).status_code == 409
+
+
+async def test_reprepare_with_active_approval_rejected(env: Env) -> None:
+    from jobpilot.data.tables import ApprovalRow
+
+    await run(env, TaskKind.PREPARE_FORM)
+    env.portal.snap = snapshot([FormField(field_id="new", label="New", field_type="text",
+                                          required=False)])
+    with env.factory() as s:
+        s.add(ApprovalRow(approval_id="apr_x", batch_id="b", batch_version=1,
+                          kind="APPLICATION", content_hash="h",
+                          approved_item_ids_json=canonical_json([env.app_id])))
+        s.commit()
+    await run(env, TaskKind.PREPARE_FORM)
+    with env.factory() as s:
+        ev = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "output_rejected")).scalars().all()
+        assert ev and json.loads(ev[-1].redacted_details_json)["reason"] == "approval_active"
+        assert "new" not in env.rows(s)

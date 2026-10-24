@@ -176,3 +176,19 @@ def save_user_answers(s: Session, orch: Orchestrator, application_id: str,
         orch.enqueue_in(s, kind, "application", application_id)
     s.commit()
     return missing
+
+
+def reread_form(s: Session, orch: Orchestrator, application_id: str) -> str:
+    """User action: forget the form snapshot and queue PREPARE_FORM. Commits.
+
+    Raises LookupError / ActionConflict."""
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise LookupError("application not found")
+    if app.status not in ANSWERABLE_STATUSES:
+        raise ActionConflict(f"The form cannot be re-read now (status is {app.status}).")
+    app.form_snapshot_hash = None
+    transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor="user", reason="reread_form")
+    task_id = orch.enqueue_in(s, TaskKind.PREPARE_FORM, "application", application_id)
+    s.commit()
+    return task_id

@@ -260,8 +260,11 @@ def prepare_form_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
     if stale is not None:
         return stale
     if out.blockers:
+        app.form_snapshot_hash = None  # the form must be read again once unblocked
         _to_needs_input(s, app, "manual_handoff:" + ",".join(sorted(out.blockers)))
         return []
+    if ApprovalService(s).active_approval_for(app.application_id) is not None:
+        raise OutputRejected("approval_active")
     _store_plan(s, app.application_id, out)
     app.form_snapshot_hash = out.snapshot_hash
     missing = unresolved_required(s, app.application_id)
@@ -336,10 +339,10 @@ class ValidateAgent:
             return result(ok=False, errors={"_documents": "DOCUMENTS_STALE"})
         answers = _with_bound_files(stored(inp.entity_id), app)
         url = form_url(app)
-        shot = artifact_dir(inp.entity_id)
+        out_dir = artifact_dir(inp.entity_id)
         async with open_form(app.get("source") or "", url, inp.entity_id) as adapter:
             await adapter.open_job(url)
-            shot = shot / f"form_v{_next_shot(shot)}.png"
+            shot = out_dir / f"form_v{_next_shot(out_dir)}.png"
             blockers = await adapter.blockers()
             if blockers:
                 await adapter.screenshot(shot)
@@ -384,6 +387,8 @@ def make_validate_handler(storage_path: Path) -> Handler:
                                            profile_version=out.profile_version).artifact_id
         errors = {k: safe_code(v) for k, v in out.errors.items()}
         form_error = errors.get(_FORM_KEY, "")
+        if form_error == _LAYOUT or form_error.startswith("BLOCKED:"):
+            app.form_snapshot_hash = None  # next user action re-reads the form
         if form_error == _LAYOUT:
             transition(s, app, _A.NEEDS_USER_INPUT, actor=_ACTOR, reason="form_layout_changed")
             return []

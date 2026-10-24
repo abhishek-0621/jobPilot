@@ -9,10 +9,12 @@ from pydantic import BaseModel
 from pypdf import PdfReader
 from sqlalchemy import select
 
+from jobpilot.agents.form_prep import make_form_opener
 from jobpilot.api.actions import select_job
-from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, TaskRow
+from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, JobRow, TaskRow
 from jobpilot.documents.render import chromium_available
 from jobpilot.orchestrator.engine import TaskKind, TaskStatus
+from tests.agent_contracts.test_form_prep import ALIASES
 from tests.e2e.test_discovery_pipeline import FIX, FakeGateway, Pipeline, pipe  # noqa: F401
 
 TAILOR: dict[str, Any] = {
@@ -38,7 +40,8 @@ class DocsGateway(FakeGateway):
     async def generate(self, route: str, messages: list[dict], schema: type[BaseModel],
                        prompt_version: str, model_tag: str | None = None
                        ) -> tuple[BaseModel, None]:
-        docs = {"resume_tailoring": TAILOR, "cover_letter": LETTER}
+        docs = {"resume_tailoring": TAILOR, "cover_letter": LETTER,
+                "form_mapping": {"suggestions": []}}  # keys only; none suggested
         if route in docs:
             self.calls.append(route)
             return schema.model_validate(docs[route]), None
@@ -47,21 +50,32 @@ class DocsGateway(FakeGateway):
 
 @pytest.mark.browser
 @pytest.mark.skipif(not chromium_available(), reason="Chromium not installed")
-async def test_select_to_form_in_progress(pipe: Pipeline) -> None:  # noqa: F811
+async def test_select_to_form_prepared(pipe: Pipeline,  # noqa: F811
+                                       form_server: str) -> None:
     pipe.gateway.__class__ = DocsGateway  # same object the orchestrator holds
-    pipe.runtime.agents.pop(TaskKind.PREPARE_FORM)  # its job URL is a real portal
+    headless = pipe.cfg.model_copy(update={"browser_headless": True,
+                                           "field_aliases_path": ALIASES})
+    pipe.runtime.tools["form_opener"] = make_form_opener(headless)
     shutil.copy(FIX / "profile_example.yaml",
                 pipe.cfg.storage_path / "profiles" / "profile.yaml")
     pipe.import_profile(verify=True)
     await pipe.discover()
     job = pipe.jobs()["greenhouse:2001"]
     assert job.status == "MATCHED"
+    with pipe.factory() as s:  # the fixture board's URL is a real portal: use the local form
+        row = s.get(JobRow, job.job_id)
+        assert row is not None
+        row.application_url = f"{form_server}/greenhouse.html"
+        s.commit()
     with pipe.factory() as s:
         app_id = select_job(s, pipe.orch, job.job_id).application_id
     await pipe.orch.run_until_idle()
     with pipe.factory() as s:
         app = s.get(ApplicationRow, app_id)
-        assert app is not None and app.status == "FORM_IN_PROGRESS"
+        # documents done -> PREPARE_FORM read the local form; work authorization is the
+        # user's to answer, so the application waits for them
+        assert app is not None and app.status == "NEEDS_USER_INPUT"
+        assert app.form_snapshot_hash
         arts = {a.type: a for a in s.execute(select(DocumentArtifactRow).where(
             DocumentArtifactRow.application_id == app_id)).scalars()}
     assert {"resume", "resume_docx", "resume_diff", "cover_letter",
@@ -80,4 +94,4 @@ async def test_select_to_form_in_progress(pipe: Pipeline) -> None:  # noqa: F811
         prep = s.execute(select(TaskRow).where(
             TaskRow.kind == TaskKind.PREPARE_FORM.value,
             TaskRow.entity_id == app_id)).scalars().all()
-    assert len(prep) == 1 and prep[0].status == TaskStatus.FAILED.value  # no agent: never ran
+    assert [p.status for p in prep] == [TaskStatus.SUCCEEDED.value]
