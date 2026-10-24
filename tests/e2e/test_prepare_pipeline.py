@@ -44,11 +44,13 @@ async def test_prepare_answer_review_approve_simulated(
     @asynccontextmanager
     async def watched(source: str, url: str, application_id: str) -> AsyncIterator[Any]:
         async with real(source, url, application_id) as adapter:
-            yield adapter
-            closed.append(await adapter.page.evaluate(
-                """() => ({submitted: window.__submitted === true,
-                           resume: [...document.querySelector('#resume').files]
-                                   .map(f => f.name)})"""))
+            try:
+                yield adapter
+            finally:
+                closed.append(await adapter.page.evaluate(
+                    """() => ({submitted: window.__submitted === true,
+                               resume: [...document.querySelector('#resume').files]
+                                       .map(f => f.name)})"""))
 
     pipe.runtime.tools["form_opener"] = watched
     shutil.copy(FIX / "profile_example.yaml", cfg.storage_path / "profiles" / "profile.yaml")

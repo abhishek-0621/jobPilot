@@ -69,3 +69,15 @@ async def test_empty_allowed_host_ignored(form_server: str, tmp_path: Path) -> N
     async with portal_page(_cfg(tmp_path), "lever", {"", "127.0.0.1"}) as s:
         await s.page.goto(f"{form_server}/external.html")
         assert s.blocked == ["https://tracker.example.invalid/x.png"]
+
+
+async def test_fixture_submit_reaches_recorder(
+        form_server: str, form_posts: list[str], tmp_path: Path) -> None:
+    """Proves the no-submit check can fail: a real click on Submit POSTs to the server."""
+    async with portal_page(_cfg(tmp_path), "greenhouse", {"127.0.0.1"}) as s:
+        await s.page.goto(f"{form_server}/greenhouse.html")
+        await s.page.evaluate("document.querySelector('#application_form').noValidate = true")
+        async with s.page.expect_request(
+                lambda r: r.method == "POST", timeout=5000):
+            await s.page.click("#submit_app")
+    assert form_posts == ["/submit"]
