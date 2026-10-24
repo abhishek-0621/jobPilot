@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from jobpilot.contracts.enums import ApplicationStatus
@@ -149,7 +149,8 @@ def _affected_applications(s: Session, changed: set[str]) -> list[str]:
         return []
     rows = s.execute(
         select(ApplicationRow.application_id)
-        .join(FormFieldAnswerRow, FormFieldAnswerRow.application_id == ApplicationRow.application_id)
+        .join(FormFieldAnswerRow,
+              FormFieldAnswerRow.application_id == ApplicationRow.application_id)
         .where(
             ApplicationRow.status.in_([ApplicationStatus.APPROVED.value,
                                        ApplicationStatus.READY_FOR_REVIEW.value]),

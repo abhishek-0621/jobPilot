@@ -71,18 +71,22 @@ class ModelGateway:
             "keep_alive": route.keep_alive,
         }
         try:
-            resp = await self._client.post(self._url("/api/chat"), json=body, timeout=route.timeout_s)
+            resp = await self._client.post(
+                self._url("/api/chat"), json=body, timeout=route.timeout_s)
         except httpx.TimeoutException as e:
             raise ModelError(ErrorCode.MODEL_TIMEOUT, f"model {model_tag} timed out") from e
         except httpx.HTTPError as e:
-            raise ModelError(ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} unreachable: {e}") from e
+            raise ModelError(
+                ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} unreachable: {e}"
+            ) from e
         if resp.status_code >= 500 or resp.status_code == 404:
             raise ModelError(
                 ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} returned HTTP {resp.status_code}"
             )
         if resp.status_code != 200:
             raise ModelError(
-                ErrorCode.MODEL_INVALID_SCHEMA, f"model {model_tag} returned HTTP {resp.status_code}"
+                ErrorCode.MODEL_INVALID_SCHEMA,
+                f"model {model_tag} returned HTTP {resp.status_code}",
             )
         try:
             data = resp.json()

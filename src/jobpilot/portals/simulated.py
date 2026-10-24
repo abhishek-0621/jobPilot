@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -79,7 +78,7 @@ class SimulatedAdapter(PortalAdapter):
         if key in self.submissions:
             return self.submissions[key]
         if self.fail_mode == "timeout":
-            raise asyncio.TimeoutError
+            raise TimeoutError
         now = datetime.now(UTC)
         short = key.split(":", 1)[-1][:8]
         uncertain = self.fail_mode == "no_confirmation"

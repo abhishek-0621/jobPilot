@@ -10,7 +10,8 @@ def build_messages(system: str, instructions: str, untrusted: str | None = None)
     user = instructions
     if untrusted is not None:
         escaped = untrusted.replace(_CLOSE_TAG, "&lt;/untrusted_content&gt;")
-        user = f"{instructions}\n\n{_UNTRUSTED_NOTICE}\n<untrusted_content>\n{escaped}\n{_CLOSE_TAG}"
+        user = (f"{instructions}\n\n{_UNTRUSTED_NOTICE}\n<untrusted_content>\n"
+                f"{escaped}\n{_CLOSE_TAG}")
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

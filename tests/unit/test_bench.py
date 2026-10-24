@@ -65,8 +65,8 @@ async def test_generate_model_tag_override() -> None:
     cfg = AppConfig(model_routes={"job_extraction": ModelRoute(
         model_tag="primary:1", fallback="backup:2")})
     gw = ModelGateway(cfg, httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    from jobpilot.llm.ollama_client import ModelError
     from jobpilot.agents.extract import _ExtractLLM
+    from jobpilot.llm.ollama_client import ModelError
     with pytest.raises(ModelError):
         await gw.generate("job_extraction", [], _ExtractLLM, "v1", model_tag="other:3")
     assert [s["model"] for s in seen] == ["other:3"]  # no fallback
@@ -81,7 +81,8 @@ async def test_generate_override_reflected_in_meta() -> None:
 
 async def test_run_bench_uses_fixtures_and_report(tmp_path: Path) -> None:
     gw = _gw(lambda req: _resp(["Python"]))
-    results = await run_bench(_cfg(tmp_path), ["a:1", "b:2"], "job_extraction", FIXTURES, gateway=gw)
+    results = await run_bench(_cfg(tmp_path), ["a:1", "b:2"], "job_extraction", FIXTURES,
+                              gateway=gw)
     assert [r.tag for r in results] == ["a:1", "b:2"]
     assert all(r.schema_valid_rate == 1.0 for r in results)
     path = bench_mod.write_report(_cfg(tmp_path), "job_extraction", results)

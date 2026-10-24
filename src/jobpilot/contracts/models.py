@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Annotated, Literal
-
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator

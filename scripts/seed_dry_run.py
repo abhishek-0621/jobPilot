@@ -10,10 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from jobpilot.api.actions import approve_and_queue  # noqa: E402
 from jobpilot.config import load_config  # noqa: E402
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head  # noqa: E402
 from jobpilot.ids import new_id  # noqa: E402
-from jobpilot.api.actions import approve_and_queue  # noqa: E402
 from jobpilot.orchestrator.approval import ApprovalService  # noqa: E402
 from jobpilot.orchestrator.engine import TaskKind  # noqa: E402
 from jobpilot.portals.simulated import SimulatedAdapter  # noqa: E402

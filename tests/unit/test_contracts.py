@@ -4,7 +4,6 @@ from pydantic import ValidationError
 from jobpilot.contracts.enums import (
     ApplicationStatus,
     ErrorCode,
-    FieldDecision,
     JobStatus,
     OutreachStatus,
     Recovery,

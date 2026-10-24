@@ -57,8 +57,8 @@ Then, in the dashboard:
 1. Open **Profile** (`/ui/profile`) and verify each fact. Matching uses verified facts only;
    until at least one is verified a banner is shown and jobs are not scored.
 2. On **Jobs** (`/ui/jobs`), click **Discover**. Jobs are fetched from the public boards,
-   de-duplicated, extracted and scored by the local model; those below `min_match_score` or failing a hard filter
-   (location, seniority, excluded keyword, experience gap) are rejected with a reason.
+   de-duplicated, extracted and scored by the local model; those below `min_match_score`
+   or failing a hard filter (location, seniority, excluded keyword, experience gap) are rejected with a reason.
 
 ## Where data lives
 

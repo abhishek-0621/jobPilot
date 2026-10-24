@@ -8,12 +8,12 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
 
+from jobpilot.agents.extract import ExtractAgent, JobRequirements, extract_handler
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ErrorCode, JobStatus
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
 from jobpilot.data.repositories import list_events
 from jobpilot.data.tables import JobRow, TaskRow
-from jobpilot.agents.extract import ExtractAgent, JobRequirements, extract_handler
 from jobpilot.llm.ollama_client import GenerationMeta, ModelError
 from jobpilot.orchestrator.engine import (
     AgentContext,

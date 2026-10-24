@@ -24,7 +24,8 @@ def test_sha256_token_survives_inside_string_and_bare_hex_redacted():
 
 
 def test_key_variants_redacted():
-    keys = ["password", "DB_PASSWD", "access_token", "client-secret", "Cookie", "api-key", "apiKey", "session_id"]
+    keys = ["password", "DB_PASSWD", "access_token", "client-secret", "Cookie", "api-key",
+            "apiKey", "session_id"]
     out = redact({k: "v" for k in keys})
     assert set(out.values()) == {"[REDACTED]"}
 

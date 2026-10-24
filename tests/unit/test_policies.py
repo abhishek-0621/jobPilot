@@ -4,7 +4,6 @@ from typing import Any
 
 from jobpilot.contracts.enums import (
     ApplicationStatus,
-    ApprovalKind,
     OutreachStatus,
     PortalCapability,
 )

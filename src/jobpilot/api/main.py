@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import shutil
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -12,14 +12,14 @@ from typing import Annotated, Any, Literal
 from alembic.runtime.migration import MigrationContext
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp
-from sqlalchemy import select
-from sqlalchemy.exc import NoResultFound
-from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.api import schemas as sc
 from jobpilot.api.actions import ActionConflict, approve_and_queue, select_job, start_discovery
@@ -50,7 +50,6 @@ from jobpilot.llm.ollama_client import ModelGateway
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.runtime import Runtime, build_runtime
-
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
