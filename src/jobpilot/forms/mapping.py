@@ -211,6 +211,9 @@ def _value_for(key: str, entry: AliasEntry, f: FormField, ctx: MappingContext,
     return _Resolved(value=text, source=src, from_library=lib)
 
 
+MODEL_SUGGESTED_RATIONALE = "Model-suggested mapping"
+
+
 def _answer(f: FormField, decision: FieldDecision, rationale: str, *, value: Any = None,
             source: str | None = None, confidence: float = 0.0) -> FieldAnswer:
     return FieldAnswer(field_id=f.field_id, label=f.label, field_type=f.field_type,
@@ -373,5 +376,5 @@ def apply_suggestions(snapshot: FormSnapshot, unmatched: list[FormField],
         if a.proposed_value is None:
             out.append(a)  # ASK_USER / NOT_APPLICABLE from the shared resolver
             continue
-        out.append(a.model_copy(update={"rationale": "Model-suggested mapping"}))
+        out.append(a.model_copy(update={"rationale": MODEL_SUGGESTED_RATIONALE}))
     return out

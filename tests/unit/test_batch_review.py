@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from jobpilot.api.main import create_app
 from jobpilot.config import AppConfig
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
+from jobpilot.data.repositories import batch_items
 from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, FormFieldAnswerRow
 from jobpilot.ids import new_id
 from jobpilot.orchestrator.approval import ApprovalService
@@ -126,7 +127,6 @@ def test_rebuild_excludes_non_ready(client: TestClient,
     page = client.get(f"/ui/batches/{batch_id}").text
     assert "version 2" in page and ids[0] in page and "Changed since" not in page
     with factory() as s:
-        from jobpilot.data.repositories import batch_items
         assert [i.application_id for i in batch_items(s, batch_id, 2)] == [ids[0]]
         for app in s.execute(select(ApplicationRow)).scalars():
             app.status = "NEEDS_USER_INPUT"
@@ -142,3 +142,45 @@ def test_batches_list_page(client: TestClient, factory: sessionmaker[Session]) -
     assert f"/ui/batches/{batch_id}" in page and "PARTIALLY_APPROVED" in page
     assert re.search(r"<td>2</td><td>1</td>", page)
     assert 'href="/ui/batches"' in page
+
+
+def test_checkbox_disabled_unless_ready_for_review(
+        client: TestClient, factory: sessionmaker[Session]) -> None:
+    ids, batch_id, _ = _batch(factory, 2)
+    with factory() as s:
+        app = s.get(ApplicationRow, ids[0])
+        assert app is not None
+        app.status = "APPROVED"  # hash unchanged, but no longer approvable here
+        s.commit()
+    page = client.get(f"/ui/batches/{batch_id}").text
+    assert f'value="{ids[0]}" disabled' in page
+    assert f'value="{ids[1]}" checked' in page
+
+
+def test_rebuild_button_only_when_useful(
+        client: TestClient, factory: sessionmaker[Session]) -> None:
+    ids, batch_id, h = _batch(factory, 1)
+    assert "Rebuild batch" in client.get(f"/ui/batches/{batch_id}").text  # pending
+    assert _approve(client, batch_id, h, 1, ids) == 200
+    page = client.get(f"/ui/batches/{batch_id}").text  # fully approved, nothing changed
+    assert "Rebuild batch" not in page and "Approve selected" not in page
+    with factory() as s:
+        edit_answer(s, ids[0], "notice_period", "60 days")
+        s.commit()
+    assert "Rebuild batch" in client.get(f"/ui/batches/{batch_id}").text  # a row changed
+
+
+def test_untrusted_answer_text_is_escaped(
+        client: TestClient, factory: sessionmaker[Session]) -> None:
+    with factory() as s:
+        ids = seed_ready_apps(s, 1)
+        s.add(FormFieldAnswerRow(
+            application_id=ids[0], field_id="x", label="<script>alert(1)</script>",
+            field_type="text", proposed_value_json='"<script>alert(2)</script>"',
+            decision="FILL_AND_REVIEW", confidence=0.3, rationale="From library."))
+        batch_id = ApprovalService(s).build_batch(ids).batch_id
+        s.commit()
+    page = client.get(f"/ui/batches/{batch_id}").text
+    assert "<script>alert" not in page
+    assert "&lt;script&gt;alert(1)" in page and "&lt;script&gt;alert(2)" in page
+    assert "model-suggested" not in page  # low-confidence alone is not "suggested"

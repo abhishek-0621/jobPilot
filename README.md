@@ -79,6 +79,38 @@ and the application moves to `FORM_IN_PROGRESS`.
 - Re-importing your profile marks documents citing a changed or removed fact as stale
   and regenerates them the same way.
 
+## Applying
+
+The prepare pipeline, end to end (Greenhouse and Lever forms):
+
+1. **Discover** — Jobs → *Discover* fetches, extracts and scores postings.
+2. **Verify your profile** — only verified facts are ever used (Profile page).
+3. **Select** a MATCHED job. Resume and cover letter are generated (see Documents).
+4. **Form preparation** — the application form is opened in an isolated browser profile
+   (`storage/browser_state/`, headful by default) and read, never submitted. Each field is
+   filled from your verified profile, your answer library or the generated documents,
+   or flagged for you.
+5. **Answer questions** — open `/ui/applications/<id>/answers`. Required fields with no
+   value wait in `NEEDS_USER_INPUT` until you answer them. Review anything marked
+   FILL_AND_REVIEW (library answers, model-suggested mappings).
+6. **Validate** — the form is filled again, read back, and a full-page screenshot is
+   stored; the application becomes `READY_FOR_REVIEW`.
+7. **Review batch** — *Batches* → build a batch, inspect answers, documents and screenshots.
+8. **Approve** — approval is bound to the content hash you saw; edits afterwards require a
+   rebuild and re-approval.
+
+Never automated:
+
+- Sensitive questions (demographics, work authorization, sponsorship, date of birth,
+  terms and declarations) are never filled for you; you answer them yourself.
+- CAPTCHA, login and MFA walls are detected and handed back to you (`manual_handoff`);
+  nothing is bypassed.
+- Submission is simulated until Plan 5: approving a batch only runs the simulated portal
+  in dry run, and the real form's submit button is never clicked.
+
+Screenshots and documents live under `storage/artifacts/<application_id>/`
+(`form_vN.png`, `resume_vN.pdf`, ...), are served only through `/artifacts`, and stay local.
+
 ## Where data lives
 
 All state lives in `storage/` (SQLite database `storage/jobpilot.db`, generated artifacts).

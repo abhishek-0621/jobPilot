@@ -9,7 +9,7 @@
 <input type="hidden" name="version" value="{{ batch.version }}">
 <div class="table-wrap"><table><thead><tr><th></th><th>Company / role</th><th>Status</th><th>Documents</th><th>Answers</th><th>Warnings</th><th>Evidence</th><th>Item hash</th></tr></thead><tbody>
 {% for r in rows %}<tr>
-<td>{% if r.item.selected and not r.changed %}✓{% elif r.app %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" {% if r.changed %}disabled{% else %}checked{% endif %} aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
+<td>{% if r.item.selected and not r.changed %}✓{% elif r.app %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" {% if r.changed or r.app.status != "READY_FOR_REVIEW" %}disabled{% else %}checked{% endif %} aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
 <td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/jobs/{{ r.job.job_id }}">{{ r.job.title }}</a> · <a href="{{ r.job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">portal</a>{% endif %}
 {% if r.changed %}<br><span class="warn">Changed since batch was built — rebuild batch</span>{% endif %}</td>
 <td>{{ r.app.status if r.app else "" }}</td>
@@ -24,6 +24,6 @@
 </tbody></table></div>
 {% if batch.status in ("READY_FOR_REVIEW", "PARTIALLY_APPROVED") %}<p><button type="submit">Approve selected</button></p>{% endif %}
 </form>
-<form method="post" action="/ui/batches/{{ batch.batch_id }}/rebuild"><button type="submit">Rebuild batch</button> <span class="muted">Re-freezes the applications that are still ready for review.</span></form>
+{% if pending or any_changed %}<form method="post" action="/ui/batches/{{ batch.batch_id }}/rebuild"><button type="submit">Rebuild batch</button> <span class="muted">Re-freezes the applications that are still ready for review.</span></form>{% endif %}
 <div id="approve-result"></div>
 {% endblock %}

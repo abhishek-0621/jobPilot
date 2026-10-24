@@ -98,10 +98,22 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 
 
 @pytest.fixture
-def form_server() -> Iterator[str]:
-    """Serve tests/fixtures/forms on 127.0.0.1 (ephemeral port); yields the base URL."""
+def form_posts() -> list[str]:
+    """Paths of every POST the fixture server receives (a form submit would show up here)."""
+    return []
+
+
+@pytest.fixture
+def form_server(form_posts: list[str]) -> Iterator[str]:
+    """Serve tests/fixtures/forms on 127.0.0.1 (ephemeral port); yields the base URL.
+    Any POST is recorded in ``form_posts`` and answered 405."""
+    class Recording(_QuietHandler):
+        def do_POST(self) -> None:
+            form_posts.append(self.path)
+            self.send_error(405)
+
     server = ThreadingHTTPServer(("127.0.0.1", 0),
-                                 partial(_QuietHandler, directory=str(_FORMS)))
+                                 partial(Recording, directory=str(_FORMS)))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

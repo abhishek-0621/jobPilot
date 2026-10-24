@@ -27,7 +27,7 @@ from jobpilot.api.actions import (
     start_tailor,
     user_editable,
 )
-from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, JobStatus
+from jobpilot.contracts.enums import ApplicationStatus, BatchStatus, FieldDecision, JobStatus
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import set_library_answer
 from jobpilot.data.repositories import (
@@ -54,6 +54,7 @@ from jobpilot.data.tables import (
     OutreachDraftRow,
 )
 from jobpilot.forms.classify import classify_sensitive
+from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
@@ -421,12 +422,11 @@ def build_batch(s: Db) -> RedirectResponse:
     return RedirectResponse(f"/ui/batches/{batch_id}", status_code=303)
 
 
-MODEL_SUGGESTED = "Model-suggested mapping"
 CHANGED_STATUSES = (ApplicationStatus.READY_FOR_REVIEW.value, ApplicationStatus.APPROVED.value)
 
 
 def _is_model_suggested(a: FormFieldAnswerRow) -> bool:
-    return a.rationale == MODEL_SUGGESTED or a.confidence <= 0.5
+    return a.rationale == MODEL_SUGGESTED_RATIONALE
 
 
 @router.get("/ui/batches", response_class=HTMLResponse)
@@ -483,7 +483,11 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
                          "display": _display(json.loads(a.proposed_value_json))} for a in mine],
             "review_count": summary.get(FieldDecision.FILL_AND_REVIEW.value, 0),
             "suggested_count": sum(1 for a in mine if _is_model_suggested(a))})
-    return _page(request, s, "batch.html", {"batch": batch, "rows": rows})
+    pending = batch.status in (BatchStatus.READY_FOR_REVIEW.value,
+                               BatchStatus.PARTIALLY_APPROVED.value)
+    return _page(request, s, "batch.html", {
+        "batch": batch, "rows": rows, "pending": pending,
+        "any_changed": any(r["changed"] for r in rows)})
 
 
 @router.post("/ui/batches/{batch_id}/rebuild")
