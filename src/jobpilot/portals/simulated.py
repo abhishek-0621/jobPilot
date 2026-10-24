@@ -56,8 +56,7 @@ class SimulatedAdapter(PortalAdapter):
     async def inspect_form(self) -> FormSnapshot:
         return self.form
 
-    async def fill_fields(self, answers: list[FieldAnswer], *,
-                          user_values: frozenset[str] | set[str] = frozenset()) -> FillReport:
+    async def fill_fields(self, answers: list[FieldAnswer]) -> FillReport:
         known = {f.field_id for f in self.form.fields}
         filled = [a.field_id for a in answers if a.field_id in known]
         failed = {a.field_id: "unknown field" for a in answers if a.field_id not in known}

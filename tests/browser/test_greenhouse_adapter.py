@@ -6,11 +6,11 @@ import pytest
 
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import FieldDecision, PortalCapability
-from jobpilot.contracts.models import FieldAnswer
 from jobpilot.documents.render import chromium_available
 from jobpilot.forms.browser import portal_page
 from jobpilot.portals.base import FormSnapshot
 from jobpilot.portals.greenhouse import GreenhouseAdapter
+from tests.browser.helpers import answer
 
 pytestmark = [
     pytest.mark.browser,
@@ -20,19 +20,11 @@ pytestmark = [
 GH = "job_application"
 
 
-def answer(field_id: str, value: Any, field_type: str = "text", *, label: str = "x",
-           decision: FieldDecision = FieldDecision.AUTO_FILL,
-           source: str | None = "fact_identity_email") -> FieldAnswer:
-    return FieldAnswer(field_id=field_id, label=label, field_type=field_type,
-                       proposed_value=value, decision=decision, source_fact_id=source,
-                       confidence=0.9, rationale="test")
-
-
 @pytest.fixture
 async def gh(form_server: str, tmp_path: Path) -> AsyncIterator[GreenhouseAdapter]:
     cfg = AppConfig(storage_path=tmp_path / "storage", browser_headless=True, model_routes={})
     async with portal_page(cfg, "greenhouse", {"127.0.0.1"}) as s:
-        adapter = GreenhouseAdapter(s.page)
+        adapter = GreenhouseAdapter(s.page, upload_root=tmp_path)
         await adapter.open_job(f"{form_server}/greenhouse.html")
         yield adapter
 
@@ -156,3 +148,52 @@ async def test_captcha_blocks(gh: GreenhouseAdapter, form_server: str) -> None:
     report = await gh.fill_fields([answer("first_name", "Asha")])
     assert report.filled == [] and report.failed == {"first_name": "BLOCKED:captcha"}
     assert await gh.page.input_value("#first_name") == ""
+
+
+async def test_hidden_sibling_with_same_name_ignored(gh: GreenhouseAdapter) -> None:
+    f = _by_id(await gh.inspect_form())
+    assert f["job_application[consent]"].field_type == "checkbox"
+    report = await gh.fill_fields([answer("job_application[consent]", True, "checkbox",
+                                          label="Send me job alerts")])
+    assert report.filled == ["job_application[consent]"], report.failed
+    assert (await gh.validate_form({"job_application[consent]": True})).ok
+
+
+async def test_checkbox_group(gh: GreenhouseAdapter) -> None:
+    f = _by_id(await gh.inspect_form())
+    grp = f["locations[]"]
+    assert grp.field_type == "checkbox_group" and grp.options == ["Remote", "Onsite"]
+    assert grp.label == "Preferred locations"
+    report = await gh.fill_fields([answer("locations[]", ["Remote"], "checkbox_group")])
+    assert report.filled == ["locations[]"], report.failed
+    assert (await gh.validate_form({"locations[]": ["Remote"]})).ok
+    assert not (await gh.validate_form({"locations[]": ["Onsite"]})).ok
+
+
+async def test_duplicate_field_id_warns(gh: GreenhouseAdapter) -> None:
+    snap = await gh.inspect_form()
+    assert [x.field_id for x in snap.fields].count("dup") == 1
+    assert any("dup" in w for w in snap.warnings)
+
+
+async def test_user_values_param_removed(gh: GreenhouseAdapter) -> None:
+    await gh.inspect_form()
+    with pytest.raises(TypeError):
+        await gh.fill_fields([], user_values={"x"})  # type: ignore[call-arg]
+
+
+async def test_declaration_gate_uses_page_label(gh: GreenhouseAdapter) -> None:
+    await gh.inspect_form()
+    report = await gh.fill_fields([answer("question_1004", True, "checkbox",
+                                          label="checkbox 4")])
+    assert report.filled == []
+
+
+async def test_upload_outside_root_refused(gh: GreenhouseAdapter, tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}_outside.pdf"
+    outside.write_bytes(b"%PDF-1.4 synthetic")
+    try:
+        report = await gh.fill_fields([answer(f"{GH}[resume]", str(outside), "file")])
+    finally:
+        outside.unlink()
+    assert report.failed == {f"{GH}[resume]": "UPLOAD_OUTSIDE_ROOT"}

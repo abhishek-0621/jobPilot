@@ -32,6 +32,14 @@
     <label><input type="radio" name="question_1003" value="no"> No</label></fieldset>
   <div class="field"><label><input type="checkbox" id="question_1004" name="question_1004">
     I agree to the privacy policy</label></div>
+  <div class="field"><input type="hidden" name="job_application[consent]" value="0">
+    <label><input type="checkbox" name="job_application[consent]" value="1">
+    Send me job alerts</label></div>
+  <fieldset class="field"><legend>Preferred locations</legend>
+    <label><input type="checkbox" name="locations[]" value="remote"> Remote</label>
+    <label><input type="checkbox" name="locations[]" value="onsite"> Onsite</label></fieldset>
+  <div class="field"><label for="dup_a">Nickname</label><input type="text" id="dup_a" name="dup"></div>
+  <div class="field"><label for="dup_b">Nickname again</label><input type="text" id="dup_b" name="dup"></div>
   <button type="submit" id="submit_app"
     onclick="window.__submitted = true; event.preventDefault();">Submit Application</button>
 </form>

@@ -8,7 +8,7 @@ from jobpilot.contracts.enums import FieldDecision
 from jobpilot.documents.render import chromium_available
 from jobpilot.forms.browser import portal_page
 from jobpilot.portals.lever import LeverAdapter
-from tests.browser.test_greenhouse_adapter import answer
+from tests.browser.helpers import answer
 
 pytestmark = [
     pytest.mark.browser,
@@ -20,7 +20,7 @@ pytestmark = [
 async def lever(form_server: str, tmp_path: Path) -> AsyncIterator[LeverAdapter]:
     cfg = AppConfig(storage_path=tmp_path / "storage", browser_headless=True, model_routes={})
     async with portal_page(cfg, "lever", {"127.0.0.1"}) as s:
-        adapter = LeverAdapter(s.page)
+        adapter = LeverAdapter(s.page, upload_root=tmp_path)
         await adapter.open_job(f"{form_server}/lever.html")
         yield adapter
 

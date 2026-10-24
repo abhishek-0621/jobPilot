@@ -1,7 +1,6 @@
 """Shared Playwright form reading/filling for ATS adapters. Never submits."""
 
 import hashlib
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -93,20 +92,26 @@ _INSPECT_JS = "(sels) => {" + _HELPERS + r"""
   const strip = s => norm((s || '').replace(/\*\s*$/, ''));
   const visible = el => !!(el.offsetParent || el.getClientRects().length);
   const out = []; const radios = {};
+  const boxCount = {};
+  for (const b of root.querySelectorAll('input[type=checkbox][name]')) {
+    if (!b.disabled && visible(b)) boxCount[b.name] = (boxCount[b.name] || 0) + 1;
+  }
   for (const el of root.querySelectorAll('input, select, textarea')) {
     const tag = el.tagName.toLowerCase();
     const type = tag === 'input' ? (el.type || 'text').toLowerCase() : tag;
     if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
     if (el.disabled || el.readOnly && type !== 'file') continue;
     if (type !== 'file' && !visible(el)) continue;
-    if (type === 'radio') {
-      const key = el.name || el.id;
+    const grouped = type === 'radio' || (type === 'checkbox' && boxCount[el.name] > 1);
+    if (grouped) {
+      const kind = type === 'radio' ? 'radio' : 'checkbox_group';
+      const key = kind + ':' + (el.name || el.id);
       const optLabel = strip(ownText(el.closest('label')) || labelFor(el));
       if (radios[key]) { radios[key].options.push(optLabel);
         radios[key].required = radios[key].required || el.required; continue; }
       const raw = questionText(el);
       radios[key] = { name: el.name || null, id: el.id || null, label: strip(raw),
-        field_type: 'radio', required: isRequired(el, raw), options: [optLabel],
+        field_type: kind, required: isRequired(el, raw), options: [optLabel],
         help_text: helpFor(el) };
       out.push(radios[key]);
       continue;
@@ -138,9 +143,20 @@ _READ_JS = "(el) => {" + _HELPERS + r"""
   return el.value;
 }"""
 
-_RADIO_LABELS_JS = "(els) => {" + _HELPERS + r"""
+_GROUP_LABELS_JS = "(els) => {" + _HELPERS + r"""
   return els.map(r => norm((ownText(r.closest('label')) || labelFor(r)).replace(/\*\s*$/, '')));
 }"""
+
+_CHECKED_JS = "(els) => els.map(e => e.checked)"
+
+_FILLABLE_SEL = ("input:not([type=hidden]):not([type=submit]):not([type=button])"
+                 ":not([type=reset]):not([type=image])", "select", "textarea")
+_TYPE_SEL = {
+    "radio": ("input[type=radio]",), "checkbox": ("input[type=checkbox]",),
+    "checkbox_group": ("input[type=checkbox]",), "file": ("input[type=file]",),
+    "select": ("select",), "textarea": ("textarea",),
+}
+_ACTION_TIMEOUT_MS = 5_000
 
 _ERRORS_JS = "(sels) => {" + _HELPERS + r"""
   const root = pickRoot(sels);
@@ -187,8 +203,9 @@ class PlaywrightFormAdapter:
     name: ClassVar[str] = "playwright"
     form_roots: ClassVar[tuple[str, ...]] = ("form",)
 
-    def __init__(self, page: Page) -> None:
+    def __init__(self, page: Page, *, upload_root: Path) -> None:
         self.page = page
+        self.upload_root = upload_root.resolve()
         self._fields: dict[str, FormField] = {}
 
     async def capabilities(self) -> PortalCapabilities:
@@ -208,17 +225,19 @@ class PlaywrightFormAdapter:
     async def inspect_form(self) -> FormSnapshot:
         raw = await self.page.evaluate(_INSPECT_JS, list(self.form_roots))
         fields: list[FormField] = []
+        warnings: list[str] = []
         seen: set[str] = set()
         for r in raw:
             fid = _field_key(r)
             if fid in seen:
+                warnings.append(f"duplicate field id {fid!r} ({r['label']!r}); kept the first")
                 continue
             seen.add(fid)
             fields.append(FormField(field_id=fid, label=r["label"], field_type=r["field_type"],
                                     required=bool(r["required"]), options=r["options"],
                                     help_text=r["help_text"]))
         self._fields = {f.field_id: f for f in fields}
-        return FormSnapshot(url=self.page.url, fields=fields)
+        return FormSnapshot(url=self.page.url, fields=fields, warnings=warnings)
 
     async def _root(self) -> Locator:
         for sel in self.form_roots:
@@ -228,44 +247,51 @@ class PlaywrightFormAdapter:
         forms = self.page.locator("form")
         return forms.first if await forms.count() else self.page.locator("body")
 
-    async def _locate(self, field_id: str, label: str) -> Locator | None:
+    async def _locate(self, field_id: str, label: str, field_type: str) -> Locator | None:
+        known = self._fields.get(field_id)
+        kind = known.field_type if known else field_type
+        tags = _TYPE_SEL.get(kind, _FILLABLE_SEL)
         root = await self._root()
         for attr in ("name", "id"):
-            loc = root.locator(_attr_sel(attr, field_id))
+            attr_sel = _attr_sel(attr, field_id)
+            loc = root.locator(", ".join(t + attr_sel for t in tags))
             if await loc.count():
                 return loc
         if field_id.startswith("lbl_") and label and label_key(label) == field_id:
-            loc = root.get_by_label(label, exact=True)
+            loc = root.get_by_label(label, exact=True).and_(root.locator(", ".join(tags)))
             if await loc.count():
                 return loc
         return None
 
-    def _allowed(self, a: FieldAnswer, user_values: Iterable[str]) -> bool:
+    def _allowed(self, a: FieldAnswer) -> bool:
         if a.proposed_value is None:
             return False
-        by_user = a.source_fact_id == "user" or a.field_id in user_values
+        by_user = a.source_fact_id == "user"
         known = self._fields.get(a.field_id)
         help_text = known.help_text if known else ""
         options = known.options if known else []
-        if classify_sensitive(a.label, help_text, options) == "declaration":
+        labels = [a.label] + ([known.label] if known else [])
+        if any(classify_sensitive(lab, help_text, options) == "declaration" for lab in labels):
             return by_user and bool(a.proposed_value)
         if a.decision in _FILLABLE:
             return True
         return a.decision in _USER_GATED and by_user
 
-    async def fill_fields(self, answers: list[FieldAnswer], *,
-                          user_values: frozenset[str] | set[str] = frozenset()) -> FillReport:
+    async def fill_fields(self, answers: list[FieldAnswer]) -> FillReport:
         filled: list[str] = []
         failed: dict[str, str] = {}
-        todo = [a for a in answers if self._allowed(a, user_values)]
+        todo = [a for a in answers if self._allowed(a)]
         blockers = await self.blockers()
         if blockers:
             reason = "BLOCKED:" + ",".join(blockers)
             return FillReport(filled=[], failed={a.field_id: reason for a in todo})
         for a in todo:
-            loc = await self._locate(a.field_id, a.label)
+            loc = await self._locate(a.field_id, a.label, a.field_type)
             if loc is None:
                 failed[a.field_id] = _LAYOUT
+                continue
+            if a.field_type == "file" and not self._inside_root(a.proposed_value):
+                failed[a.field_id] = "UPLOAD_OUTSIDE_ROOT"
                 continue
             try:
                 await self._fill_one(loc, a)
@@ -275,40 +301,56 @@ class PlaywrightFormAdapter:
                 filled.append(a.field_id)
         return FillReport(filled=filled, failed=failed)
 
+    def _inside_root(self, value: Any) -> bool:
+        return Path(str(value)).resolve().is_relative_to(self.upload_root)
+
     async def _fill_one(self, loc: Locator, a: FieldAnswer) -> None:
         value = a.proposed_value
-        kind = a.field_type
+        kind = self._fields[a.field_id].field_type if a.field_id in self._fields else a.field_type
+        t = _ACTION_TIMEOUT_MS
         if kind == "file":
-            path = Path(str(value))
+            path = Path(str(value)).resolve()
             if not path.is_file():
                 raise FileNotFoundError(f"file not found: {path.name}")
-            await loc.first.set_input_files(path)
+            await loc.first.set_input_files(path, timeout=t)
         elif kind == "select":
             labels = value if isinstance(value, list) else [str(value)]
-            await loc.first.select_option(label=labels)
-        elif kind == "radio":
-            labels = await loc.evaluate_all(_RADIO_LABELS_JS)
-            want = _norm(value)
-            idx = next((i for i, lab in enumerate(labels) if _norm(lab) == want), None)
-            if idx is None:
-                raise ValueError(f"no radio option matching '{value}'")
-            await loc.nth(idx).check()
+            await loc.first.select_option(label=labels, timeout=t)
+        elif kind in {"radio", "checkbox_group"}:
+            labels = [_norm(lab) for lab in await loc.evaluate_all(_GROUP_LABELS_JS)]
+            wants = [_norm(v) for v in (value if isinstance(value, list) else [value])]
+            missing = [w for w in wants if w not in labels]
+            if missing or (kind == "radio" and len(wants) != 1):
+                raise ValueError(f"no option matching {value!r}")
+            for i, lab in enumerate(labels):
+                if lab in wants:
+                    await loc.nth(i).check(timeout=t)
+                elif kind == "checkbox_group":
+                    await loc.nth(i).uncheck(timeout=t)
         elif kind == "checkbox":
-            await (loc.first.check() if value is True or _norm(value) in {"true", "yes", "1"}
-                   else loc.first.uncheck())
+            if _truthy(value):
+                await loc.first.check(timeout=t)
+            else:
+                await loc.first.uncheck(timeout=t)
         else:
             text = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
-            await loc.first.fill(text)
+            await loc.first.fill(text, timeout=t)
 
     async def validate_form(self, expected: dict[str, Any] | None = None) -> ValidationReport:
         errors: dict[str, str] = {}
         for fid, want in (expected or {}).items():
             known = self._fields.get(fid)
-            loc = await self._locate(fid, known.label if known else "")
+            loc = await self._locate(fid, known.label if known else "",
+                                     known.field_type if known else "")
             if loc is None:
                 errors[fid] = _LAYOUT
                 continue
-            got = await loc.first.evaluate(_READ_JS)
+            if known and known.field_type == "checkbox_group":
+                labels = await loc.evaluate_all(_GROUP_LABELS_JS)
+                flags = await loc.evaluate_all(_CHECKED_JS)
+                got: Any = [lab for lab, on in zip(labels, flags, strict=True) if on]
+            else:
+                got = await loc.first.evaluate(_READ_JS)
             if not _matches(got, want):
                 errors[fid] = f"expected {want!r}, found {got!r}"
         for e in await self.page.evaluate(_ERRORS_JS, list(self.form_roots)):
@@ -326,9 +368,13 @@ class PlaywrightFormAdapter:
         raise NotImplementedError("Plan 5")
 
 
+def _truthy(v: Any) -> bool:
+    return v is True or _norm(v) in {"true", "yes", "1"}
+
+
 def _matches(got: Any, want: Any) -> bool:
     if isinstance(got, bool):
-        return got == (want is True or _norm(want) in {"true", "yes", "1"})
+        return got == _truthy(want)
     if got is None:
         return want in (None, "", [])
     if isinstance(got, list):
