@@ -175,6 +175,7 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
     app.state.storage_path = cfg.storage_path
+    app.state.field_aliases_path = cfg.field_aliases_path
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(dashboard_router)
 

@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from jobpilot.contracts.enums import ApplicationStatus, PortalCapability
-from jobpilot.contracts.models import FieldAnswer, JobListing, SubmitResult
+from jobpilot.contracts.models import FieldAnswer, SubmitResult
 from jobpilot.portals.base import (
     ApprovedApplication,
     FillReport,
@@ -50,20 +50,21 @@ class SimulatedAdapter(PortalAdapter):
     async def capabilities(self) -> PortalCapabilities:
         return frozenset(PortalCapability) - {PortalCapability.SEND_OUTREACH}
 
-    async def open_job(self, job: JobListing) -> None:
+    async def open_job(self, url: str) -> None:
         self._filled = []
 
     async def inspect_form(self) -> FormSnapshot:
         return self.form
 
-    async def fill_fields(self, answers: list[FieldAnswer]) -> FillReport:
+    async def fill_fields(self, answers: list[FieldAnswer], *,
+                          user_values: frozenset[str] | set[str] = frozenset()) -> FillReport:
         known = {f.field_id for f in self.form.fields}
         filled = [a.field_id for a in answers if a.field_id in known]
         failed = {a.field_id: "unknown field" for a in answers if a.field_id not in known}
         self._filled = filled
         return FillReport(filled=filled, failed=failed)
 
-    async def validate_form(self) -> ValidationReport:
+    async def validate_form(self, expected: dict[str, Any] | None = None) -> ValidationReport:
         errors = {
             f.field_id: "required"
             for f in self.form.fields

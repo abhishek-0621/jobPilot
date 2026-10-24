@@ -148,7 +148,7 @@ def profile_import(
     engine = make_engine(cfg.db_path)
     try:
         with make_session_factory(engine)() as s:
-            version = import_profile(s, pf)
+            version = import_profile(s, pf, aliases_path=cfg.field_aliases_path)
             facts = active_profile(s)[1]
             s.commit()
     finally:

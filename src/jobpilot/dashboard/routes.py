@@ -50,7 +50,6 @@ from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
 
-FIELD_ALIASES_PATH = Path(__file__).resolve().parents[3] / "config" / "field_aliases.yaml"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
 NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
 UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
@@ -104,9 +103,9 @@ def _page(request: Request, s: Session, name: str, ctx: dict[str, Any]) -> HTMLR
                                       {**ctx, "profile_banner": _profile_banner(s)})
 
 
-def _library_fields() -> list[dict[str, str]]:
+def _library_fields(aliases_path: Path) -> list[dict[str, str]]:
     """Answer-library keys from field_aliases.yaml with their decision."""
-    data = yaml.safe_load(FIELD_ALIASES_PATH.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(aliases_path.read_text(encoding="utf-8")) or {}
     out: list[dict[str, str]] = []
     for name, spec in (data.get("fields") or {}).items():
         profile = spec.get("profile")
@@ -373,7 +372,7 @@ def approve(
                              "simulated submission queued.", 200, ok=True)
 
 
-def _profile_context(s: Session) -> dict[str, Any]:
+def _profile_context(s: Session, aliases_path: Path) -> dict[str, Any]:
     try:
         version, facts = active_profile(s)
     except LookupError:
@@ -384,7 +383,8 @@ def _profile_context(s: Session) -> dict[str, Any]:
     answers = {a.question_key: json.loads(a.value_json) for a in s.execute(
         select(AnswerLibraryRow).where(AnswerLibraryRow.profile_version == version)).scalars()}
     fields = [{**f, "value": answers.get(f["key"]),
-               "editable": f["decision"] in EDITABLE_DECISIONS} for f in _library_fields()]
+               "editable": f["decision"] in EDITABLE_DECISIONS}
+              for f in _library_fields(aliases_path)]
     prof = s.get(CandidateProfileRow, (PROFILE_ID, version))
     prefs = json.loads(prof.preferences_json) if prof is not None else {}
     return {"version": version, "sections": sections, "fields": fields,
@@ -393,7 +393,8 @@ def _profile_context(s: Session) -> dict[str, Any]:
 
 @router.get("/ui/profile", response_class=HTMLResponse)
 def profile(request: Request, s: Db) -> HTMLResponse:
-    return _page(request, s, "profile.html", _profile_context(s))
+    ctx = _profile_context(s, request.app.state.field_aliases_path)
+    return _page(request, s, "profile.html", ctx)
 
 
 @router.post("/ui/profile/facts/{fact_id}/verify", response_class=HTMLResponse)
@@ -429,7 +430,7 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
         active_profile(s)
     except LookupError as e:
         raise HTTPException(404, str(e)) from e
-    for f in _library_fields():
+    for f in _library_fields(request.app.state.field_aliases_path):
         if f["decision"] not in EDITABLE_DECISIONS:
             continue
         key = f["key"]

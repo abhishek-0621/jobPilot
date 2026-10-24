@@ -26,7 +26,6 @@ from jobpilot.profile.schema import ProfileFile
 from jobpilot.util.hashing import canonical_json
 
 PROFILE_ID = "default"
-_ALIASES_PATH = Path(__file__).resolve().parents[3] / "config" / "field_aliases.yaml"
 _DEFAULT_DECISION = "FILL_AND_REVIEW"
 
 
@@ -58,10 +57,10 @@ def _flatten(pf: ProfileFile) -> list[_Fact]:
     return facts
 
 
-def _decision_defaults() -> dict[str, str]:
-    if not _ALIASES_PATH.exists():
+def _decision_defaults(aliases_path: Path | None) -> dict[str, str]:
+    if aliases_path is None or not aliases_path.exists():
         return {}
-    data = yaml.safe_load(_ALIASES_PATH.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(aliases_path.read_text(encoding="utf-8")) or {}
     out: dict[str, str] = {}
     for spec in (data.get("fields") or {}).values():
         profile = spec.get("profile")
@@ -74,7 +73,8 @@ def _latest_version(s: Session) -> int | None:
     return s.execute(select(func.max(CandidateProfileRow.version))).scalar()
 
 
-def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
+def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user",
+                   aliases_path: Path | None = None) -> int:
     """Store ``pf`` as the next profile version; return the new version number.
 
     Fact rows are keyed by fact_id alone, so they are updated in place and re-stamped
@@ -124,7 +124,7 @@ def import_profile(s: Session, pf: ProfileFile, *, actor: str = "user") -> int:
     }
     s.add(CandidateProfileRow(profile_id=PROFILE_ID, version=version,
                               preferences_json=canonical_json(prefs)))
-    defaults = _decision_defaults()
+    defaults = _decision_defaults(aliases_path)
     answers = {k: v for k, v in pf.answer_library.items() if v is not None}
     for key, value in answers.items():
         s.add(AnswerLibraryRow(

@@ -8,7 +8,9 @@
   <label>Phone <input type="tel" name="phone"></label>
   <label>Current company <input type="text" name="org"></label>
   <label>LinkedIn URL <input type="text" name="urls[LinkedIn]"></label>
-  <label>Resume/CV <input type="file" name="resume"></label>
+  <div class="application-question resume"><div class="text">Resume/CV *</div>
+    <button type="button" class="visible-resume-upload">Attach resume</button>
+    <input type="file" name="resume" style="display:none"></div>
   <label>Additional information <textarea name="comments"></textarea></label>
   <div class="application-question custom-question">
     <label>Describe a system you scaled <textarea name="cards[abc][field0]"></textarea></label>
