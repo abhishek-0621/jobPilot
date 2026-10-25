@@ -96,6 +96,21 @@ class DiscoverAgent:
                               skipped=skipped)
 
 
+REMATCH_LIMIT = 200
+
+
+def _unmatched_jobs(s: Session, exclude: set[str]) -> list[str]:
+    """Extracted jobs that were never scored (e.g. MATCH refused before facts were verified)
+    and have no MATCH task waiting. Each discovery run retries them, oldest first."""
+    pending = select(TaskRow.entity_id).where(
+        TaskRow.kind == TaskKind.MATCH.value, TaskRow.status.in_(("QUEUED", "RUNNING")))
+    rows = s.execute(
+        select(JobRow.job_id).where(JobRow.status == JobStatus.NORMALIZED.value,
+                                    JobRow.job_id.not_in(pending))
+        .order_by(JobRow.job_id).limit(REMATCH_LIMIT)).scalars()
+    return [j for j in rows if j not in exclude]
+
+
 def discover_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
     if not isinstance(out, DiscoverOutput) or out.run_id != task.entity_id:
         raise OutputRejected("discover output does not match task run")
@@ -116,12 +131,14 @@ def discover_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
             reseen += 1
         else:
             duplicates += 1
+    rematch = _unmatched_jobs(s, exclude={j for _, _, j in follow})
+    follow.extend((TaskKind.MATCH, "job", job_id) for job_id in rematch)
     record_event(
         s, entity_type="run", entity_id=out.run_id, actor=_ACTOR, action="discovery_run",
         outcome="ok",
         details={"counts": {"fetched": out.fetched, "kept": len(out.listings), "new": new,
                             "duplicates": duplicates, "reseen": reseen,
-                            "skipped": out.skipped},
+                            "skipped": out.skipped, "rematch": len(rematch)},
                  "source_status": out.source_status},
     )
     return follow

@@ -117,7 +117,7 @@ async def test_discover_handler_enqueues_extract_only_for_new(
         first_event = ev.event_id
         details = json.loads(ev.redacted_details_json)
         assert details["counts"] == {"fetched": 3, "kept": 2, "new": 2,
-                                     "duplicates": 0, "reseen": 0, "skipped": 0}
+                                     "duplicates": 0, "reseen": 0, "skipped": 0, "rematch": 0}
         assert details["source_status"] == out.source_status
 
     # second run: same postings re-seen, plus a cross-posted duplicate of the lever job
@@ -134,7 +134,7 @@ async def test_discover_handler_enqueues_extract_only_for_new(
                 if e.action == "discovery_run" and e.event_id != first_event]
         counts = json.loads(ev.redacted_details_json)["counts"]
         assert counts == {"fetched": 3, "kept": 3, "new": 0, "duplicates": 1, "reseen": 2,
-                          "skipped": 0}
+                          "skipped": 0, "rematch": 0}
 
 
 class BadPostingSource:
@@ -233,3 +233,20 @@ async def test_finder_caps_real_sr_and_workday_detail_calls() -> None:
             await DiscoverAgent().run(_inp(), _ctx(sources, [board], prefs))
     assert len([d for d in details if "/v1/companies/" in d]) == 5
     assert len([d for d in details if "/wday/" in d]) == 5
+
+
+async def test_discover_handler_requeues_match_for_unmatched_jobs(
+        factory: sessionmaker[Session]) -> None:
+    out = await _discover([GH, LV])
+    task = TaskRow(task_id="task_1", kind="DISCOVER", entity_type="run", entity_id="run_1",
+                   status="RUNNING", attempts=1)
+    with factory() as s:
+        discover_handler(s, task, out)
+        jobs = s.execute(select(JobRow)).scalars().all()
+        jobs[0].status = JobStatus.NORMALIZED.value   # extracted, but its MATCH failed
+        jobs[1].status = JobStatus.NORMALIZED.value   # extracted, MATCH still queued
+        s.add(TaskRow(task_id="t_m", kind="MATCH", entity_type="job",
+                      entity_id=jobs[1].job_id, status="QUEUED", attempts=0))
+        s.commit()
+        follow = discover_handler(s, task, out)
+        assert follow == [(TaskKind.MATCH, "job", jobs[0].job_id)]
