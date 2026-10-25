@@ -238,15 +238,18 @@ class Orchestrator:
     ) -> str:
         return add_task(s, kind, entity_type, entity_id, not_before)
 
-    def _lease_next(self) -> str | None:
+    def _lease_next(self, kinds: set[TaskKind] | None = None) -> str | None:
         now = self._clock()
         with self._sf() as s:
             if self._is_paused(s):
                 return None
+            query = select(TaskRow).where(
+                TaskRow.status == TaskStatus.QUEUED.value,
+                or_(TaskRow.not_before.is_(None), TaskRow.not_before <= now))
+            if kinds is not None:
+                query = query.where(TaskRow.kind.in_([k.value for k in kinds]))
             task = s.execute(
-                select(TaskRow)
-                .where(TaskRow.status == TaskStatus.QUEUED.value,
-                       or_(TaskRow.not_before.is_(None), TaskRow.not_before <= now))
+                query
                 .order_by(TaskRow.not_before.is_not(None), TaskRow.not_before,
                           TaskRow.task_id)
                 .limit(1)
@@ -260,8 +263,8 @@ class Orchestrator:
             return task.task_id
 
     # ---- execution -------------------------------------------------------
-    async def run_once(self) -> bool:
-        task_id = self._lease_next()
+    async def run_once(self, kinds: set[TaskKind] | None = None) -> bool:
+        task_id = self._lease_next(kinds)
         if task_id is None:
             return False
         with self._sf() as s:
@@ -281,9 +284,12 @@ class Orchestrator:
                 self._crash(s, task_id, exc)
         return True
 
-    async def run_until_idle(self, max_steps: int = 1000) -> int:
+    async def run_until_idle(
+        self, max_steps: int = 1000, kinds: set[TaskKind] | None = None,
+    ) -> int:
+        """Run queued tasks until none is due; ``kinds`` restricts which kinds are leased."""
         steps = 0
-        while steps < max_steps and await self.run_once():
+        while steps < max_steps and await self.run_once(kinds):
             steps += 1
         return steps
 

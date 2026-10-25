@@ -174,14 +174,52 @@ def _server_running(cfg: AppConfig) -> bool:
     return True
 
 
+async def _discover_now(cfg: AppConfig) -> int:
+    from jobpilot.ops.schedule import run_discovery_now
+    from jobpilot.runtime import build_runtime
+
+    engine = make_engine(cfg.db_path)
+    try:
+        factory = make_session_factory(engine)
+        runtime = build_runtime(cfg, factory)
+        try:
+            return await run_discovery_now(cfg, factory, runtime)
+        finally:
+            await runtime.aclose()
+    finally:
+        engine.dispose()
+
+
+def _run_maintenance_if_available(cfg: AppConfig) -> None:
+    """Task 4 adds `jobpilot.ops.maintenance.run_maintenance`; until then this is a no-op."""
+    try:
+        from jobpilot.ops.maintenance import run_maintenance  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    run_maintenance(cfg)
+
+
 @app.command()
-def discover(config_dir: ConfigDir = Path("config")) -> None:
+def discover(
+    config_dir: ConfigDir = Path("config"),
+    run_now: Annotated[bool, typer.Option(
+        "--run-now", help="Run discover, extract and match in-process (no server needed)")
+    ] = False,
+) -> None:
     """Queue a discovery run; the worker in `jobpilot start` processes it."""
+    import asyncio
+
     from jobpilot.api.actions import ActionConflict, start_discovery
     from jobpilot.orchestrator.engine import Orchestrator
 
     cfg = load_config(config_dir)
     _migrate(cfg)
+    if run_now:
+        steps = asyncio.run(_discover_now(cfg))
+        typer.echo(f"Discovery cycle finished ({steps} tasks). "
+                   "Other work stays queued for `jobpilot start`.")
+        _run_maintenance_if_available(cfg)
+        return
     engine = make_engine(cfg.db_path)
     try:
         factory = make_session_factory(engine)
@@ -196,6 +234,80 @@ def discover(config_dir: ConfigDir = Path("config")) -> None:
     typer.echo(f"Queued discovery run {run_id}")
     if not _server_running(cfg):
         typer.echo("Run `uv run jobpilot start` to process it.")
+
+
+schedule_app = typer.Typer(help="Daily discovery via macOS LaunchAgents.", no_args_is_help=True)
+app.add_typer(schedule_app, name="schedule")
+_REPO_DIR = Path(__file__).resolve().parents[2]
+
+
+def _require_macos() -> None:
+    if sys.platform != "darwin":
+        typer.echo("Scheduling uses macOS LaunchAgents and is only available on macOS.")
+        raise typer.Exit(1)
+
+
+def _launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+@schedule_app.command("install")
+def schedule_install(
+    config_dir: ConfigDir = Path("config"),
+    at: Annotated[str | None, typer.Option(help="Daily time HH:MM (default: schedule.discover_at)")
+                  ] = None,
+    with_server: Annotated[bool, typer.Option(
+        "--with-server", help="Also keep `jobpilot start` running from login")] = False,
+) -> None:
+    """Install the daily discovery LaunchAgent (never submits anything)."""
+    import os
+
+    from jobpilot.ops import schedule as sched
+
+    _require_macos()
+    cfg = load_config(config_dir)
+    when = at or cfg.schedule.discover_at
+    uv = shutil.which("uv")
+    if uv is None:
+        typer.echo("`uv` not found on PATH; install it first.")
+        raise typer.Exit(1)
+    try:
+        paths = sched.install(cfg, home=Path.home(), runner=_launchctl, uid=os.getuid(),
+                              at=when, with_server=with_server, uv_path=str(Path(uv).resolve()),
+                              repo_dir=_REPO_DIR)
+    except (ValueError, RuntimeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(1) from e
+    for p in paths:
+        typer.echo(f"Installed {p}")
+    typer.echo(f"Discovery runs daily at {when}. Logs: {sched.logs_dir(cfg, _REPO_DIR)}")
+
+
+@schedule_app.command("uninstall")
+def schedule_uninstall() -> None:
+    """Remove the JobPilot LaunchAgents."""
+    import os
+
+    from jobpilot.ops import schedule as sched
+
+    _require_macos()
+    removed = sched.uninstall(home=Path.home(), runner=_launchctl, uid=os.getuid())
+    typer.echo("Removed: " + ", ".join(removed) if removed else "Nothing was installed.")
+
+
+@schedule_app.command("status")
+def schedule_status(config_dir: ConfigDir = Path("config")) -> None:
+    """Show whether each agent is installed/loaded and the next run."""
+    import os
+
+    from jobpilot.ops import schedule as sched
+
+    _require_macos()
+    cfg = load_config(config_dir)
+    for a in sched.status(cfg, home=Path.home(), runner=_launchctl, uid=os.getuid()):
+        state = "loaded" if a.loaded else ("installed, not loaded" if a.installed
+                                           else "not installed")
+        typer.echo(f"{a.label}: {state}" + (f" (next: {a.next_run})" if a.next_run else ""))
 
 
 sources_app = typer.Typer(help="Job source commands.", no_args_is_help=True)

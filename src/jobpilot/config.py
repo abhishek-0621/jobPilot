@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +17,19 @@ class ModelRoute(BaseModel):
     fallback: str | None = None
 
 
+class ScheduleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    discover_at: str = "08:30"
+
+    @field_validator("discover_at")
+    @classmethod
+    def _hhmm(cls, v: str) -> str:
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+            raise ValueError("discover_at must be HH:MM (24h)")
+        return v
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -28,6 +42,7 @@ class AppConfig(BaseModel):
     ollama_url: str = "http://127.0.0.1:11434"
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
+    schedule: ScheduleConfig = ScheduleConfig()
     model_routes: dict[str, ModelRoute]
 
     @field_validator("live_portals", mode="before")

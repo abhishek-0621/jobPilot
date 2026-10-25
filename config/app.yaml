@@ -7,3 +7,6 @@ browser_headless: false
 #   2. the portal listed in live_portals, e.g. [greenhouse, lever]
 # Either one alone keeps every submission simulated.
 live_portals: []
+# Daily discovery (macOS LaunchAgent, installed by `jobpilot schedule install`):
+schedule:
+  discover_at: "08:30"

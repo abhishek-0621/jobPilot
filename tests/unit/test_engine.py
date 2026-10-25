@@ -689,3 +689,19 @@ async def test_failed_result_coerced_after_click(factory) -> None:
                    if e.action == "status_changed"]
     assert adapter.submit_calls == 1
     assert any("failed_coerced_after_click" in r for r in reasons)
+
+
+async def test_lease_kind_filter(factory) -> None:
+    clock = FakeClock()
+    job_id = seed_job(factory)
+    match_agent, tailor_agent = StubAgent(good_output), StubAgent(good_output)
+    orch = make_orch(factory, clock, {TaskKind.MATCH: match_agent,
+                                      TaskKind.TAILOR: tailor_agent})
+    tailor = orch.enqueue(TaskKind.TAILOR, "job", job_id)
+    match = orch.enqueue(TaskKind.MATCH, "job", job_id)
+    assert await orch.run_until_idle(kinds={TaskKind.MATCH}) == 1
+    assert task(factory, match).status == TaskStatus.SUCCEEDED
+    assert task(factory, tailor).status == TaskStatus.QUEUED
+    assert tailor_agent.calls == 0
+    assert await orch.run_until_idle() == 1  # default None leases every kind
+    assert task(factory, tailor).status == TaskStatus.SUCCEEDED

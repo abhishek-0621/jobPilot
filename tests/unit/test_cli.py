@@ -220,3 +220,29 @@ def test_bench_default_tags_and_report(tmp_path: Path, monkeypatch: pytest.Monke
     assert r.exit_code == 0, r.output
     assert seen["tags"] == ["m2:big", "m3:tiny"]
     assert "m3:tiny" in r.output and str(tmp_path / "storage" / "bench") in r.output
+
+
+def test_schedule_refuses_off_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    d = _config(tmp_path)
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    for cmd in ("install", "uninstall", "status"):
+        r = runner.invoke(cli.app, ["schedule", cmd] + (
+            [] if cmd == "uninstall" else ["--config-dir", str(d)]))
+        assert r.exit_code == 1 and "only available on macOS" in r.output
+
+
+def test_discover_run_now_runs_cycle_then_maintenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _config(tmp_path)
+    seen: list[str] = []
+
+    async def fake_now(cfg: Any) -> int:
+        seen.append("cycle")
+        return 3
+
+    monkeypatch.setattr(cli, "_discover_now", fake_now)
+    monkeypatch.setattr(cli, "_run_maintenance_if_available", lambda cfg: seen.append("maint"))
+    r = runner.invoke(cli.app, ["discover", "--run-now", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    assert seen == ["cycle", "maint"] and "3 tasks" in r.output
