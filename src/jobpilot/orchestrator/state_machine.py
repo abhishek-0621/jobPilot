@@ -143,7 +143,11 @@ def transition(
     enum = type(new_status)
     if enum not in TRANSITIONS:
         raise IllegalTransition(f"no state machine for {enum.__name__}")
-    current = enum(row.status)
+    try:
+        current = enum(row.status)
+    except ValueError:
+        raise IllegalTransition(
+            f"{enum.__name__}: stored status {row.status!r} is not a valid state") from None
     if new_status not in TRANSITIONS[enum][current]:
         raise IllegalTransition(f"{enum.__name__}: {current} -> {new_status} not allowed")
     allowed_actors = RESTRICTED_EDGES.get((current, new_status))
@@ -164,6 +168,7 @@ def transition(
         action="status_changed",
         outcome="ok",
         run_id=run_id,
-        details={"from": current.value, "to": new_status.value, "reason": reason,
-                 **(details or {})},
+        # from/to/reason come last so caller details can never overwrite them
+        details={**(details or {}), "from": current.value, "to": new_status.value,
+                 "reason": reason},
     )

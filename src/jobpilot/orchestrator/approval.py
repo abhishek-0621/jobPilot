@@ -199,7 +199,7 @@ class ApprovalService:
             revoked = revoked_items(r)
             if revoked is None or application_id in revoked:
                 continue
-            if application_id in json.loads(r.approved_item_ids_json):
+            if application_id in _approved_ids(r):
                 out.append(r)
         return out
 
@@ -210,7 +210,7 @@ class ApprovalService:
             record_event(self.session, entity_type="approval", entity_id=approval.approval_id,
                          actor="system", action="approval_item_revoked", outcome="ok",
                          details={"application_id": application_id, "reason": reason})
-            if set(json.loads(approval.approved_item_ids_json)) <= set(revoked):
+            if set(_approved_ids(approval)) <= set(revoked):
                 approval.revoked_at = utcnow()
                 record_event(self.session, entity_type="approval",
                              entity_id=approval.approval_id, actor="system",
@@ -235,7 +235,7 @@ class ApprovalService:
             ).order_by(ApprovalRow.approved_at.desc(), ApprovalRow.approval_id.desc())
         ).scalars()
         for r in rows:
-            if outreach_id in json.loads(r.approved_item_ids_json):
+            if outreach_id in _approved_ids(r):
                 return r
         return None
 
@@ -302,3 +302,14 @@ class ApprovalService:
                      details={"outreach_id": outreach_id})
         self.session.flush()
         return approval
+
+
+def _approved_ids(approval: ApprovalRow) -> list[str]:
+    """Approved item ids; malformed JSON means nothing is approved."""
+    try:
+        ids = json.loads(approval.approved_item_ids_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(ids, list):
+        return []
+    return [i for i in ids if isinstance(i, str)]

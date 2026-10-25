@@ -1,6 +1,8 @@
 import re
 from typing import Any
 
+from pydantic import BaseModel
+
 REDACTED = "[REDACTED]"
 
 _SENSITIVE_KEY = re.compile(
@@ -19,8 +21,12 @@ def redact(details: Any) -> Any:
             k: REDACTED if _SENSITIVE_KEY.search(str(k)) else redact(v)
             for k, v in details.items()
         }
+    if isinstance(details, BaseModel):
+        return redact(details.model_dump(mode="json"))
     if isinstance(details, (list, tuple)):
         return [redact(v) for v in details]
+    if isinstance(details, (set, frozenset)):
+        return {redact(v) for v in details}
     if isinstance(details, str):
         return _SENSITIVE_VALUE.sub(REDACTED, details)
     return details

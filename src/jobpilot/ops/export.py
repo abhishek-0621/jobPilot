@@ -324,7 +324,7 @@ def export_all(cfg: AppConfig, s: Session, *, now: Callable[[], datetime] = utcn
             rows = [{k: _plain(v) for k, v in r._mapping.items()}
                     for r in s.execute(table.select())]
             f = work / f"{table.name}.json"
-            f.write_text(json.dumps(rows, indent=2, sort_keys=True))
+            f.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
             f.chmod(0o600)
         for tree in TREES:
             if (cfg.storage_path / tree).is_dir():
