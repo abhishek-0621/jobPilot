@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import typer
@@ -237,6 +237,47 @@ def sources_check(config_dir: ConfigDir = Path("config")) -> None:
 
     for line in asyncio.run(run()):
         typer.echo(line)
+
+
+boards_app = typer.Typer(help="Company board commands.", no_args_is_help=True)
+app.add_typer(boards_app, name="boards")
+
+
+def _boards_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient()
+
+
+@boards_app.command("find")
+def boards_find(
+    names: Annotated[list[str], typer.Argument(help="Company names")],
+    write: Annotated[bool, typer.Option(
+        help="Append the boards found to storage/profiles/companies.yaml")] = False,
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Probe the public boards (Greenhouse, Lever, Ashby, SmartRecruiters) for companies."""
+    import asyncio
+
+    from jobpilot.discovery.board_finder import find_hits
+    from jobpilot.profile.preferences import append_companies
+
+    cfg = load_config(config_dir)
+
+    async def run() -> list[Any]:
+        async with _boards_client() as client:
+            return await find_hits(names, client)
+
+    hits = asyncio.run(run())
+    if not hits:
+        typer.echo("No live boards found. Workday tenants must be added by hand.")
+        return
+    typer.echo(f"{'company':<28}{'source':<18}{'token':<28}postings")
+    for h in hits:
+        typer.echo(f"{h.board.name:<28}{h.board.source:<18}{h.board.token:<28}{h.postings}")
+    if write:
+        added = append_companies(cfg, [h.board for h in hits])
+        target = cfg.storage_path / "profiles" / "companies.yaml"
+        typer.echo(f"Added {len(added)} board(s) to {target} "
+                   f"({len(hits) - len(added)} already configured).")
 
 
 @app.command()

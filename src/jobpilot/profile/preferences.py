@@ -64,3 +64,31 @@ def load_companies(cfg: AppConfig) -> list[CompanyBoard]:
     path = _pick(cfg, "companies.yaml", "companies.example.yaml")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return [CompanyBoard(**c) for c in data.get("companies") or []]
+
+
+COMPANIES_HEADER = ("# Company boards to watch (layout: config/companies.example.yaml).\n"
+                    "# Takes precedence over the committed example list.\n")
+
+
+def append_companies(cfg: AppConfig, boards: list[CompanyBoard]) -> list[CompanyBoard]:
+    """Append boards to storage/profiles/companies.yaml (created if missing), keeping existing
+    entries and skipping any (source, token) already present. Returns the boards added."""
+    path = cfg.storage_path / "profiles" / "companies.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
+    entries: list[dict[str, object]] = list((data or {}).get("companies") or [])
+    seen = {(str(e.get("source")), str(e.get("token"))) for e in entries}
+    added: list[CompanyBoard] = []
+    for b in boards:
+        if (b.source, b.token) in seen:
+            continue
+        seen.add((b.source, b.token))
+        added.append(b)
+        entry: dict[str, object] = {"name": b.name, "source": b.source, "token": b.token}
+        if b.extra:
+            entry["extra"] = dict(b.extra)
+        entries.append(entry)
+    if added or not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(COMPANIES_HEADER + yaml.safe_dump({"companies": entries}, sort_keys=False),
+                        encoding="utf-8")
+    return added

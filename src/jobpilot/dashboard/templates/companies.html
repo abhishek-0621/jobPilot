@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Companies{% endblock %}
+{% block content %}
+<h1>Companies</h1>
+<p class="muted">Boards watched on each discovery run. Add a company by name: JobPilot checks its public Greenhouse, Lever, Ashby and SmartRecruiters boards (no login). Workday tenants and anything behind a login are added by hand; see the README.</p>
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<form method="post" action="/ui/companies">
+<p><label>Company name <input type="text" name="name" required maxlength="100"></label> <button type="submit">Add company</button></p>
+</form>
+{% if results is not none %}
+<div class="msg" role="status">
+{% if results %}Found {{ results|length }} board(s) for {{ searched }}; {{ added }} added, {{ results|length - added }} already configured.
+<ul>{% for h in results %}<li>{{ h.board.source }} · <span class="mono">{{ h.board.token }}</span> · {{ h.postings }} postings</li>{% endfor %}</ul>
+{% else %}No live public boards found for {{ searched }}. Try the exact name, or add the board by hand.{% endif %}
+</div>
+{% endif %}
+<h2>Configured boards</h2>
+{% if boards %}
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Source</th><th>Token</th></tr></thead><tbody>
+{% for b in boards %}<tr><td>{{ b.name }}</td><td>{{ b.source }}</td><td class="mono">{{ b.token }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">No boards configured.</p>{% endif %}
+{% endblock %}

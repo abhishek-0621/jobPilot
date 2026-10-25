@@ -7,6 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -65,6 +66,7 @@ from jobpilot.data.tables import (
     MatchAssessmentRow,
     OutreachDraftRow,
 )
+from jobpilot.discovery.board_finder import find_hits
 from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.observability.events import SUBMIT_CLICKED, last_event, prior_unresolved_click
@@ -72,6 +74,7 @@ from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
+from jobpilot.profile.preferences import append_companies, load_companies
 
 MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
@@ -835,3 +838,33 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
             set_library_answer(s, key, raw.strip(), actor="user")
     s.commit()
     return RedirectResponse("/ui/profile", status_code=303)
+
+
+def _companies_page(request: Request, s: Session, ctx: dict[str, Any],
+                    status: int = 200) -> HTMLResponse:
+    cfg: AppConfig = request.app.state.cfg
+    resp = _page(request, s, "companies.html", {
+        "boards": load_companies(cfg), "error": None, "results": None, "added": 0, **ctx})
+    resp.status_code = status
+    return resp
+
+
+@router.get("/ui/companies", response_class=HTMLResponse)
+def companies(request: Request, s: Db) -> HTMLResponse:
+    return _companies_page(request, s, {})
+
+
+@router.post("/ui/companies", response_class=HTMLResponse)
+async def add_company(request: Request, s: Db,
+                      name: Annotated[str, Form()] = "") -> HTMLResponse:
+    """Probe the public boards for a company name and append the live ones to
+    storage/profiles/companies.yaml. Only public, login-free endpoints are contacted."""
+    name = name.strip()
+    if not name or len(name) > 100:
+        return _companies_page(request, s, {"error": "Enter a company name (up to 100 characters)"},
+                               422)
+    async with httpx.AsyncClient() as client:
+        hits = await find_hits([name], client)
+    cfg: AppConfig = request.app.state.cfg
+    added = append_companies(cfg, [h.board for h in hits])
+    return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})

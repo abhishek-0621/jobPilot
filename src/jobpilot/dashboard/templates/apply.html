@@ -40,9 +40,17 @@
 {% endif %}
 <script>
 document.querySelectorAll("[data-copy]").forEach(function (b) {
+  var label = b.textContent;
   b.addEventListener("click", function () {
     var el = document.getElementById(b.getAttribute("data-copy"));
-    if (el && navigator.clipboard) { navigator.clipboard.writeText(el.value); }
+    if (!el) { return; }
+    function done(text) {
+      b.textContent = text;
+      setTimeout(function () { b.textContent = label; }, 2000);
+    }
+    function fallback() { el.focus(); el.select(); done("Copy failed \u2014 select and copy manually"); }
+    if (!navigator.clipboard) { fallback(); return; }
+    navigator.clipboard.writeText(el.value).then(function () { done("Copied"); }, fallback);
   });
 });
 </script>

@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterator
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,8 @@ def test_apply_page_shows_documents_and_answers(
     assert "a@example.com" in html
     assert "Mark as applied" in html and "Not applying" in html
     assert "navigator.clipboard" in html
+    assert "Copied" in html and "Copy failed" in html and "el.select()" in html
+    assert "<script src=" not in html.split("</head>", 1)[1]  # inline script only, no external
     assert "http" not in "".join(
         p.split('"')[0] for p in html.split('<script src="')[1:] if "/static/" not in p)
     assert f"/ui/applications/{app_id}/apply" in client.get(f"/ui/applications/{app_id}").text
@@ -132,6 +135,10 @@ def test_mark_applied_form_validation(
     url = f"/ui/applications/{app_id}/mark-applied"
     assert client.post(url, data={"reference": "x" * 101}).status_code == 422
     assert client.post(url, data={"applied_on": "2999-01-01"}).status_code == 422
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    assert client.post(url, data={"applied_on": tomorrow}).status_code == 422
+    assert f'max="{date.today().isoformat()}"' in client.get(
+        f"/ui/applications/{app_id}/apply").text
     assert client.post(url, data={"applied_on": "not-a-date"}).status_code == 422
     assert client.post(url, data={}, headers={"origin": "https://evil.example"}
                        ).status_code == 403

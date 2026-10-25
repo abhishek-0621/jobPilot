@@ -390,7 +390,7 @@ def mark_applied(s: Session, application_id: str, reference: str | None,
     ref = (reference or "").strip()
     if len(ref) > MAX_REFERENCE_CHARS:
         raise ValueError(f"Reference must be at most {MAX_REFERENCE_CHARS} characters")
-    if applied_on is not None and applied_on > utcnow().date():
+    if applied_on is not None and applied_on > date.today():
         raise ValueError("Applied date cannot be in the future")
     app = _manual_ready(s, application_id, "Only manual applications ready to apply can be "
                         "marked as applied")
