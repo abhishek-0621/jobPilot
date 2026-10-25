@@ -25,7 +25,9 @@ from starlette.types import ASGIApp
 from jobpilot.api import schemas as sc
 from jobpilot.api.actions import (
     ActionConflict,
-    approve_and_queue,
+    ConfirmationRequired,
+    approve_batch,
+    request_submit,
     select_job,
     start_discovery,
     start_tailor,
@@ -143,7 +145,8 @@ def compute_health(cfg: AppConfig, session_factory: sessionmaker[Session],
     except Exception:
         free = 0.0
     return sc.HealthOut(ollama=available is not None, missing_models=missing,
-                        db_revision=revision, disk_free_gb=free, dry_run=cfg.dry_run)
+                        db_revision=revision, disk_free_gb=free, dry_run=cfg.dry_run,
+                        live_portals=cfg.effective_live_portals)
 
 
 def create_app(
@@ -176,6 +179,7 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.orchestrator = orchestrator
     app.state.storage_path = cfg.storage_path
+    app.state.cfg = cfg
     app.state.field_aliases_path = cfg.field_aliases_path
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(dashboard_router)
@@ -313,13 +317,26 @@ def create_app(
     @app.post("/batches/{batch_id}/approve", response_model=sc.ApprovalOut)
     def approve(batch_id: str, body: sc.ApproveIn, s: Db) -> sc.ApprovalOut:
         try:
-            res = approve_and_queue(s, orchestrator, batch_id, body.version,
-                                    body.content_hash, body.application_ids)
+            res = approve_batch(s, batch_id, body.version, body.content_hash,
+                                body.application_ids)
         except StaleApprovalError as e:
             raise HTTPException(409, "stale") from e
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         return sc.ApprovalOut(approval_id=res.approval_id, batch_status=res.batch_status)
+
+    @app.post("/batches/{batch_id}/submit", response_model=sc.SubmitOut)
+    def submit(batch_id: str, body: sc.SubmitIn, s: Db) -> sc.SubmitOut:
+        try:
+            ids = request_submit(s, orchestrator, batch_id, body.application_ids,
+                                 body.confirm, cfg)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ActionConflict as e:
+            raise HTTPException(409, str(e)) from e
+        except ConfirmationRequired as e:
+            raise HTTPException(422, str(e)) from e
+        return sc.SubmitOut(queued=ids)
 
     @app.get("/events", response_model=list[sc.EventOut])
     def events(s: Db, entity_id: str | None = None,
@@ -359,5 +376,6 @@ def app_from_config(config_dir: Path = Path("config")) -> FastAPI:
     gateway = ModelGateway(cfg)
     rt = build_runtime(cfg, factory)
     orch = Orchestrator(factory, cfg, rt.agents, rt.adapters, handlers=rt.handlers,
-                        gateway=gateway, tools=rt.tools)
+                        gateway=gateway, tools=rt.tools,
+                        submitter_factory=rt.submitter_factory)
     return create_app(cfg, factory, orch, gateway, runtime=rt)

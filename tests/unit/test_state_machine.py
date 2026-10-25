@@ -52,9 +52,11 @@ def test_uncertain_exit_requires_user_or_verification(db_session):
 
 def test_terminal_states_have_no_exits():
     app = TRANSITIONS[ApplicationStatus]
-    for s in (ApplicationStatus.CONFIRMED, ApplicationStatus.SUBMISSION_FAILED,
-              ApplicationStatus.REJECTED_BY_USER):
+    for s in (ApplicationStatus.CONFIRMED, ApplicationStatus.REJECTED_BY_USER):
         assert app[s] == frozenset()
+    # the only exit from SUBMISSION_FAILED is the user's explicit "Prepare again"
+    assert app[ApplicationStatus.SUBMISSION_FAILED] == frozenset(
+        {ApplicationStatus.FORM_IN_PROGRESS})
     assert TRANSITIONS[OutreachStatus][OutreachStatus.SENT] == frozenset()
 
 
@@ -101,3 +103,24 @@ def test_regenerate_edges_back_to_documents_pending():
         assert A.DOCUMENTS_PENDING in edges[src]
     for src in (A.APPROVED, A.VALIDATING, A.SUBMITTED, A.SUBMISSION_IN_PROGRESS):
         assert A.DOCUMENTS_PENDING not in edges[src]
+
+
+@pytest.mark.parametrize("dst", ["READY_FOR_REVIEW", "NEEDS_USER_INPUT"])
+def test_presubmit_exit_only_for_presubmit_and_only_before_click(db_session, dst):
+    from jobpilot.observability.events import record_event
+
+    app = make_app_row(db_session, status="SUBMISSION_IN_PROGRESS")
+    app.idempotency_key = "sha256:" + "a" * 64
+    with pytest.raises(IllegalTransition):
+        transition(db_session, app, ApplicationStatus(dst), actor="orchestrator", reason="t")
+    transition(db_session, app, ApplicationStatus(dst), actor="presubmit", reason="t")
+    assert app.status == dst
+
+    clicked = make_app_row(db_session, status="SUBMISSION_IN_PROGRESS")
+    clicked.idempotency_key = "sha256:" + "b" * 64
+    record_event(db_session, entity_type="application", entity_id=clicked.application_id,
+                 actor="orchestrator", action="submit_clicked", outcome="ok",
+                 details={"idempotency_key": clicked.idempotency_key})
+    with pytest.raises(IllegalTransition, match="clicked"):
+        transition(db_session, clicked, ApplicationStatus(dst), actor="presubmit", reason="t")
+    assert clicked.status == "SUBMISSION_IN_PROGRESS"

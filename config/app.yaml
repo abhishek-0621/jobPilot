@@ -2,3 +2,8 @@ dry_run: true
 bind_host: 127.0.0.1
 port: 8765
 browser_headless: false
+# Real submission needs BOTH switches, edited here by hand (no dashboard toggle):
+#   1. dry_run: false
+#   2. the portal listed in live_portals, e.g. [greenhouse, lever]
+# Either one alone keeps every submission simulated.
+live_portals: []

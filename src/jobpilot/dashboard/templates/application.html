@@ -6,6 +6,12 @@
 <p><button type="button" hx-post="/ui/applications/{{ app.application_id }}/regenerate" hx-target="#regen-result" hx-swap="innerHTML">Regenerate documents</button></p>
 <div id="regen-result"></div>
 <p><a href="/ui/applications/{{ app.application_id }}/answers">Form answers</a></p>
+<h2>Submission</h2>
+<p>Status: <strong>{{ app.status }}</strong>{% if app.confirmation_reference %} · Confirmation reference: <span class="mono">{{ app.confirmation_reference }}</span>{% endif %}</p>
+<p class="muted">{% if submission.requested_at %}Submit requested {{ submission.requested_at|local }}{% else %}Submit not requested{% endif %}{% if submission.clicked_at %} · Submit clicked {{ submission.clicked_at|local }}{% endif %}{% if submission.finished_at %} · Finished {{ submission.finished_at|local }}{% endif %}</p>
+{% if submission.shot %}<p><a href="/artifacts/{{ submission.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Submission evidence screenshot</a></p>{% endif %}
+{% if submission.error_code or submission.error_codes %}<p>Error evidence: {% if submission.error_code %}<span class="warn">{{ submission.error_code }}</span>{% endif %}{% for c in submission.error_codes %}<span class="warn">{{ c }}</span>{% endfor %}</p>{% endif %}
+{% if app.status == "SUBMISSION_UNCERTAIN" or app.status == "SUBMISSION_FAILED" %}<p><a href="/ui/uncertain">Resolve on the Uncertain page</a></p>{% endif %}
 <h2>Resume</h2>
 {% if resume %}
 <p class="muted">Version {{ resume.version }}{% if docx %} · <a href="/artifacts/{{ docx.artifact_id }}" download>Download DOCX</a>{% endif %} · <a href="/artifacts/{{ resume.artifact_id }}" target="_blank" rel="noopener noreferrer">Open PDF</a></p>

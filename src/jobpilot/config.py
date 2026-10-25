@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ModelRoute(BaseModel):
@@ -24,10 +24,24 @@ class AppConfig(BaseModel):
     db_path: Path = Path("storage/jobpilot.db")
     storage_path: Path = Path("storage")
     dry_run: bool = True
+    live_portals: list[Literal["greenhouse", "lever"]] = []
     ollama_url: str = "http://127.0.0.1:11434"
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
     model_routes: dict[str, ModelRoute]
+
+    @field_validator("live_portals", mode="before")
+    @classmethod
+    def _live_portals_list(cls, v: Any) -> Any:
+        """``live_portals:`` left empty in YAML means none; duplicates collapse."""
+        if v is None:
+            return []
+        return list(dict.fromkeys(v)) if isinstance(v, list) else v
+
+    @property
+    def effective_live_portals(self) -> list[str]:
+        """Portals that really submit: only when BOTH dry_run is off and listed."""
+        return [] if self.dry_run else list(self.live_portals)
 
     @property
     def browser_state_dir(self) -> Path:

@@ -97,7 +97,10 @@ The prepare pipeline, end to end (Greenhouse and Lever forms):
    stored; the application becomes `READY_FOR_REVIEW`.
 7. **Review batch** — *Batches* → build a batch, inspect answers, documents and screenshots.
 8. **Approve** — approval is bound to the content hash you saw; edits afterwards require a
-   rebuild and re-approval.
+   rebuild and re-approval. Approving never submits anything.
+9. **Submit** — on the batch page, *Submit approved applications* is a separate, explicit
+   step. Each row says whether it "will submit LIVE to <portal>" or is a "dry run
+   (simulated)".
 
 Never automated:
 
@@ -105,11 +108,45 @@ Never automated:
   terms and declarations) are never filled for you; you answer them yourself.
 - CAPTCHA, login and MFA walls are detected and handed back to you (`manual_handoff`);
   nothing is bypassed.
-- Submission is simulated until Plan 5: approving a batch only runs the simulated portal
-  in dry run, and the real form's submit button is never clicked.
+- In dry run (the default) submission is simulated and the real form's submit button is
+  never clicked. See *Going live* below.
 
 Screenshots and documents live under `storage/artifacts/<application_id>/`
 (`form_vN.png`, `resume_vN.pdf`, ...), are served only through `/artifacts`, and stay local.
+
+## Going live
+
+Real submission needs **two independent switches**, both edited by hand in
+`config/app.yaml` (there is no dashboard toggle):
+
+1. `dry_run: false`
+2. the portal named in `live_portals`, e.g. `live_portals: [greenhouse]`
+
+Either one alone keeps every submission simulated. Restart JobPilot after editing; a red
+bar at the top of every page lists the portals that submit for real.
+
+Switching live mode on (or off) does not affect submissions already requested. A request
+made while a portal was simulated never runs live, and one confirmed with `SUBMIT` never
+silently runs simulated: such a queued submit stops (`live_intent_missing` /
+`live_mode_off`), the application stays `APPROVED`, and you press *Submit approved
+applications* again (typing `SUBMIT` for a live portal).
+
+What happens when you press *Submit approved applications* for a live portal:
+
+- You must type `SUBMIT` to confirm; the server rejects the request otherwise.
+- The form is opened again and re-verified against what you approved (layout, every
+  value, documents, approval hash). Any difference, or a CAPTCHA/login/MFA wall, stops
+  before the click and sends the application back to you; nothing is retried.
+- The single submit control is clicked exactly once (never Enter, never a script submit).
+- The page is checked for confirmation evidence. With evidence the application becomes
+  `CONFIRMED`, with the confirmation reference (if the page shows one) and a screenshot
+  on the application page. Without clear evidence it becomes `SUBMISSION_UNCERTAIN`.
+
+Resolving uncertain submissions: an *Uncertain (n)* link appears in the navigation. On
+`/ui/uncertain` check the portal or your email, then choose *It was submitted* (marks it
+`CONFIRMED`) or *It was not submitted* (marks it `SUBMISSION_FAILED`). JobPilot never
+clicks a second time on its own: a failed application offers *Prepare again*, which
+revokes the approval and re-reads the form, so you review, approve and submit it again.
 
 ## Where data lives
 

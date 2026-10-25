@@ -1,5 +1,6 @@
 """Wire the DISCOVER..VALIDATE agents, handlers and their tools for a running app."""
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -45,9 +46,11 @@ from jobpilot.documents.validate import (
     load_tech_terms,
 )
 from jobpilot.forms.model import BoundArtifacts, MappingContext, load_aliases
+from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import active_profile_version
 from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
 from jobpilot.portals.base import PortalAdapter
+from jobpilot.portals.live_submit import LiveSubmitter, SubmitContext, make_before_click
 from jobpilot.portals.simulated import SimulatedAdapter
 from jobpilot.profile.importer import PROFILE_ID, active_profile, candidate_years, verified_facts
 from jobpilot.profile.preferences import load_companies, load_search_preferences
@@ -62,6 +65,7 @@ class Runtime:
     tools: dict[str, Any]
     client: httpx.AsyncClient
     owns_client: bool = field(default=False)
+    submitter_factory: Callable[[str], PortalAdapter] | None = None
 
     async def aclose(self) -> None:
         if self.owns_client:
@@ -289,6 +293,50 @@ def make_artifact_dir(cfg: AppConfig) -> Callable[[str], Path]:
     return artifact_dir
 
 
+def _intact(storage_path: Path, s: Session, artifact_id: str | None) -> bool:
+    row = None if artifact_id is None else s.get(DocumentArtifactRow, artifact_id)
+    if row is None:
+        return artifact_id is None
+    path = storage_path / row.path
+    return path.is_file() and \
+        "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() == row.content_hash
+
+
+def make_submit_loader(
+    session_factory: sessionmaker[Session], storage_path: Path,
+) -> Callable[[str], SubmitContext | None]:
+    """Everything the live pre-submit check compares, read fresh from the DB."""
+    load_app = make_application_loader(session_factory, storage_path)
+    stored = make_stored_answers(session_factory)
+
+    def submit_loader(application_id: str) -> SubmitContext | None:
+        app = load_app(application_id)
+        if app is None:
+            return None
+        with session_factory() as s:
+            row = s.get(ApplicationRow, application_id)
+            assert row is not None
+            intact = all(_intact(storage_path, s, a) for a in
+                         (row.resume_artifact_id, row.cover_letter_artifact_id))
+            return SubmitContext(
+                app=app, answers=stored(application_id),
+                application_hash=ApprovalService(s).application_hash(application_id),
+                active_version=active_profile_version(s), documents_intact=intact)
+    return submit_loader
+
+
+def make_submitter_factory(
+    cfg: AppConfig, session_factory: sessionmaker[Session],
+) -> Callable[[str], PortalAdapter]:
+    """Only used by the engine when dry_run is off AND the portal is in live_portals."""
+    loader = make_submit_loader(session_factory, cfg.storage_path)
+    before_click = make_before_click(session_factory)
+
+    def submitter_factory(portal: str) -> PortalAdapter:
+        return LiveSubmitter(cfg, portal, loader, before_click, session_factory)
+    return submitter_factory
+
+
 def build_runtime(
     cfg: AppConfig,
     session_factory: sessionmaker[Session],
@@ -336,4 +384,5 @@ def build_runtime(
     }
     return Runtime(agents=agents, handlers=handlers,
                    adapters={"simulated": SimulatedAdapter()}, tools=tools,
-                   client=http, owns_client=owns)
+                   client=http, owns_client=owns,
+                   submitter_factory=make_submitter_factory(cfg, session_factory))

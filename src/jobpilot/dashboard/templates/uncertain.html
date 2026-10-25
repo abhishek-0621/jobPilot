@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Uncertain submissions{% endblock %}
+{% block content %}
+<h1>Uncertain submissions</h1>
+<p class="muted">The submit button was clicked but no confirmation was seen. Check the portal or your email, then record what happened. JobPilot never clicks again on its own.</p>
+{% if uncertain %}<div class="table-wrap"><table><thead><tr><th>Company / role</th><th>Clicked</th><th>Evidence</th><th>Resolve</th></tr></thead><tbody>
+{% for r in uncertain %}<tr>
+<td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/applications/{{ r.app.application_id }}">{{ r.job.title }}</a> · <a href="{{ r.job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">portal</a>{% else %}<a href="/ui/applications/{{ r.app.application_id }}" class="mono">{{ r.app.application_id }}</a>{% endif %}</td>
+<td>{% if r.submission.clicked_at %}{{ r.submission.clicked_at|local }}{% else %}<span class="muted">No click recorded</span>{% endif %}</td>
+<td>{% if r.submission.shot %}<a href="/artifacts/{{ r.submission.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Screenshot</a><br>{% endif %}{% if r.submission.error_code %}<span class="warn">{{ r.submission.error_code }}</span>{% endif %}{% for c in r.submission.error_codes %}<span class="warn">{{ c }}</span>{% endfor %}</td>
+<td><form method="post" action="/ui/applications/{{ r.app.application_id }}/resolve"><input type="hidden" name="submitted" value="yes"><button type="submit">It was submitted</button></form>
+<form method="post" action="/ui/applications/{{ r.app.application_id }}/resolve" style="margin-top:6px"><input type="hidden" name="submitted" value="no"><button type="submit">It was not submitted</button></form></td>
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="muted">Nothing is uncertain.</p>{% endif %}
+<h2>Failed submissions</h2>
+{% if failed %}<div class="table-wrap"><table><thead><tr><th>Company / role</th><th>Evidence</th><th></th></tr></thead><tbody>
+{% for r in failed %}<tr>
+<td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/applications/{{ r.app.application_id }}">{{ r.job.title }}</a>{% else %}<a href="/ui/applications/{{ r.app.application_id }}" class="mono">{{ r.app.application_id }}</a>{% endif %}</td>
+<td>{% if r.submission.shot %}<a href="/artifacts/{{ r.submission.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Screenshot</a><br>{% endif %}{% for c in r.submission.error_codes %}<span class="warn">{{ c }}</span>{% endfor %}</td>
+<td>{% if r.unresolved_click %}<form method="post" action="/ui/applications/{{ r.app.application_id }}/resolve"><input type="hidden" name="submitted" value="no"><button type="submit">It was not submitted</button></form><span class="muted">A click was recorded; confirm nothing went out before preparing again.</span><br>{% endif %}<form method="post" action="/ui/applications/{{ r.app.application_id }}/prepare-again" style="margin-top:6px"><button type="submit">Prepare again</button></form><span class="muted">Re-reads the form; you review and approve again.</span></td>
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="muted">No failed submissions.</p>{% endif %}
+{% endblock %}

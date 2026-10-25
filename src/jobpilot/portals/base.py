@@ -8,6 +8,22 @@ from jobpilot.util.hashing import content_hash
 PortalCapabilities = frozenset[PortalCapability]
 
 
+class PreSubmitMismatch(Exception):
+    """Pre-submit verification failed before any click; ``code`` is a reason code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class ManualHandoff(Exception):
+    """The user must act on the portal (blocker, ambiguous control); nothing was clicked."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class FormField(Contract):
     field_id: str
     label: str

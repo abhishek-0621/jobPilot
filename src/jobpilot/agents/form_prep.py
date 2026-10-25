@@ -8,7 +8,6 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +22,7 @@ from jobpilot.documents import store
 from jobpilot.forms.browser import portal_page
 from jobpilot.forms.mapping import apply_suggestions, map_fields, suggest_keys
 from jobpilot.forms.model import MappingContext
+from jobpilot.forms.verify import verify_against_stored, with_bound_files
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import current_artifact_version, stale_follow_up
@@ -35,9 +35,9 @@ from jobpilot.orchestrator.engine import (
     TaskKind,
 )
 from jobpilot.orchestrator.state_machine import transition
-from jobpilot.portals.greenhouse import GreenhouseAdapter
-from jobpilot.portals.lever import LeverAdapter
 from jobpilot.portals.playwright_form import PlaywrightFormAdapter
+from jobpilot.portals.registry import ADAPTERS, PortalConfigError, allowed_hosts
+from jobpilot.portals.registry import form_url as registry_form_url
 from jobpilot.util.hashing import canonical_json
 
 PROMPT_VERSION = "form_prep_v1"
@@ -45,9 +45,6 @@ _ACTOR = "orchestrator"
 USER_SOURCE = "user"
 _A = ApplicationStatus
 PREPARABLE = (_A.FORM_IN_PROGRESS.value, _A.NEEDS_USER_INPUT.value)
-ADAPTERS: dict[str, type[PlaywrightFormAdapter]] = {
-    "greenhouse": GreenhouseAdapter, "lever": LeverAdapter}
-_LOOPBACK = frozenset({"127.0.0.1", "localhost"})
 _USER_GATED = (FieldDecision.ASK_USER.value, FieldDecision.USER_ONLY.value,
                FieldDecision.BLOCKED.value)
 _LAYOUT = ErrorCode.FORM_LAYOUT_CHANGED.value
@@ -59,16 +56,6 @@ FormOpener = Callable[[str, str, str], AbstractAsyncContextManager[PlaywrightFor
 
 
 # ---- shared helpers -------------------------------------------------------------------
-
-
-def allowed_hosts(adapter_cls: type[PlaywrightFormAdapter], url: str) -> set[str]:
-    """The application URL's host plus the portal's asset hosts (loopback only for a
-    loopback application host, i.e. local test servers)."""
-    host = (urlsplit(url).hostname or "").lower()
-    hosts = {host, *adapter_cls.ASSET_HOSTS} - {""}
-    if host in _LOOPBACK:
-        hosts |= _LOOPBACK
-    return hosts
 
 
 def make_form_opener(cfg: AppConfig) -> FormOpener:
@@ -88,14 +75,10 @@ def make_form_opener(cfg: AppConfig) -> FormOpener:
 
 
 def form_url(app: dict[str, Any]) -> str:
-    url = app.get("application_url")
-    if url:
-        return str(url)
-    cls = ADAPTERS.get(app.get("source") or "")
-    canonical = app.get("canonical_url")
-    if cls is None or not canonical:
-        raise OutputRejected("no_application_url")
-    return cls.apply_url(str(canonical))
+    try:
+        return registry_form_url(app)
+    except PortalConfigError as e:
+        raise OutputRejected(e.code) from e
 
 
 def _empty(v: Any) -> bool:
@@ -294,20 +277,6 @@ def _next_shot(directory: Path) -> int:
     return max(found, default=0) + 1
 
 
-def _with_bound_files(answers: list[FieldAnswer], app: dict[str, Any]) -> list[FieldAnswer]:
-    """File answers upload only the currently bound artifacts; anything else is dropped."""
-    bound = {"artifact:resume": app.get("resume_path"),
-             "artifact:cover_letter": app.get("cover_letter_path")}
-    out: list[FieldAnswer] = []
-    for a in answers:
-        if a.field_type != "file":
-            out.append(a)
-        elif bound.get(a.source_fact_id or ""):
-            out.append(a.model_copy(update={"proposed_value": str(bound[a.source_fact_id
-                                                                          or ""])}))
-    return out
-
-
 class ValidateAgent:
     name = "form_validate"
     prompt_version = PROMPT_VERSION
@@ -337,27 +306,21 @@ class ValidateAgent:
         docs = [app.get("resume_profile_version"), app.get("cover_letter_profile_version")]
         if version is None or any(v != version for v in docs):
             return result(ok=False, errors={"_documents": "DOCUMENTS_STALE"})
-        answers = _with_bound_files(stored(inp.entity_id), app)
+        answers = with_bound_files(stored(inp.entity_id), app)
         url = form_url(app)
         out_dir = artifact_dir(inp.entity_id)
+        shot = out_dir / f"form_v{_next_shot(out_dir)}.png"
         async with open_form(app.get("source") or "", url, inp.entity_id) as adapter:
-            await adapter.open_job(url)
-            shot = out_dir / f"form_v{_next_shot(out_dir)}.png"
-            blockers = await adapter.blockers()
-            if blockers:
-                await adapter.screenshot(shot)
-                return result(ok=False, screenshot_path=str(shot),
-                              errors={_FORM_KEY: "BLOCKED:" + ",".join(sorted(blockers))})
-            snap = await adapter.inspect_form()
-            if adapter.snapshot_hash(snap) != app.get("form_snapshot_hash"):
-                await adapter.screenshot(shot)
-                return result(ok=False, screenshot_path=str(shot), errors={_FORM_KEY: _LAYOUT})
-            report = await adapter.fill_fields(answers)
-            expected = {a.field_id: a.proposed_value for a in answers
-                        if a.field_id in report.filled}
-            checked = await adapter.validate_form(expected)
+            outcome = await verify_against_stored(adapter, url, app.get("form_snapshot_hash"),
+                                                  answers)
             await adapter.screenshot(shot)
-        errors = {k: safe_code(v) for k, v in {**checked.errors, **report.failed}.items()}
+        if outcome.blockers:
+            return result(ok=False, screenshot_path=str(shot),
+                          errors={_FORM_KEY: "BLOCKED:" + ",".join(outcome.blockers)})
+        if outcome.layout_changed or outcome.report is None:
+            return result(ok=False, screenshot_path=str(shot), errors={_FORM_KEY: _LAYOUT})
+        report = outcome.report
+        errors = {k: safe_code(v) for k, v in outcome.errors.items()}
         return result(ok=not errors, errors=errors, screenshot_path=str(shot),
                       filled=report.filled,
                       failed={k: safe_code(v) for k, v in report.failed.items()})

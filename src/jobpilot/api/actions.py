@@ -8,13 +8,25 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
+from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, JobStatus
+from jobpilot.data.db import utcnow
 from jobpilot.data.mutations import set_answer
 from jobpilot.data.repositories import create_application
-from jobpilot.data.tables import ApplicationRow, ApprovalBatchRow, JobRow, TaskRow
+from jobpilot.data.tables import (
+    ApplicationRow,
+    ApprovalBatchRow,
+    BatchItemRow,
+    JobRow,
+    TaskRow,
+)
 from jobpilot.ids import new_id
-from jobpilot.observability.events import record_event
-from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.observability.events import (
+    USER_RESOLVED_NOT_SUBMITTED,
+    prior_unresolved_click,
+    record_event,
+)
+from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
 from jobpilot.orchestrator.state_machine import transition
@@ -100,32 +112,150 @@ class ApprovalResult:
     approved_ids: list[str]
 
 
-def approve_and_queue(
-    s: Session, orch: Orchestrator, batch_id: str, version: int,
-    presented_hash: str, application_ids: list[str],
+def approve_batch(
+    s: Session, batch_id: str, version: int, presented_hash: str,
+    application_ids: list[str],
 ) -> ApprovalResult:
-    """Approve exactly what was presented and queue SUBMIT per app in one transaction.
+    """Approve exactly what was presented. Nothing is submitted: that is a separate,
+    explicit user action (``request_submit``). Commits.
 
     Raises StaleApprovalError / ValueError (session rolled back) like ApprovalService.
     """
     try:
         approval = ApprovalService(s).approve(batch_id, version, presented_hash,
                                               application_ids)
-    except Exception:
-        s.rollback()
-        raise
-    batch = s.get(ApprovalBatchRow, (batch_id, version))
-    assert batch is not None
-    result = ApprovalResult(approval.approval_id, batch.status,
-                            sorted(set(application_ids)))
-    try:
-        for app_id in result.approved_ids:
-            orch.enqueue_in(s, TaskKind.SUBMIT, "application", app_id)
-        s.commit()  # approval and its SUBMIT tasks become durable together
+        batch = s.get(ApprovalBatchRow, (batch_id, version))
+        assert batch is not None
+        result = ApprovalResult(approval.approval_id, batch.status,
+                                sorted(set(application_ids)))
+        s.commit()
     except Exception:
         s.rollback()
         raise
     return result
+
+
+CONFIRM_WORD = "SUBMIT"
+CONFIRM_REQUIRED = "Type SUBMIT to confirm live submission"
+NOTHING_TO_SUBMIT = "No approved applications are waiting to be submitted."
+
+
+class ConfirmationRequired(Exception):
+    """Live submission needs the typed confirmation word (HTTP 422)."""
+
+
+def submit_candidates(s: Session, batch_id: str) -> list[ApplicationRow]:
+    """APPROVED applications of any version of the batch with no QUEUED/RUNNING SUBMIT."""
+    ids = set(s.execute(select(BatchItemRow.application_id)
+                        .where(BatchItemRow.batch_id == batch_id)).scalars())
+    busy = set(s.execute(select(TaskRow.entity_id).where(
+        TaskRow.kind == TaskKind.SUBMIT.value,
+        TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)))).scalars())
+    return list(s.execute(select(ApplicationRow).where(
+        ApplicationRow.application_id.in_(ids - busy),
+        ApplicationRow.status == ApplicationStatus.APPROVED.value)
+        .order_by(ApplicationRow.application_id)).scalars())
+
+
+def request_submit(s: Session, orch: Orchestrator, batch_id: str,
+                   application_ids: list[str] | None, confirm: str | None,
+                   cfg: AppConfig) -> list[str]:
+    """User action: submit approved applications of a batch. Marks submit_requested_at
+    and queues SUBMIT for each in one transaction. Live portals need ``confirm ==
+    "SUBMIT"``, which records the live intent. Returns the queued ids. Commits.
+
+    Raises LookupError / ActionConflict / ConfirmationRequired."""
+    if s.execute(select(ApprovalBatchRow.batch_id)
+                 .where(ApprovalBatchRow.batch_id == batch_id)).first() is None:
+        raise LookupError("batch not found")
+    eligible = submit_candidates(s, batch_id)
+    if application_ids is not None:
+        wanted = set(application_ids)
+        eligible = [a for a in eligible if a.application_id in wanted]
+    if not eligible:
+        raise ActionConflict(NOTHING_TO_SUBMIT)
+    live = set(cfg.effective_live_portals)
+    if any(a.portal in live for a in eligible) and confirm != CONFIRM_WORD:
+        raise ConfirmationRequired(CONFIRM_REQUIRED)
+    now = utcnow()
+    try:
+        for app in eligible:
+            app.submit_requested_at = now
+            # Live intent is recorded only with the typed confirmation for a portal that
+            # is live now; the engine refuses to run live (or to simulate) without a match.
+            app.submit_live_intent = (app.portal if app.portal in live
+                                      and confirm == CONFIRM_WORD else None)
+            orch.enqueue_in(s, TaskKind.SUBMIT, "application", app.application_id)
+        ids = [a.application_id for a in eligible]
+        record_event(s, entity_type="approval_batch", entity_id=batch_id, actor="user",
+                     action="submit_requested", outcome="ok",
+                     details={"application_ids": ids,
+                              "portals": {a.application_id: a.portal for a in eligible},
+                              "live": {a.application_id: a.submit_live_intent is not None
+                                       for a in eligible}})
+        s.commit()  # the request and its SUBMIT tasks become durable together
+    except Exception:
+        s.rollback()
+        raise
+    return ids
+
+
+def _app(s: Session, application_id: str) -> ApplicationRow:
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise LookupError("application not found")
+    return app
+
+
+def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
+    """User action on a SUBMISSION_UNCERTAIN application: it was / was not submitted. A
+    SUBMISSION_FAILED application with an unresolved click may also be marked "not
+    submitted" (no status change). Commits. Raises LookupError / ActionConflict."""
+    app = _app(s, application_id)
+    if (app.status == ApplicationStatus.SUBMISSION_FAILED.value and not submitted
+            and prior_unresolved_click(s, application_id)):
+        # A click was recorded before the failure: the user says nothing went out, so a
+        # later Prepare again may submit once more. The status stays FAILED.
+        record_event(s, entity_type="application", entity_id=application_id, actor="user",
+                     action=USER_RESOLVED_NOT_SUBMITTED, outcome="ok",
+                     details={"application_id": application_id})
+        s.commit()
+        return
+    if app.status != ApplicationStatus.SUBMISSION_UNCERTAIN.value:
+        raise ActionConflict(f"Only uncertain submissions can be resolved "
+                             f"(status is {app.status}).")
+    if submitted:
+        transition(s, app, ApplicationStatus.CONFIRMED, actor="user",
+                   reason="user_confirmed")
+    else:
+        transition(s, app, ApplicationStatus.SUBMISSION_FAILED, actor="user",
+                   reason="user_not_submitted")
+        record_event(s, entity_type="application", entity_id=application_id, actor="user",
+                     action=USER_RESOLVED_NOT_SUBMITTED, outcome="ok",
+                     details={"application_id": application_id})
+    s.commit()
+
+
+def prepare_again(s: Session, orch: Orchestrator, application_id: str) -> str:
+    """User action on a SUBMISSION_FAILED application: revoke its approval, forget the
+    form snapshot and the submit request, and queue PREPARE_FORM. Commits.
+
+    Raises LookupError / ActionConflict."""
+    app = _app(s, application_id)
+    if app.status != ApplicationStatus.SUBMISSION_FAILED.value:
+        raise ActionConflict(f"Only failed submissions can be prepared again "
+                             f"(status is {app.status}).")
+    ApprovalService(s).invalidate_application(application_id, "prepare_again")
+    forget_live_intent(app)  # invalidation already did; explicit for a non-approved app
+    app.submit_requested_at = None
+    app.form_snapshot_hash = None
+    app.idempotency_key = None
+    app.confirmation_reference = None
+    transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor="user",
+               reason="prepare_again")
+    task_id = orch.enqueue_in(s, TaskKind.PREPARE_FORM, "application", application_id)
+    s.commit()
+    return task_id
 
 
 USER_EDITABLE_DECISIONS = (FieldDecision.ASK_USER.value, FieldDecision.USER_ONLY.value,

@@ -16,6 +16,7 @@ class HealthOut(_Out):
     db_revision: str
     disk_free_gb: float
     dry_run: bool
+    live_portals: list[str]
 
 
 class JobSummary(_Out):
@@ -119,6 +120,15 @@ class ApproveIn(BaseModel):
     version: int
     content_hash: str
     application_ids: list[str]
+
+
+class SubmitIn(BaseModel):
+    application_ids: list[str] | None = None
+    confirm: str | None = None
+
+
+class SubmitOut(_Out):
+    queued: list[str]
 
 
 class ApprovalOut(_Out):

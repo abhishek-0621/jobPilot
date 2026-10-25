@@ -119,6 +119,11 @@ async def test_prepare_answer_review_approve_simulated(
                              "ids": [app_id]}).status_code == 200
     await pipe.orch.run_until_idle()
     with pipe.factory() as s:
+        approved = s.get(ApplicationRow, app_id)
+        assert approved is not None and approved.status == "APPROVED"  # not submitted yet
+    assert client.post(f"/ui/batches/{batch_id}/submit").status_code == 200
+    await pipe.orch.run_until_idle()
+    with pipe.factory() as s:
         app = s.get(ApplicationRow, app_id)
         assert app is not None and app.status == "CONFIRMED"
         submits = s.execute(select(TaskRow).where(

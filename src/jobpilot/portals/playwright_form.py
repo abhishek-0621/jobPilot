@@ -1,13 +1,24 @@
-"""Shared Playwright form reading/filling for ATS adapters. Never submits."""
+"""Shared Playwright form reading/filling for ATS adapters. The only submit path is
+``click_submit_once`` on the single control ``locate_submit_control`` found."""
 
+import asyncio
 import hashlib
+import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
-from jobpilot.contracts.enums import ErrorCode, FieldDecision, PortalCapability
+from jobpilot.contracts.enums import (
+    ApplicationStatus,
+    ErrorCode,
+    FieldDecision,
+    PortalCapability,
+)
 from jobpilot.contracts.models import FieldAnswer, SubmitResult
 from jobpilot.forms.browser import detect_blockers
 from jobpilot.forms.classify import classify_sensitive
@@ -16,6 +27,7 @@ from jobpilot.portals.base import (
     FillReport,
     FormField,
     FormSnapshot,
+    ManualHandoff,
     PortalCapabilities,
     SubmissionEvidence,
     ValidationReport,
@@ -173,6 +185,71 @@ _ERRORS_JS = "(sels) => {" + _HELPERS + r"""
   }
   return out;
 }"""
+
+
+_SUBMIT_CSS = "button[type=submit], input[type=submit]"
+_SUBMIT_NAME = re.compile(r"^(submit|submit application|apply|send application)$", re.I)
+# Whole path segment only; the query string and host never count.
+CONFIRM_PATH = re.compile(
+    r"/(confirmation|confirm|thank[-_ ]?you|thanks|submitted|application-submitted)(/|$|\.)",
+    re.I)
+CONFIRM_TEXT = re.compile(r"thank you for applying|application (has been )?(received|submitted)"
+                          r"|we('ve| have) received your application", re.I)
+# Keywords are case-insensitive; the id itself is upper-case and carries a digit, so
+# "Application received" never yields "received" as a reference.
+CONFIRMATION_REF = re.compile(
+    r"\b(?i:application|reference|confirmation)\s*(?i:id|number|#|no\.?)?\s*[:#]?\s*"
+    r"((?=[A-Z-]*[0-9])[A-Z0-9-]{4,})\b")
+_POLL_S = 0.5
+_GONE_POLLS = 6  # the form must stay absent for 3 s of consecutive polls
+
+_ERROR_SEL = '.error, [aria-invalid="true"]'
+_MARK = "data-jp-baseline"
+
+# Error elements present before the click get a marker; only unmarked ones with text
+# count as new page errors (recorded as error codes; the outcome is still UNCERTAIN,
+# never FAILED). A new document has no markers, but needs non-empty text.
+_MARK_ERRORS_JS = "() => { document.querySelectorAll('" + _ERROR_SEL \
+    + "').forEach(e => e.setAttribute('" + _MARK + "', '1')); }"
+
+_PAGE_STATE_JS = "(sels) => {" + _HELPERS + r"""
+  let root = null;
+  for (const s of sels) { root = document.querySelector(s); if (root) break; }
+  const visible = el => !!(el.offsetParent || el.getClientRects().length);
+  const errors = root ? [...root.querySelectorAll('.error, [aria-invalid="true"]')]
+    .filter(e => visible(e) && !e.hasAttribute('data-jp-baseline')
+      && (norm(e.textContent) || e.matches('input, select, textarea'))).length : 0;
+  const success = [...document.querySelectorAll(
+    'h1, h2, h3, [role=alert], [role=status], [class*=confirm], [class*=success], '
+    + '[class*=thank]')].filter(visible)
+    .map(e => norm(e.textContent)).filter(Boolean);
+  return { text: document.body ? document.body.innerText : '', form: !!root,
+           errors, success };
+}"""
+
+
+@dataclass(frozen=True)
+class PageBaseline:
+    """The form page just before the click; evidence must be new relative to it."""
+    url: str
+    text: str
+    success: frozenset[str]
+
+
+def _no_fragment(url: str) -> str:
+    return url.split("#", 1)[0]
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    status: ApplicationStatus  # CONFIRMED or SUBMISSION_UNCERTAIN, never FAILED
+    reference: str | None = None
+    error_codes: tuple[str, ...] = ()  # evidence only, e.g. ("PAGE_ERRORS:2",)
+
+
+def parse_reference(text: str) -> str | None:
+    m = CONFIRMATION_REF.search(text)
+    return m.group(1) if m else None
 
 
 def _norm(v: Any) -> str:
@@ -373,8 +450,87 @@ class PlaywrightFormAdapter:
         """Full-page PNG evidence of the filled (never submitted) form."""
         await self.page.screenshot(path=str(path), full_page=True)
 
+    async def locate_submit_control(self) -> Locator:
+        """The single visible, enabled submit control inside the form root; anything else
+        (none, or several distinct controls) is a manual handoff."""
+        root = await self._root()
+        found: list[Locator] = []
+        handles: list[Any] = []
+        for group in (root.locator(_SUBMIT_CSS), root.get_by_role("button", name=_SUBMIT_NAME)):
+            for i in range(await group.count()):
+                loc = group.nth(i)
+                if not (await loc.is_visible() and await loc.is_enabled()):
+                    continue
+                handle = await loc.element_handle()
+                if handle is None:
+                    continue
+                same = [await self.page.evaluate("([a, b]) => a === b", [handle, h])
+                        for h in handles]
+                if any(same):
+                    continue
+                handles.append(handle)
+                found.append(loc)
+        if len(found) != 1:
+            raise ManualHandoff("SUBMIT_CONTROL_AMBIGUOUS")
+        return found[0]
+
+    async def click_submit_once(self, control: Locator) -> None:
+        """Exactly one click. Never Enter, never ``form.submit()``, never retried."""
+        await control.click(timeout=_ACTION_TIMEOUT_MS, no_wait_after=False)
+
+    async def _page_state(self) -> dict[str, Any]:
+        state = await self.page.evaluate(_PAGE_STATE_JS, list(self.form_roots) + ["form"])
+        return {**state, "url": self.page.url}
+
+    async def capture_baseline(self) -> PageBaseline:
+        await self.page.evaluate(_MARK_ERRORS_JS)
+        state = await self._page_state()
+        return PageBaseline(url=state["url"], text=state["text"] or "",
+                            success=frozenset(state["success"]))
+
+    async def detect_confirmation(self, baseline: PageBaseline,
+                                  timeout_s: float = 30) -> Confirmation:
+        """Poll every 500 ms for evidence that is new since ``baseline``:
+        * the URL changed to one whose path has a confirmation segment; or
+        * a confirmation phrase absent before the click inside a heading, alert/status
+          or confirm/success/thank element that was not there before, with the URL
+          changed or the form gone for >= 3 s (a failed poll restarts that clock).
+        Never returns FAILED: a resubmit could duplicate the application, so visible new
+        error elements are only recorded (``error_codes``) and the outcome is UNCERTAIN
+        for the user to resolve."""
+        deadline = time.monotonic() + timeout_s
+        before = baseline.text.casefold()
+        absent = 0
+        errors = 0
+
+        def new_phrase(text: str) -> bool:
+            return any(m.group(0).casefold() not in before
+                       for m in CONFIRM_TEXT.finditer(text))
+
+        while True:
+            try:
+                state: dict[str, Any] | None = await self._page_state()
+            except PlaywrightError:  # navigating: the old document is gone
+                state, absent = None, 0
+            if state is not None:
+                url, form = state["url"], state["form"]
+                absent = 0 if form else absent + 1
+                gone = absent >= _GONE_POLLS
+                moved = _no_fragment(url) != _no_fragment(baseline.url)
+                success = [s for s in state["success"] if s not in baseline.success]
+                if ((moved and CONFIRM_PATH.search(urlsplit(url).path))
+                        or ((moved or gone) and any(new_phrase(s) for s in success))):
+                    return Confirmation(ApplicationStatus.CONFIRMED,
+                                        parse_reference(state["text"] or ""))
+                if form:
+                    errors = max(errors, state["errors"])
+            if time.monotonic() >= deadline:
+                return Confirmation(ApplicationStatus.SUBMISSION_UNCERTAIN, None,
+                                    (f"PAGE_ERRORS:{errors}",) if errors else ())
+            await asyncio.sleep(_POLL_S)
+
     async def submit(self, approved_application: ApprovedApplication) -> SubmitResult:
-        raise NotImplementedError("Plan 5")
+        raise NotImplementedError("LiveSubmitter submits; this adapter only fills")
 
     async def verify_submission(self) -> SubmissionEvidence:
         raise NotImplementedError("Plan 5")

@@ -231,18 +231,29 @@ def _batch_ids(client: TestClient, batch: ApprovalBatchRow) -> list[str]:
     return [i["application_id"] for i in body["items"]]
 
 
-async def test_dashboard_approve_form_approves_and_queues_submit(
+async def test_dashboard_approve_then_submit(
     e2e_seeded: E2E, batch: ApprovalBatchRow
 ) -> None:
+    from jobpilot.data.tables import TaskRow
+
     app = create_app(e2e_seeded.cfg, e2e_seeded.factory, e2e_seeded.orch, start_worker=False)
+    headers = {"Origin": "http://127.0.0.1:8765", "Sec-Fetch-Site": "same-origin"}
     with TestClient(app, base_url="http://127.0.0.1") as client:
         ids = _batch_ids(client, batch)
         r = client.post(f"/ui/batches/{batch.batch_id}/approve",
                         data={"content_hash": batch.content_hash, "version": "1",
-                              "ids": ids},
-                        headers={"Origin": "http://127.0.0.1:8765",
-                                 "Sec-Fetch-Site": "same-origin"})
+                              "ids": ids}, headers=headers)
         assert r.status_code == 200 and "Approved 1" in r.text
+        await e2e_seeded.orch.run_until_idle()
+        assert e2e_seeded.status(ids[0]) == "APPROVED"  # approving never submits
+        with e2e_seeded.factory() as s:
+            assert s.execute(select(TaskRow).where(
+                TaskRow.kind == "SUBMIT", TaskRow.entity_id == ids[0])).first() is None
+        page = client.get(f"/ui/batches/{batch.batch_id}").text
+        assert "Submit approved applications" in page and 'name="confirm"' not in page
+        assert "dry run (simulated)" in page
+        r = client.post(f"/ui/batches/{batch.batch_id}/submit", headers=headers)
+        assert r.status_code == 200 and "Submission queued for 1" in r.text
     await e2e_seeded.orch.run_until_idle()
     assert e2e_seeded.status(ids[0]) == "CONFIRMED"
     assert e2e_seeded.adapter.simulated_submissions == 2
@@ -277,36 +288,51 @@ def test_jobs_page_neutralises_non_http_links(e2e: E2E) -> None:
     assert 'rel="noopener noreferrer"' in page
 
 
-async def test_approve_enqueues_in_same_transaction(
+async def test_submit_request_enqueues_in_same_transaction(
     e2e: E2E, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jobpilot.api.actions import approve_and_queue
-    from jobpilot.data.tables import ApprovalRow, TaskRow
+    from jobpilot.api.actions import request_submit
+    from jobpilot.data.tables import ApplicationRow, TaskRow
 
     e2e.orch.enqueue(TaskKind.DISCOVER, "run", "run_1")
     await e2e.orch.run_until_idle()
     apps = e2e.ready_apps()
     b = e2e.approvals.build_batch(apps)
+    with e2e.factory() as s:
+        ApprovalService(s).approve(b.batch_id, b.version, b.content_hash or "", apps[:1])
+        s.commit()
 
     def boom(*a: object, **k: object) -> str:
         raise RuntimeError("crash before commit")
 
     monkeypatch.setattr(e2e.orch, "enqueue_in", boom)
     with e2e.factory() as s, pytest.raises(RuntimeError):
-        approve_and_queue(s, e2e.orch, b.batch_id, b.version, b.content_hash or "", apps[:1])
+        request_submit(s, e2e.orch, b.batch_id, None, None, e2e.cfg)
     with e2e.factory() as s:
-        assert s.execute(select(ApprovalRow)).first() is None
         assert s.execute(select(TaskRow).where(TaskRow.kind == "SUBMIT")).first() is None
-    assert e2e.status(apps[0]) == "READY_FOR_REVIEW"
+        row = s.get(ApplicationRow, apps[0])
+        assert row is not None and row.submit_requested_at is None
+    assert e2e.status(apps[0]) == "APPROVED"
 
 
-async def test_recovery_queues_submit_for_orphaned_approved(e2e: E2E) -> None:
+async def test_recovery_queues_submit_only_when_requested(e2e: E2E) -> None:
+    from jobpilot.data.db import utcnow
+    from jobpilot.data.tables import ApplicationRow
+
     e2e.orch.enqueue(TaskKind.DISCOVER, "run", "run_1")
     await e2e.orch.run_until_idle()
     apps = e2e.ready_apps()
     b = e2e.approvals.build_batch(apps)
-    with e2e.factory() as s:  # approval committed, SUBMIT never queued (old crash window)
+    with e2e.factory() as s:  # approval committed, submit never requested
         ApprovalService(s).approve(b.batch_id, b.version, b.content_hash or "", apps[:1])
+        s.commit()
+    e2e.orch.recover_on_startup()
+    await e2e.orch.run_until_idle()
+    assert e2e.status(apps[0]) == "APPROVED" and e2e.adapter.simulated_submissions == 0
+    with e2e.factory() as s:  # requested, SUBMIT never queued (crash window)
+        row = s.get(ApplicationRow, apps[0])
+        assert row is not None
+        row.submit_requested_at = utcnow()
         s.commit()
     e2e.orch.recover_on_startup()
     e2e.orch.recover_on_startup()  # idempotent: a live task already exists

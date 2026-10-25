@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -32,19 +33,33 @@ from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import (
     AgentRunRow,
     ApplicationRow,
+    AuditEventRow,
     ControlFlagRow,
     FormFieldAnswerRow,
     JobRow,
     OutreachDraftRow,
     TaskRow,
 )
+from jobpilot.documents import store
 from jobpilot.ids import new_id
 from jobpilot.llm.ollama_client import ModelError, ModelGateway
-from jobpilot.observability.events import record_event
-from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.observability.events import (
+    USER_RESOLVED_NOT_SUBMITTED,
+    prior_unresolved_click,
+    record_event,
+    submit_click_recorded,
+)
+from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.policies import PolicyConfig, may_send_outreach, may_submit
 from jobpilot.orchestrator.state_machine import transition
-from jobpilot.portals.base import ApprovedApplication, PortalAdapter, idempotency_key
+from jobpilot.portals.base import (
+    ApprovedApplication,
+    ManualHandoff,
+    PortalAdapter,
+    PreSubmitMismatch,
+    idempotency_key,
+)
+from jobpilot.portals.registry import PortalConfigError
 from jobpilot.portals.simulated import SimulatedAdapter
 
 log = logging.getLogger(__name__)
@@ -56,6 +71,7 @@ MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 8, 32)
 _ACTOR = "orchestrator"
 _PAUSED_KEY = "paused"
+_REREAD_CODES = frozenset({ErrorCode.FORM_LAYOUT_CHANGED.value, "VALUE_MISMATCH"})
 _UNRESOLVED_DECISIONS = (FieldDecision.ASK_USER.value, FieldDecision.BLOCKED.value)
 
 
@@ -150,6 +166,18 @@ def add_task(
     return task_id
 
 
+def _submit_action(s: Session, app: ApplicationRow) -> str:
+    """Idempotency action per attempt: a user-resolved "not submitted" starts a new one.
+
+    Pairs with ``prior_unresolved_click``: a click is only "resolved" by the same
+    USER_RESOLVED_NOT_SUBMITTED event counted here, so a new key never re-clicks blindly."""
+    n = len(s.execute(select(AuditEventRow.event_id).where(
+        AuditEventRow.entity_type == "application",
+        AuditEventRow.entity_id == app.application_id,
+        AuditEventRow.action == USER_RESOLVED_NOT_SUBMITTED)).all())
+    return "submit" if n == 0 else f"submit#{n + 1}"
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -165,11 +193,13 @@ class Orchestrator:
         lease_seconds: float = 300,
         agent_timeout_s: float = 300,
         adapter_timeout_s: float = 120,
+        submitter_factory: Callable[[str], PortalAdapter] | None = None,
     ) -> None:
         self._sf = session_factory
         self._cfg = cfg
         self._agents = agents
         self._adapters = adapters
+        self._submitter_factory = submitter_factory
         self._clock = clock
         self._handlers = handlers if handlers is not None else {
             k: noop_handler for k in agents
@@ -367,14 +397,28 @@ class Orchestrator:
 
     # ---- side effects ----------------------------------------------------
     def _adapter_for(self, app: ApplicationRow) -> tuple[PortalAdapter | None, bool]:
-        if self._cfg.dry_run:
-            return self._adapters.get("simulated") or SimulatedAdapter(), True
-        adapter = self._adapters.get(app.portal or "")
-        return adapter, isinstance(adapter, SimulatedAdapter)
+        # Two independent switches: dry_run off AND the portal listed in live_portals.
+        if (not self._cfg.dry_run and app.portal is not None
+                and app.portal in self._cfg.live_portals
+                and self._submitter_factory is not None):
+            return self._submitter_factory(app.portal), False
+        return self._adapters.get("simulated") or SimulatedAdapter(), True
 
     async def _run_submit(self, s: Session, task: TaskRow) -> None:
         app = get_application(s, task.entity_id)
         adapter, simulated = self._adapter_for(app)
+        # The run-time config must match the intent recorded with the request: never run
+        # live without a typed SUBMIT for live, never simulate a request meant to be real.
+        # The application stays APPROVED; the user re-requests.
+        intent_ok = app.submit_live_intent is not None and app.submit_live_intent == app.portal
+        if not simulated and not intent_ok:
+            self._fail(s, task, "gate_denied", {"reasons": ["live_intent_missing"]})
+            s.commit()
+            return
+        if simulated and app.submit_live_intent is not None:
+            self._fail(s, task, "gate_denied", {"reasons": ["live_mode_off"]})
+            s.commit()
+            return
         if self._cfg.dry_run and not isinstance(adapter, SimulatedAdapter):
             self._fail(s, task, "gate_denied", {"reasons": ["dry_run"]})
             s.commit()
@@ -401,7 +445,9 @@ class Orchestrator:
             return
 
         portal = adapter.name
-        key = idempotency_key(app.application_id, portal, "submit", approved_hash or "")
+        key = idempotency_key(app.application_id, portal, _submit_action(s, app),
+                              approved_hash or "")
+        prior_click = prior_unresolved_click(s, app.application_id)
         app.idempotency_key = key
         transition(s, app, ApplicationStatus.SUBMISSION_IN_PROGRESS, actor=_ACTOR,
                    reason="submit_started")
@@ -410,20 +456,35 @@ class Orchestrator:
                      details={"idempotency_key": key, "task_id": task.task_id,
                               "simulated": simulated})
         s.commit()  # write-ahead: never act before this is durable
+        if prior_click:  # an earlier click was never resolved by the user: no click
+            transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
+                       reason="prior_click")
+            self._fail(s, task, "gate_denied", {"reasons": ["prior_click"],
+                                                "idempotency_key": key})
+            s.commit()
+            return
 
+        timeout_s = getattr(adapter, "timeout_s", self._adapter_timeout_s)
         try:
             result = await asyncio.wait_for(
-                adapter.find_existing_submission(key), self._adapter_timeout_s)
+                adapter.find_existing_submission(key), timeout_s)
             if result is None:
                 result = await asyncio.wait_for(adapter.submit(ApprovedApplication(
                     application_id=app.application_id, approved_hash=approved_hash or "",
-                    idempotency_key=key)), self._adapter_timeout_s)
+                    idempotency_key=key)), timeout_s)
         except TimeoutError:
             transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
                        reason="submit_timeout")
             self._fail(s, task, "submit_uncertain", {"idempotency_key": key},
                        ErrorCode.SUBMIT_TIMEOUT)
             s.commit()
+            return
+        except (PreSubmitMismatch, ManualHandoff) as exc:
+            self._presubmit_abort(s, task.task_id, app.application_id, key, exc)
+            return
+        except PortalConfigError as exc:  # raised before the browser opened
+            self._presubmit_abort(s, task.task_id, app.application_id, key,
+                                  PreSubmitMismatch(exc.code.upper()))
             return
         except Exception as exc:
             self._submit_error(s, task.task_id, app.application_id, exc, None)
@@ -453,8 +514,71 @@ class Orchestrator:
         self._fail(s, task, "submit_error", details, ErrorCode.SUBMIT_NO_CONFIRMATION)
         s.commit()
 
+    def _presubmit_abort(self, s: Session, task_id: str, application_id: str, key: str,
+                         exc: PreSubmitMismatch | ManualHandoff) -> None:
+        """Pre-submit check failed: nothing was clicked, so back to review (approval
+        revoked) or to the user. Never re-enqueued. If a click was recorded after all,
+        the outcome is unknown instead."""
+        s.rollback()
+        if submit_click_recorded(s, key):
+            self._submit_error(s, task_id, application_id, exc, None)
+            return
+        app = get_application(s, application_id)
+        task = s.get(TaskRow, task_id)
+        assert task is not None
+        svc = ApprovalService(s)
+        svc.invalidate_application(application_id, reason=exc.code)
+        follow_ups: list[FollowUp] = []
+        if isinstance(exc, PreSubmitMismatch) and exc.code not in _REREAD_CODES:
+            # HASH_MISMATCH, STALE_DOCUMENTS, ...: the content changed; review it again
+            transition(s, app, ApplicationStatus.READY_FOR_REVIEW, actor="presubmit",
+                       reason=exc.code)
+            app.content_hash = svc.application_hash(application_id)
+            if exc.code == "STALE_DOCUMENTS":
+                from jobpilot.orchestrator.documents_flow import (  # noqa: PLC0415 - cycle
+                    current_artifact_version,
+                    stale_follow_up,
+                )
+                versions = [current_artifact_version(s, a) for a in
+                            (app.resume_artifact_id, app.cover_letter_artifact_id)
+                            if a is not None]
+                follow_ups = stale_follow_up(s, task, application_id, versions,
+                                             "presubmit") or []
+        else:
+            # the page differs from what was read (layout, values) or needs the user:
+            # the user re-reads the form
+            app.form_snapshot_hash = None
+            reason = exc.code if isinstance(exc, PreSubmitMismatch) \
+                else "manual_handoff:" + exc.code
+            transition(s, app, ApplicationStatus.NEEDS_USER_INPUT, actor="presubmit",
+                       reason=reason)
+        for kind, entity_type, entity_id in follow_ups:
+            self._add_task(s, TaskKind(kind), entity_type, entity_id)
+        self._fail(s, task, "presubmit_failed", {"code": exc.code, "idempotency_key": key})
+        s.commit()
+
+    def _store_evidence(self, s: Session, app: ApplicationRow, r: SubmitResult) -> str | None:
+        if not r.evidence_path:
+            return None
+        root = (self._cfg.storage_path / "artifacts" / app.application_id).resolve()
+        path = Path(r.evidence_path)
+        if not path.resolve().is_relative_to(root) or not path.is_file():
+            log.warning("submit evidence for %s outside its artifact dir", app.application_id)
+            return None
+        return store.write_artifact(s, app.application_id, "submit_confirmation", path, [],
+                                    root=self._cfg.storage_path).artifact_id
+
     def _apply_submit_result(self, s: Session, app: ApplicationRow, r: SubmitResult) -> None:
-        details = {"confirmation_reference": r.confirmation_reference}
+        evidence_id = self._store_evidence(s, app, r) or r.evidence_artifact_id
+        details: dict[str, Any] = {"confirmation_reference": r.confirmation_reference,
+                                   "evidence_artifact_id": evidence_id}
+        if r.error_codes:
+            details["error_codes"] = r.error_codes
+        if (r.status is ApplicationStatus.SUBMISSION_FAILED
+                and submit_click_recorded(s, app.idempotency_key)):
+            # a click happened: a "failed" page cannot prove nothing was submitted
+            r = r.model_copy(update={"status": ApplicationStatus.SUBMISSION_UNCERTAIN})
+            details["coerced"] = "failed_coerced_after_click"
         if r.status in (ApplicationStatus.SUBMITTED, ApplicationStatus.CONFIRMED):
             transition(s, app, ApplicationStatus.SUBMITTED, actor=_ACTOR,
                        reason="submitted", details=details)
@@ -464,7 +588,7 @@ class Orchestrator:
         elif r.status in (ApplicationStatus.SUBMISSION_UNCERTAIN,
                           ApplicationStatus.SUBMISSION_FAILED):
             transition(s, app, ApplicationStatus(r.status), actor=_ACTOR,
-                       reason="adapter_result", details=details)
+                       reason=details.get("coerced", "adapter_result"), details=details)
         elif r.status is not ApplicationStatus.SUBMITTED:
             raise ValueError(f"unexpected submit status {r.status!r}")
         app.confirmation_reference = r.confirmation_reference
@@ -572,8 +696,8 @@ class Orchestrator:
                            reason="stranded_in_progress")
 
     def _requeue_orphaned_approvals(self, s: Session) -> None:
-        """APPROVED apps with a valid approval and no live SUBMIT task get one; those
-        whose approval was item-revoked return to review."""
+        """APPROVED apps whose submit was requested, with a valid approval and no live
+        SUBMIT task, get one; those whose approval was item-revoked return to review."""
         live = set(s.execute(select(TaskRow.entity_id).where(
             TaskRow.kind == TaskKind.SUBMIT.value,
             TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)),
@@ -583,11 +707,15 @@ class Orchestrator:
         ).order_by(ApplicationRow.application_id)).scalars().all()
         svc = ApprovalService(s)
         for app_id in apps:
+            if submit_click_recorded(s, get_application(s, app_id).idempotency_key):
+                log.warning("approved app %s already has a recorded click", app_id)
+                continue  # defensive: a click is never repeated
             if svc.active_approval_for(app_id) is None:
+                forget_live_intent(get_application(s, app_id))
                 transition(s, get_application(s, app_id), ApplicationStatus.READY_FOR_REVIEW,
                            actor=_ACTOR, reason="approval_item_revoked")
-            elif app_id not in live:
-                self._add_task(s, TaskKind.SUBMIT, "application", app_id)
+            elif app_id not in live and get_application(s, app_id).submit_requested_at:
+                self._add_task(s, TaskKind.SUBMIT, "application", app_id)  # user asked
 
     def _recover_side_effect(self, s: Session, task: TaskRow, kind: TaskKind) -> None:
         if kind is TaskKind.SUBMIT:

@@ -223,12 +223,12 @@ def test_application_detail_404_only_for_missing(
         client.get("/applications/app_missing")
 
 
-def test_approve_endpoint_enqueues_submit(
+def test_approve_does_not_submit(
     factory: sessionmaker[Session], tmp_path: Path
 ) -> None:
     from sqlalchemy import select
 
-    from jobpilot.data.tables import TaskRow
+    from jobpilot.data.tables import ApplicationRow, TaskRow
 
     ids, batch_id, h = seed_batch(factory)
     client = make_client(factory, tmp_path)
@@ -236,8 +236,19 @@ def test_approve_endpoint_enqueues_submit(
                      json={"version": 1, "content_hash": h, "application_ids": ids[:1]})
     assert ok.status_code == 200
     with factory() as s:
+        assert s.execute(select(TaskRow)).first() is None
+        app = s.get(ApplicationRow, ids[0])
+        assert app is not None and app.status == "APPROVED"
+        assert app.submit_requested_at is None
+    sub = client.post(f"/batches/{batch_id}/submit", json={})
+    assert sub.status_code == 200 and sub.json() == {"queued": [ids[0]]}
+    with factory() as s:
         tasks = s.execute(select(TaskRow)).scalars().all()
+        app = s.get(ApplicationRow, ids[0])
+        assert app is not None and app.submit_requested_at is not None
     assert [(t.kind, t.entity_id) for t in tasks] == [("SUBMIT", ids[0])]
+    again = client.post(f"/batches/{batch_id}/submit", json={})
+    assert again.status_code == 409  # a SUBMIT is already queued: never twice
 
 
 def _seed_job(factory: sessionmaker[Session], status: str = "MATCHED",

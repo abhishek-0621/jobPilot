@@ -15,6 +15,7 @@ from jobpilot.contracts.enums import (
 from jobpilot.data.db import utcnow
 from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import (
+    ApplicationRow,
     ApprovalBatchRow,
     ApprovalRow,
     BatchItemRow,
@@ -34,6 +35,12 @@ PLANNED_ACTIONS = ["upload_resume", "upload_cover_letter", "submit"]
 
 class StaleApprovalError(Exception):
     pass
+
+
+def forget_live_intent(app: ApplicationRow) -> None:
+    """Any revocation drops the recorded live intent: a later live submit needs a new
+    typed SUBMIT."""
+    app.submit_live_intent = None
 
 
 class ApprovalService:
@@ -210,6 +217,7 @@ class ApprovalService:
                              action="approval_revoked", outcome="ok",
                              details={"application_id": application_id, "reason": reason})
         app = get_application(self.session, application_id)
+        forget_live_intent(app)
         if app.status == ApplicationStatus.APPROVED:
             transition(self.session, app, ApplicationStatus.READY_FOR_REVIEW,
                        actor="system", reason=reason)
