@@ -138,7 +138,7 @@ class PrepareFormAgent:
     prompt_version = PROMPT_VERSION
     output_model = FormPlan
     tools = ("application_loader", "mapping_context", "active_profile_version",
-             "form_opener", "essay_context")
+             "form_opener", "essay_context", "tech_terms")
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> FormPlan:
         load_app: Callable[[str], dict | None] = ctx.tools["application_loader"]
@@ -196,7 +196,9 @@ async def _with_essays(fields: list[Any], answers: list[FieldAnswer], ctx: Agent
     load = ctx.tools.get("essay_context")
     if load is None or not essay_candidates(fields, answers):
         return answers
-    return await draft_essay_answers(fields, answers, ctx.gateway, load(application_id))
+    terms = ctx.tools.get("tech_terms")
+    return await draft_essay_answers(fields, answers, ctx.gateway, load(application_id),
+                                     terms=terms() if terms is not None else None)
 
 
 def _differs(row: FormFieldAnswerRow, a: FieldAnswer) -> bool:
@@ -382,7 +384,9 @@ def make_validate_handler(storage_path: Path) -> Handler:
         filled = set(out.filled)
         rows = answer_rows(s, app.application_id)
         for r in rows:
-            if r.required and not is_resolved(r):
+            if mutations.is_stale_essay(r):
+                errors.setdefault(r.field_id, "STORY_CHANGED")
+            elif r.required and not is_resolved(r):
                 errors.setdefault(r.field_id, "UNRESOLVED")
             elif r.required and r.decision != FieldDecision.NOT_APPLICABLE.value \
                     and r.field_id not in filled:

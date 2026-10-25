@@ -186,6 +186,130 @@ async def test_save_essay_to_library_reused(tmp_path: Path) -> None:
             mutations.save_essay_to_library(s, env.app_id, "q_customer", actor="user")
         s.commit()
     ectx = env.tools["essay_context"](env.app_id)
-    assert ectx.library == {"essay_proud_of": PROUD_OK}
+    assert ectx.library == {"essay_proud_of": {"text": PROUD_OK,
+                                               "story_ids": ["latency-cut"], "canned": None}}
     assert [s.story_id for s in ectx.bank.verified()] == ["latency-cut"]
     assert all(st.verified for st in ectx.bank.stories)  # unverified never loaded
+
+
+# ---- review findings -------------------------------------------------------------
+
+
+async def test_validating_and_failed_statuses_invalidated(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    from jobpilot.agents.form_prep import ValidationResult, make_validate_handler
+    from jobpilot.data.tables import TaskRow
+    env = essay_env(tmp_path)
+    await run(env, TaskKind.PREPARE_FORM)
+    with env.factory() as s:
+        _ready_with_essay(s, env.app_id)
+        env.rows(s)["q_proud"].required = False
+        app = env.app(s)
+        app.status = "SUBMISSION_FAILED"
+        verify_story(s, "latency-cut", False)
+        assert env.rows(s)["q_proud"].decision == "ASK_USER"
+        verify_story(s, "latency-cut", True)
+        mutations.set_answer(s, env.app_id, "q_proud", PROUD_OK, actor="orchestrator",
+                             decision=FieldDecision.FILL_AND_REVIEW, rationale="Essay")
+        app.status = "VALIDATING"
+        verify_story(s, "latency-cut", False)
+        assert env.rows(s)["q_proud"].decision == "ASK_USER"
+        # validation never finishes into review with a stale draft (even optional)
+        app.status = "FORM_IN_PROGRESS"
+        s.flush()
+        task = TaskRow(task_id="t1", kind="VALIDATE", entity_type="application",
+                       entity_id=env.app_id, status="RUNNING")
+        out = ValidationResult(task_id="t1", created_at=datetime.now(UTC),
+                               application_id=env.app_id, profile_version=1, ok=True,
+                               filled=["first_name", "email", "resume"])
+        from unittest.mock import patch
+        with patch("jobpilot.agents.form_prep.stale_follow_up", return_value=None):
+            make_validate_handler(env.cfg.storage_path)(s, task, out)
+        assert env.app(s).status == "VALIDATION_FAILED"
+        assert json.loads(env.rows(s)["q_proud"].validation_errors_json) == ["STORY_CHANGED"]
+
+
+async def test_library_save_rules_and_story_link(tmp_path: Path) -> None:
+    from jobpilot.data.tables import AnswerLibraryRow
+    env = essay_env(tmp_path)
+    await run(env, TaskKind.PREPARE_FORM)
+    with env.factory() as s:
+        verify_story(s, "latency-cut", False)  # draft is now stale (ASK_USER)
+        with pytest.raises(ValueError):
+            mutations.save_essay_to_library(s, env.app_id, "q_proud", actor="user")
+        verify_story(s, "latency-cut", True)
+        mutations.set_answer(s, env.app_id, "q_proud", PROUD_OK, actor="orchestrator",
+                             decision=FieldDecision.FILL_AND_REVIEW, rationale="Essay")
+        mutations.save_essay_to_library(s, env.app_id, "q_proud", actor="user")
+        lib = s.query(AnswerLibraryRow).filter_by(question_key="essay_proud_of").one()
+        assert json.loads(lib.value_json) == {"text": PROUD_OK, "story_ids": ["latency-cut"],
+                                              "canned": None}
+        s.commit()
+    ectx = env.tools["essay_context"](env.app_id)
+    from jobpilot.agents.essay import draft_essay_answers
+    f = FormField(field_id="q2", label=PROUD, field_type="textarea", required=True)
+    pending = FieldAnswer(field_id="q2", label=PROUD, field_type="textarea",
+                          decision=FieldDecision.ASK_USER, confidence=0.0, rationale="x")
+    [a] = await draft_essay_answers([f], [pending], None, ectx)
+    assert a.source_fact_id == "library:essay_proud_of:latency-cut"
+    with env.factory() as s:
+        assert mutations.essay_story_ids(a.source_fact_id) == ["latency-cut"]
+        # story change removes the library entry and invalidates answers built from it
+        verify_story(s, "latency-cut", False)
+        assert s.query(AnswerLibraryRow).filter_by(question_key="essay_proud_of").count() == 0
+        out = guard_essay_answers(s, [a])
+        assert out[0].decision == FieldDecision.ASK_USER and out[0].proposed_value is None
+        # a user-written answer can be saved (no story ids)
+        mutations.set_answer(s, env.app_id, "q_proud", "My words.", actor="user",
+                             source_fact_id="user")
+        mutations.save_essay_to_library(s, env.app_id, "q_proud", actor="user")
+        lib = s.query(AnswerLibraryRow).filter_by(question_key="essay_proud_of").one()
+        assert json.loads(lib.value_json)["story_ids"] == []
+
+
+async def test_canned_change_invalidates(tmp_path: Path) -> None:
+    snap = FormSnapshot(url="x", fields=[
+        *snapshot().fields[:3],
+        FormField(field_id="q_weak", label="What is your greatest weakness?",
+                  field_type="textarea", required=True)])
+    env = make_env(tmp_path, FakePortal(snap))
+    with env.factory() as s:
+        import_stories(s, stories())
+        s.commit()
+    await run(env, TaskKind.PREPARE_FORM)
+    with env.factory() as s:
+        row = env.rows(s)["q_weak"]
+        assert row.source_fact_id == "essay:canned:weaknesses"
+        assert row.decision == "FILL_AND_REVIEW"
+        sf = stories()
+        sf.canned[QuestionKey.WEAKNESSES] = "I rush documentation."
+        out = import_stories(s, sf)
+        assert out["answers_invalidated"] == 1
+        assert env.rows(s)["q_weak"].decision == "ASK_USER"
+
+
+def test_file_flag_does_not_override_dashboard_unverify(db_session: Session) -> None:
+    from jobpilot.data.tables import AuditEventRow
+    sf = stories()
+    sf.stories[0].verified = True
+    import_stories(db_session, sf)
+    ev = db_session.query(AuditEventRow).filter_by(action="story_verified").one()
+    assert ev.entity_id == "latency-cut" and "file" in ev.redacted_details_json
+    verify_story(db_session, "latency-cut", False)
+    import_stories(db_session, sf)  # unchanged content: stays unverified
+    assert not stored_bank(db_session).stories[0].verified
+    sf2 = stories(result="Median response time fell a lot.")
+    sf2.stories[0].verified = True
+    import_stories(db_session, sf2)  # content changed: file flag counts again
+    assert stored_bank(db_session).stories[0].verified
+
+
+async def test_form_prep_passes_configured_terms(tmp_path: Path) -> None:
+    env = essay_env(tmp_path, SeqGateway(ok(PROUD_OK + " I used Zorblax for it.")))
+    env.tools["tech_terms"] = lambda: {"zorblax"}
+    env.orch._tools["tech_terms"] = env.tools["tech_terms"]
+    await run(env, TaskKind.PREPARE_FORM)
+    with env.factory() as s:
+        row = env.rows(s)["q_proud"]
+        assert row.decision == "ASK_USER" and "new_tech:zorblax" in row.rationale

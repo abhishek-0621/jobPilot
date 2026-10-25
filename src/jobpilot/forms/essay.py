@@ -5,6 +5,7 @@ choose its own key by instruction. Sensitive questions are classified first and 
 essays; only long-text (textarea) fields qualify.
 """
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -25,8 +26,12 @@ _ESSAY_SENSITIVE = (
     "leaving your last", "left your last", "left your previous", "employment gap",
     "gap in your employment", "gap in employment", "career gap", "career break",
     "notice period", "relocate", "relocation", "references", "health", "pregnant", "pregnancy",
-    "family situation", "personal circumstances",
+    "family situation", "personal circumstances", "move on", "moving on", "change jobs",
+    "changing jobs", "change job", "new role", "new job", "new opportunity",
+    "new opportunities", "looking for a change", "previous employer", "current employer",
+    "former employer", "last employer", "why are you leaving",
 )
+_ESSAY_SENSITIVE_RE = re.compile(r"\b(?:leav\w*|left|quit\w*)\b")
 
 
 class _Patterns(BaseModel):
@@ -46,7 +51,8 @@ def is_sensitive_essay(label: str, help_text: str = "",
     if classify_sensitive(label, help_text, options) is not None:
         return True
     text = f"{_normalize(label)} {_normalize(help_text)}"
-    return any(has_phrase(text, p) for p in _ESSAY_SENSITIVE)
+    return (_ESSAY_SENSITIVE_RE.search(text) is not None
+            or any(has_phrase(text, p) for p in _ESSAY_SENSITIVE))
 
 
 def classify_essay(label: str, help_text: str = "", *, field_type: str = "textarea",

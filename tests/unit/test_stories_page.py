@@ -49,9 +49,16 @@ async def test_verify_via_post_with_origin_check(tmp_path: Path) -> None:
                   follow_redirects=False).status_code == 404
 
 
+def _answerable(env) -> None:  # type: ignore[no-untyped-def]
+    with env.factory() as s:
+        env.app(s).status = "NEEDS_USER_INPUT"
+        s.commit()
+
+
 async def test_review_page_shows_story_titles(tmp_path: Path) -> None:
     env = essay_env(tmp_path)
     await run(env, TaskKind.PREPARE_FORM)
+    _answerable(env)
     r = env.client().get(f"/ui/applications/{env.app_id}/answers")
     assert "Drafted from: Cutting assistant latency at Example Corp" in r.text
     assert "needs_story:customer" in r.text
@@ -74,3 +81,29 @@ async def test_story_text_autoescaped(tmp_path: Path) -> None:
     assert "<script>alert(1)</script>" not in r.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in r.text
     assert "<img src=x" not in r.text
+
+
+async def test_library_button_separate_form_and_rules(tmp_path: Path) -> None:
+    env = essay_env(tmp_path)
+    await run(env, TaskKind.PREPARE_FORM)
+    _answerable(env)
+    r = env.client().get(f"/ui/applications/{env.app_id}/answers")
+    assert 'id="lib-q_proud"' in r.text and 'form="lib-q_proud"' in r.text
+    assert 'id="lib-q_customer"' not in r.text  # ASK_USER rows get no button
+    r = env.client().post(f"/ui/applications/{env.app_id}/answers/q_proud/library",
+                          data={"value": "My edited words."}, follow_redirects=False)
+    assert r.status_code == 303
+    import json
+
+    from jobpilot.data.tables import AnswerLibraryRow
+    with env.factory() as s:
+        lib = s.query(AnswerLibraryRow).filter_by(question_key="essay_proud_of").one()
+        assert json.loads(lib.value_json) == {"text": "My edited words.", "story_ids": [],
+                                              "canned": None}
+        env.app(s).status = "READY_FOR_REVIEW"
+        s.commit()
+    r = env.client().get(f"/ui/applications/{env.app_id}/answers")
+    assert 'id="lib-q_proud"' not in r.text
+    r = env.client().post(f"/ui/applications/{env.app_id}/answers/q_proud/library",
+                          data={"value": "x"}, follow_redirects=False)
+    assert r.status_code == 409

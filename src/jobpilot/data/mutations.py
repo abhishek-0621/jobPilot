@@ -50,15 +50,38 @@ ESSAY_PREFIX = "essay:"
 USER_SOURCE = "user"
 
 
+LIBRARY_ESSAY_PREFIX = "library:essay_"
+CANNED_PREFIX = ESSAY_PREFIX + "canned:"
+
+
+def essay_refs(source: str | None) -> tuple[list[str], str | None] | None:
+    """(story ids, canned key) an essay-derived answer rests on, or None if the source is
+    not essay-derived. Sources: ``essay:<ids>``, ``essay:canned:<key>``,
+    ``library:essay_<key>[:<ids>]``."""
+    if not source:
+        return None
+    if source.startswith(CANNED_PREFIX):
+        return [], source[len(CANNED_PREFIX):] or None
+    if source.startswith(ESSAY_PREFIX):
+        return [i for i in source[len(ESSAY_PREFIX):].split(",") if i], None
+    if source.startswith(LIBRARY_ESSAY_PREFIX):
+        _key, _, ids = source[len("library:"):].partition(":")
+        return [i for i in ids.split(",") if i], None
+    return None
+
+
+def is_essay_source(source: str | None) -> bool:
+    return essay_refs(source) is not None
+
+
 def essay_story_ids(source: str | None) -> list[str]:
-    """Story ids recorded in an essay answer's source (``essay:<id>,<id>``)."""
-    if not source or not source.startswith(ESSAY_PREFIX):
-        return []
-    return [i for i in source[len(ESSAY_PREFIX):].split(",") if i]
+    """Story ids recorded in an essay-derived answer's source."""
+    refs = essay_refs(source)
+    return refs[0] if refs else []
 
 
 def _check_essay(source: str | None, decision: FieldDecision | str | None) -> None:
-    if source and source.startswith(ESSAY_PREFIX) and decision is not None \
+    if is_essay_source(source) and decision is not None \
             and FieldDecision(decision) not in (FieldDecision.FILL_AND_REVIEW,
                                                 FieldDecision.ASK_USER):
         raise ValueError("essay answers are FILL_AND_REVIEW or ASK_USER only")
@@ -110,34 +133,61 @@ def upsert_answer_initial(s: Session, application_id: str, answer: FieldAnswer, 
 
 _STORY_STALE_STATUSES = (
     ApplicationStatus.FORM_IN_PROGRESS.value, ApplicationStatus.NEEDS_USER_INPUT.value,
-    ApplicationStatus.VALIDATION_FAILED.value, ApplicationStatus.READY_FOR_REVIEW.value,
-    ApplicationStatus.APPROVED.value, ApplicationStatus.MANUAL_APPLY_READY.value)
+    ApplicationStatus.VALIDATING.value, ApplicationStatus.VALIDATION_FAILED.value,
+    ApplicationStatus.READY_FOR_REVIEW.value, ApplicationStatus.APPROVED.value,
+    ApplicationStatus.MANUAL_APPLY_READY.value, ApplicationStatus.SUBMISSION_FAILED.value)
+STORY_CHANGED_PREFIX = "story_changed"
+
+
+def is_stale_essay(row: FormFieldAnswerRow) -> bool:
+    """An essay-derived answer the user still has to look at again."""
+    return (is_essay_source(row.source_fact_id)
+            and row.decision == FieldDecision.ASK_USER.value
+            and json.loads(row.proposed_value_json) not in (None, "", []))
 
 
 def invalidate_story_answers(s: Session, story_ids: list[str], *, reason: str,
-                             actor: str = "system") -> int:
-    """Drafted essay answers that used a changed, removed or unverified story go back to
-    the user (ASK_USER, draft kept for reference); approvals are revoked and a reviewed
-    application returns to NEEDS_USER_INPUT. The user's own answers are never touched.
-    Returns the number of answers changed."""
-    if not story_ids:
+                             actor: str = "system",
+                             canned_keys: list[str] | None = None) -> int:
+    """Answers (and library entries) derived from a changed, removed or unverified story,
+    or from a changed canned answer, go back to the user (ASK_USER, draft kept for
+    reference); approvals are revoked and a reviewed application returns to
+    NEEDS_USER_INPUT. The user's own answers are never touched. Returns the number of
+    answers changed."""
+    wanted, keys = set(story_ids), set(canned_keys or [])
+    if not wanted and not keys:
         return 0
-    wanted = set(story_ids)
+
+    def hit(ids: list[str], key: str | None) -> bool:
+        return bool(wanted & set(ids)) or (key is not None and key in keys)
+
+    removed = 0
+    for lib in s.execute(select(AnswerLibraryRow).where(
+            AnswerLibraryRow.question_key.like("essay_%"))).scalars().all():
+        v = json.loads(lib.value_json)
+        if isinstance(v, dict) and hit(list(v.get("story_ids") or []), v.get("canned")):
+            s.delete(lib)
+            removed += 1
+    if removed:
+        record_event(s, entity_type="answer_library", entity_id="essay", actor=actor,
+                     action="essay_library_invalidated", outcome="ok",
+                     details={"reason": reason, "entries": removed})
     rows = s.execute(select(FormFieldAnswerRow).join(
         ApplicationRow, ApplicationRow.application_id == FormFieldAnswerRow.application_id
-    ).where(FormFieldAnswerRow.source_fact_id.like(ESSAY_PREFIX + "%"),
-            ApplicationRow.status.in_(_STORY_STALE_STATUSES))).scalars().all()
+    ).where(ApplicationRow.status.in_(_STORY_STALE_STATUSES))).scalars().all()
     apps: set[str] = set()
     n = 0
     for r in rows:
-        if not wanted & set(essay_story_ids(r.source_fact_id)):
+        refs = essay_refs(r.source_fact_id)
+        if refs is None or not hit(*refs):
             continue
-        if r.decision == FieldDecision.ASK_USER.value and r.rationale.startswith(reason):
+        if r.decision == FieldDecision.ASK_USER.value \
+                and r.rationale.startswith(STORY_CHANGED_PREFIX):
             continue
         set_answer(s, r.application_id, r.field_id, json.loads(r.proposed_value_json),
                    actor=actor, decision=FieldDecision.ASK_USER,
-                   rationale=f"{reason}: a story this draft used changed; review or "
-                             "re-draft it")
+                   rationale=f"{STORY_CHANGED_PREFIX} ({reason}): a story or canned answer "
+                             "this draft used changed; review or re-draft it")
         apps.add(r.application_id)
         n += 1
     for app_id in sorted(apps):
@@ -229,11 +279,13 @@ def set_library_answer(s: Session, question_key: str, value: Any, *,
     s.flush()
 
 
-def save_essay_to_library(s: Session, application_id: str, field_id: str, *,
-                          actor: str = "user") -> str:
-    """Save an application's essay answer as the library answer for its question type
-    (used for that question type on applications prepared afterwards, still
-    FILL_AND_REVIEW). Returns the library key."""
+def save_essay_to_library(s: Session, application_id: str, field_id: str,
+                          value: str | None = None, *, actor: str = "user") -> str:
+    """Save an essay answer as the library answer for its question type (offered, still
+    FILL_AND_REVIEW, on applications prepared afterwards). Only a reviewed draft
+    (FILL_AND_REVIEW, not stale) or the user's own text may be saved; the entry records
+    the stories/canned answer it rests on so a change to them removes it. ``value``, when
+    it differs from the stored answer, is the user's own edit. Returns the library key."""
     from jobpilot.forms.essay import classify_essay
 
     row = _answer_row(s, application_id, field_id)
@@ -242,11 +294,22 @@ def save_essay_to_library(s: Session, application_id: str, field_id: str, *,
     key = classify_essay(row.label, "", field_type=row.field_type)
     if key is None:
         raise ValueError("not an essay question")
-    value = json.loads(row.proposed_value_json)
-    if not isinstance(value, str) or not value.strip():
+    stored = json.loads(row.proposed_value_json)
+    text = value.strip() if isinstance(value, str) and value.strip() else stored
+    if not isinstance(text, str) or not text.strip():
         raise ValueError("no answer to save")
+    text = text.strip()
+    if text != (stored.strip() if isinstance(stored, str) else stored) \
+            or row.source_fact_id == USER_SOURCE:
+        ids, canned = [], None  # the user's own words
+    elif row.decision == FieldDecision.FILL_AND_REVIEW.value \
+            and is_essay_source(row.source_fact_id):
+        ids, canned = essay_refs(row.source_fact_id) or ([], None)
+    else:
+        raise ValueError("only a reviewed draft or your own answer can be saved")
     library_key = "essay_" + key.value
-    set_library_answer(s, library_key, value.strip(), actor=actor)
+    set_library_answer(s, library_key, {"text": text, "story_ids": ids, "canned": canned},
+                       actor=actor)
     return library_key
 
 

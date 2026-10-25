@@ -99,12 +99,13 @@ def essay_fields() -> list[FormField]:
                       required=True) for key, label in ESSAY_QUESTIONS]
 
 
-async def essay_answers(gateway: Any, ectx: Any) -> list[FieldAnswer]:
+async def essay_answers(gateway: Any, ectx: Any,
+                        terms: set[str] | None = None) -> list[FieldAnswer]:
     fields = essay_fields()
     pending = [FieldAnswer(field_id=f.field_id, label=f.label, field_type=f.field_type,
                            decision=FieldDecision.ASK_USER, confidence=0.0,
                            rationale="Essay question") for f in fields]
-    return await draft_essay_answers(fields, pending, gateway, ectx)
+    return await draft_essay_answers(fields, pending, gateway, ectx, terms=terms)
 
 
 class ManualPackageAgent:
@@ -112,7 +113,7 @@ class ManualPackageAgent:
     prompt_version = PROMPT_VERSION
     output_model = ManualPackage
     tools = ("application_loader", "mapping_context", "active_profile_version",
-             "essay_context")
+             "essay_context", "tech_terms")
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> ManualPackage:
         load_app: Callable[[str], dict | None] = ctx.tools["application_loader"]
@@ -129,7 +130,9 @@ class ManualPackageAgent:
         fields = package_answers(app["company"], app["title"], mapping_context(inp.entity_id))
         load_essay = ctx.tools.get("essay_context")
         if load_essay is not None:
-            fields += await essay_answers(ctx.gateway, load_essay(inp.entity_id))
+            load_terms = ctx.tools.get("tech_terms")
+            fields += await essay_answers(ctx.gateway, load_essay(inp.entity_id),
+                                          load_terms() if load_terms is not None else None)
         return ManualPackage(task_id=ctx.task_id, created_at=datetime.now(UTC),
                              application_id=inp.entity_id, profile_version=version,
                              fields=fields)

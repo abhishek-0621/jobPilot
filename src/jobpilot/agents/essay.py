@@ -70,6 +70,8 @@ class EssayDraft(BaseModel):
 
     @property
     def source(self) -> str:
+        if self.note.startswith("canned:"):
+            return f"{ESSAY_PREFIX}canned:{self.key.value}"
         return ESSAY_PREFIX + ",".join(self.story_ids)
 
 
@@ -139,15 +141,27 @@ def _rewrite_codes(source: str, text: str, allowed: set[str], terms: set[str] | 
             if c != "length"]
 
 
-def _swot_sections(answer: str) -> dict[str, str]:
+_ANY_LABEL_RE = re.compile(r"(?m)^\s*([A-Za-z][A-Za-z ]{0,30}?)\s*:")
+
+
+def _swot_sections(answer: str) -> tuple[dict[str, str], bool]:
+    """(sections, well_formed). Well formed: nothing before the first label, each of the
+    four labels exactly once, no other ``Label:`` lines."""
     marks = list(_SWOT_RE.finditer(answer))
     out: dict[str, str] = {}
+    ok = bool(marks) and not answer[:marks[0].start()].strip()
     for i, m in enumerate(marks):
         label = m.group(1).casefold()
         label = {"strength": "strengths", "weakness": "weaknesses"}.get(label, label)
         end = marks[i + 1].start() if i + 1 < len(marks) else len(answer)
-        out.setdefault(label, answer[m.end():end].strip())
-    return out
+        if label in out:
+            ok = False
+        out[label] = answer[m.end():end].strip()
+    others = [m for m in _ANY_LABEL_RE.finditer(answer)
+              if not _SWOT_RE.match(answer, m.start())]
+    if others or set(out) != set(_SWOT_LABELS) or not all(out.values()):
+        ok = False
+    return out, ok
 
 
 def _weakness_source(bank: StoredBank, chosen: list[Story]) -> str:
@@ -184,10 +198,13 @@ def essay_violations(raw: _EssayLLM, key: QuestionKey, chosen: list[Story],
         if has_phrase(answer, phrase) and not has_phrase(source, phrase):
             codes.append("missing_note")
     if key == QuestionKey.SWOT:
-        parts = _swot_sections(answer)
-        if set(parts) != set(_SWOT_LABELS) or not all(parts.values()):
+        parts, well_formed = _swot_sections(answer)
+        if not well_formed:
             codes.append("swot_parts")
         weak = _weakness_source(bank, chosen)
+        # the whole answer against everything it may draw on (catches text anywhere)
+        whole = _SWOT_RE.sub(" ", answer)
+        codes += _rewrite_codes(source + "\n" + weak, whole, allowed, terms, company, role)
         for label, text in parts.items():
             src = weak if label in ("weaknesses", "threats") else source
             codes += [f"{label}:{c}" for c in _rewrite_codes(src, text, allowed, terms,
@@ -343,11 +360,16 @@ async def draft_essay_answers(fields: list[FormField], answers: list[FieldAnswer
     agent = EssayAgent()
     for f, key in essay_candidates(fields, answers):
         saved = ectx.library.get(library_key(key))
-        if isinstance(saved, str) and saved.strip():
+        if isinstance(saved, str):
+            saved = {"text": saved, "story_ids": []}
+        text = saved.get("text") if isinstance(saved, dict) else None
+        if isinstance(text, str) and text.strip():
+            ids = [str(i) for i in saved.get("story_ids") or []]
+            src = f"library:{library_key(key)}" + (":" + ",".join(ids) if ids else "")
             better[f.field_id] = FieldAnswer(
                 field_id=f.field_id, label=f.label, field_type=f.field_type,
-                proposed_value=saved.strip(), decision=FieldDecision.FILL_AND_REVIEW,
-                source_fact_id=f"library:{library_key(key)}", confidence=_DRAFT_CONFIDENCE,
+                proposed_value=text.strip(), decision=FieldDecision.FILL_AND_REVIEW,
+                source_fact_id=src, confidence=_DRAFT_CONFIDENCE,
                 rationale=f"Essay ({key.value}): your saved answer for this question type")
             continue
         d = await agent.draft(gateway, question=f.label + (
@@ -360,17 +382,21 @@ async def draft_essay_answers(fields: list[FormField], answers: list[FieldAnswer
 def guard_essay_answers(s: Session, answers: list[FieldAnswer]) -> list[FieldAnswer]:
     """Handler-side check (single writer): an essay answer is never AUTO_FILL, and a draft
     whose stories are no longer verified goes back to the user."""
-    verified = {st.story_id for st in stored_bank(s).verified()}
+    from jobpilot.data.mutations import essay_refs
+
+    bank = stored_bank(s)
+    verified = {st.story_id for st in bank.verified()}
+    canned = {k.value for k in bank.canned}
     out = []
     for a in answers:
-        src = a.source_fact_id or ""
-        if not src.startswith(ESSAY_PREFIX):
+        refs = essay_refs(a.source_fact_id)
+        if refs is None:
             out.append(a)
             continue
         if a.decision not in (FieldDecision.FILL_AND_REVIEW, FieldDecision.ASK_USER):
             raise OutputRejected("essay_answer_not_reviewed")
-        ids = [i for i in src[len(ESSAY_PREFIX):].split(",") if i]
-        if any(i not in verified for i in ids):
+        ids, key = refs
+        if any(i not in verified for i in ids) or (key is not None and key not in canned):
             a = a.model_copy(update={
                 "proposed_value": None, "decision": FieldDecision.ASK_USER,
                 "source_fact_id": None, "confidence": 0.0,

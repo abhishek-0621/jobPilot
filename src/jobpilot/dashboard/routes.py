@@ -60,6 +60,7 @@ from jobpilot.contracts.enums import (
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import (
     essay_story_ids,
+    is_essay_source,
     save_essay_to_library,
     set_library_answer,
 )
@@ -511,7 +512,10 @@ def answers_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
         story_ids = essay_story_ids(r.source_fact_id)
         rows.append({
             "stories": [titles.get(i, f"{i} (removed)") for i in story_ids],
-            "essay": isinstance(value, str) and bool(value.strip())
+            "essay": app.status in ANSWERABLE_STATUSES
+            and isinstance(value, str) and bool(value.strip())
+            and (r.source_fact_id == "user" or (
+                r.decision == "FILL_AND_REVIEW" and is_essay_source(r.source_fact_id)))
             and classify_essay(r.label, "", field_type=r.field_type) is not None,
             "field_id": r.field_id, "label": r.label, "field_type": r.field_type,
             "decision": r.decision, "value": value, "display": _display(value),
@@ -528,11 +532,18 @@ def answers_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
 
 @router.post("/ui/applications/{application_id}/answers/{field_id}/library",
              response_model=None)
-def save_essay_library_ui(request: Request, application_id: str, field_id: str,
-                          s: Db) -> HTMLResponse | RedirectResponse:
-    """Save this essay answer as the library answer for its question type."""
+def save_essay_library_ui(request: Request, application_id: str, field_id: str, s: Db,
+                          value: Annotated[str, Form()] = ""
+                          ) -> HTMLResponse | RedirectResponse:
+    """Save this essay answer (as currently shown in its text box) as the library answer
+    for its question type. Only while the application's answers can be edited."""
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    if app.status not in ANSWERABLE_STATUSES:
+        return _message(request, "Answers can't be changed in this status.", 409)
     try:
-        save_essay_to_library(s, application_id, field_id, actor="user")
+        save_essay_to_library(s, application_id, field_id, value or None, actor="user")
     except LookupError as e:
         s.rollback()
         raise HTTPException(404, str(e)) from e
@@ -942,7 +953,8 @@ def stories_page(request: Request, s: Db) -> HTMLResponse:
     used: dict[str, set[str]] = {}
     for app_id, src in s.execute(select(
             FormFieldAnswerRow.application_id, FormFieldAnswerRow.source_fact_id).where(
-            FormFieldAnswerRow.source_fact_id.like("essay:%"))):
+            FormFieldAnswerRow.source_fact_id.like("essay:%")
+            | FormFieldAnswerRow.source_fact_id.like("library:essay_%"))):
         for sid in essay_story_ids(src):
             used.setdefault(sid, set()).add(app_id)
     return _page(request, s, "stories.html", {

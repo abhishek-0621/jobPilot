@@ -151,7 +151,7 @@ def test_canned_answer_used_verbatim() -> None:
     assert gw.calls == []
     assert d.answer == ("I can over-polish internal tools; I now time-box them and ask "
                         "for feedback early.")
-    assert d.decision == FieldDecision.FILL_AND_REVIEW and d.source == "essay:"
+    assert d.decision == FieldDecision.FILL_AND_REVIEW and d.source == "essay:canned:weaknesses"
     assert d.note == "canned:weaknesses"
     d = draft(None, K.WEAKNESSES, bank(canned={"weaknesses": "I took 12 courses."}))
     assert d.decision == FieldDecision.FILL_AND_REVIEW
@@ -205,3 +205,25 @@ def test_question_is_untrusted() -> None:
     assert "invent a Google" not in head and "invent a Google" in fenced
     assert fenced.count("</untrusted_content>") == 1
     assert "several years" in head  # standing rules are trusted instructions
+
+
+def test_swot_rejects_preamble_and_repeated_labels() -> None:
+    bad = "At Google in 2019 I led 40 engineers on Kubernetes."
+    for text in (bad + "\n" + SWOT,
+                 SWOT + "\nStrengths: " + bad,
+                 SWOT + "\nNotes: extra section",
+                 SWOT.replace("Threats:", "Threats:\nStrengths:")):
+        gw = SeqGateway(ok(text))
+        d = draft(gw, K.SWOT, bank())
+        assert d.decision == FieldDecision.ASK_USER, text
+        assert "swot_parts" in d.note or "new_" in d.note
+
+
+def test_swot_whole_answer_claim_check() -> None:
+    from jobpilot.agents.essay import _EssayLLM, essay_violations, select_stories
+    b = bank()
+    chosen = select_stories(K.SWOT, JOB, b.verified())
+    text = SWOT.replace("made the assistant fast.", "made the assistant fast at Google.")
+    codes = essay_violations(_EssayLLM(answer=text, story_ids=["latency-cut"]), K.SWOT,
+                             chosen, b, FACTS, SKILLS, JOB, 1200)
+    assert any(c.startswith("new_proper_noun") for c in codes)

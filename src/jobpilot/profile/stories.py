@@ -175,16 +175,22 @@ def import_stories(s: Session, sf: StoryFile, *, actor: str = "user") -> dict[st
     for pos, story in enumerate(sf.stories):
         h = story.content_hash()
         row = old.get(story.story_id)
+        content_changed = row is None or row.content_hash != h
         if row is None:
             row = StoryRow(story_id=story.story_id)
             s.add(row)
             added += 1
-            keep = False
+            keep = was = False
         else:
-            keep = row.content_hash == h and row.verified_by_user
-            if row.content_hash != h:
+            was = row.verified_by_user
+            keep = not content_changed and was
+            if content_changed:
                 changed += 1
                 touched.add(story.story_id)
+        # the file's flag never re-verifies a story the user unverified in the dashboard,
+        # unless the story changed since
+        file_ok = story.verified and (content_changed
+                                      or not _user_unverified_since(s, row))
         row.position = pos
         row.title = story.title
         row.themes_json = canonical_json([t.value for t in story.themes])
@@ -192,14 +198,24 @@ def import_stories(s: Session, sf: StoryFile, *, actor: str = "user") -> dict[st
         if row.content_hash != h or row.profile_version is None:
             row.updated_at = utcnow()
         row.content_hash = h
-        row.verified_by_user = bool(story.verified or keep)
+        row.verified_by_user = bool(file_ok or keep)
         row.profile_version = version
+        if row.verified_by_user and not was and not keep:
+            s.flush()
+            record_event(s, entity_type="story", entity_id=story.story_id, actor=actor,
+                         action="story_verified", outcome="ok",
+                         details={"story_id": story.story_id, "verified": True,
+                                  "via": "file"})
     removed = sorted(set(old) - {st.story_id for st in sf.stories})
     for sid in removed:
         s.delete(old[sid])
     touched.update(removed)
 
     canned = {k.value: v for k, v in sf.canned.items()}
+    prev = s.get(StoryBankRow, BANK_ID)
+    old_canned = json.loads(prev.canned_json) if prev else {}
+    canned_changed = sorted(k for k in set(old_canned) | set(canned)
+                            if old_canned.get(k) != canned.get(k) and k in old_canned)
     bank_hash = content_hash({"rules": sf.standing_rules, "canned": canned})
     bank = s.get(StoryBankRow, BANK_ID)
     if bank is None:
@@ -210,7 +226,8 @@ def import_stories(s: Session, sf: StoryFile, *, actor: str = "user") -> dict[st
     bank.content_hash = bank_hash
     bank.updated_at = utcnow()
     s.flush()
-    stale = mutations.invalidate_story_answers(s, sorted(touched), reason="story_changed")
+    stale = mutations.invalidate_story_answers(s, sorted(touched), reason="story_changed",
+                                               canned_keys=canned_changed)
     counts = {"stories": len(sf.stories), "added": added, "changed": changed,
               "removed": len(removed), "verified": sum(
                   1 for r in s.execute(select(StoryRow)).scalars() if r.verified_by_user),
@@ -219,6 +236,19 @@ def import_stories(s: Session, sf: StoryFile, *, actor: str = "user") -> dict[st
     record_event(s, entity_type="story_bank", entity_id=BANK_ID, actor=actor,
                  action="stories_imported", outcome="ok", details=counts)
     return counts
+
+
+def _user_unverified_since(s: Session, row: StoryRow) -> bool:
+    """The user unverified this story in the dashboard after its content last changed."""
+    from jobpilot.data.tables import AuditEventRow
+
+    events = s.execute(select(AuditEventRow).where(
+        AuditEventRow.entity_type == "story", AuditEventRow.entity_id == row.story_id,
+        AuditEventRow.action == "story_verified", AuditEventRow.actor == "user")
+        .order_by(AuditEventRow.timestamp_utc.desc())).scalars().first()
+    if events is None or (row.updated_at and events.timestamp_utc < row.updated_at):
+        return False
+    return json.loads(events.redacted_details_json).get("verified") is False
 
 
 def verify_story(s: Session, story_id: str, verified: bool = True, *,
