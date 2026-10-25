@@ -24,7 +24,6 @@ from tests.factories import seed_ready_apps
 from tests.unit.test_outreach_flow import _drafted, cfg, factory  # noqa: F401
 
 
-
 def _hash(s: Session, oid: str) -> str:
     return ApprovalService(s).outreach_hash(oid)
 
