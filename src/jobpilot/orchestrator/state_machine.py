@@ -75,6 +75,8 @@ _OUTREACH: dict[StrEnum, set[StrEnum]] = {
 # is in flight or its outcome is unknown.
 for _s in (O.NOT_ELIGIBLE, O.CONTACT_RESEARCH, O.DRAFT_READY, O.NEEDS_REVIEW, O.APPROVED):
     _OUTREACH[_s] = _OUTREACH[_s] | {O.SKIPPED}
+# A draft skipped for lack of a public contact comes back when the user adds one.
+_OUTREACH[O.SKIPPED] = {O.DRAFT_READY}
 
 TRANSITIONS: dict[type[StrEnum], dict[StrEnum, frozenset[StrEnum]]] = {
     JobStatus: _build(J, {
@@ -110,6 +112,10 @@ RESTRICTED_EDGES: dict[tuple[StrEnum, StrEnum], frozenset[str]] = {
     (A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW): frozenset({"presubmit"}),
     (A.SUBMISSION_IN_PROGRESS, A.NEEDS_USER_INPUT): frozenset({"presubmit"}),
     **{(s, A.DELETED): frozenset({"user"}) for s in TERMINAL_APPLICATION - {A.DELETED}},
+    # JobPilot never sends outreach: only the user's own "Mark as sent" takes these edges.
+    (O.APPROVED, O.SEND_IN_PROGRESS): frozenset({"user"}),
+    (O.SEND_IN_PROGRESS, O.SENT): frozenset({"user"}),
+    (O.SKIPPED, O.DRAFT_READY): frozenset({"user"}),
 }
 # Edges that are illegal once the submit control may have been clicked.
 _NO_CLICK_EDGES = frozenset({(A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW),

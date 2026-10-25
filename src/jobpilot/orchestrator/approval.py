@@ -284,6 +284,10 @@ class ApprovalService:
         draft = self.session.get(OutreachDraftRow, outreach_id)
         if draft is None:
             raise ValueError(f"unknown outreach draft {outreach_id}")
+        if draft.contact_id is None or draft.channel is None:
+            raise ValueError("choose a contact before approving")
+        if draft.status != OutreachStatus.NEEDS_REVIEW:
+            raise ValueError(f"outreach draft is {draft.status}, not NEEDS_REVIEW")
         approval = ApprovalRow(
             approval_id=new_id("apr"), batch_id=outreach_id, batch_version=1,
             kind=ApprovalKind.OUTREACH.value, content_hash=current,
