@@ -19,7 +19,7 @@ TIMEOUT_S = 20.0
 
 
 class RawPosting(Contract):
-    source: Literal["greenhouse", "lever"]
+    source: Literal["greenhouse", "lever", "ashby", "smartrecruiters", "workday"]
     source_job_id: str
     company: str
     title: str

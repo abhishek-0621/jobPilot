@@ -36,8 +36,10 @@ from jobpilot.data.tables import (
     MatchAssessmentRow,
 )
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
+from jobpilot.discovery.sources.ashby import AshbySource
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
+from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
 from jobpilot.documents.validate import (
     BANNED_PATH,
     TECH_TERMS_PATH,
@@ -348,7 +350,12 @@ def build_runtime(
     http = client if client is not None else httpx.AsyncClient()
     prefs = Provided(lambda: load_search_preferences(cfg))
     tools: dict[str, Any] = {
-        "sources": {"greenhouse": GreenhouseSource(http), "lever": LeverSource(http)},
+        "sources": {
+            "greenhouse": GreenhouseSource(http),
+            "lever": LeverSource(http),
+            "ashby": AshbySource(http),
+            "smartrecruiters": SmartRecruitersSource(http),
+        },
         "prefs": prefs,
         "companies": Provided(lambda: load_companies(cfg)),
         "clock": clock,

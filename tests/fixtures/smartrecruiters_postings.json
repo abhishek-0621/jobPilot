@@ -1,0 +1,19 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 2,
+  "content": [
+    {
+      "id": "744000000000001",
+      "name": "ML Engineer",
+      "ref": "https://api.smartrecruiters.com/v1/companies/samplelabs/postings/744000000000001",
+      "location": {"city": "Bengaluru", "country": "in", "remote": false}
+    },
+    {
+      "id": "744000000000002",
+      "name": "Data Engineer",
+      "ref": "https://api.smartrecruiters.com/v1/companies/samplelabs/postings/744000000000002",
+      "location": {"city": "Pune", "country": "in", "remote": true}
+    }
+  ]
+}

@@ -1,14 +1,17 @@
 """Search preferences and company boards; storage/ overrides committed examples."""
 
+import re
 from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, field_validator
 
 from jobpilot.config import AppConfig
 
 CONFIG_DIR = Path("config")
+_SAFE = r"^[A-Za-z0-9_-]{1,64}$"
+_SAFE_RE = re.compile(_SAFE)
 
 
 class SearchPreferences(BaseModel):
@@ -24,8 +27,17 @@ class SearchPreferences(BaseModel):
 
 class CompanyBoard(BaseModel):
     name: str
-    source: Literal["greenhouse", "lever"]
-    token: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
+    source: Literal["greenhouse", "lever", "ashby", "smartrecruiters", "workday"]
+    token: Annotated[str, StringConstraints(pattern=_SAFE)]
+    extra: dict[str, str] = {}
+
+    @field_validator("extra")
+    @classmethod
+    def _extra_safe(cls, v: dict[str, str]) -> dict[str, str]:
+        for k, val in v.items():
+            if not _SAFE_RE.fullmatch(k) or not _SAFE_RE.fullmatch(val):
+                raise ValueError("extra keys and values must match [A-Za-z0-9_-]{1,64}")
+        return v
 
 
 def _pick(cfg: AppConfig, override: str, default: str) -> Path:
