@@ -250,3 +250,32 @@ async def test_discover_handler_requeues_match_for_unmatched_jobs(
         s.commit()
         follow = discover_handler(s, task, out)
         assert follow == [(TaskKind.MATCH, "job", jobs[0].job_id)]
+
+
+class _ManySource:
+    """Returns ``n`` matching postings for whichever board it is asked about."""
+    source = "greenhouse"
+
+    def __init__(self, sizes: dict[str, int]) -> None:
+        self.sizes = sizes
+
+    async def list_postings(self, board: CompanyBoard) -> list[RawPosting]:
+        return [RawPosting(source="greenhouse", source_job_id=f"{board.token}-{i}",
+                           canonical_url=f"https://example.com/{board.token}/{i}",
+                           company=board.name, title="AI Engineer", location="Bengaluru",
+                           description_html="<p>x</p>", application_url=None, posted_at=None)
+                for i in range(self.sizes[board.token])]
+
+
+async def test_discover_shares_the_cap_fairly_across_boards() -> None:
+    big = CompanyBoard(name="Big Co", source="greenhouse", token="bigco")
+    small = CompanyBoard(name="Tiny AI", source="greenhouse", token="tinyai")
+    prefs = PREFS.model_copy(update={"max_jobs_per_run": 4})
+    out = await DiscoverAgent().run(_inp(), _ctx(
+        {"greenhouse": _ManySource({"bigco": 50, "tinyai": 2})}, [big, small], prefs))
+    assert sorted(lst.company for lst in out.listings) == ["Big Co", "Big Co", "Tiny AI", "Tiny AI"]
+    assert out.fetched == 52
+
+
+def test_discover_agent_declares_a_long_timeout() -> None:
+    assert DiscoverAgent.timeout_s >= 1800

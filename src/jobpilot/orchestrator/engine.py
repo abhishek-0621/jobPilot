@@ -365,9 +365,15 @@ class Orchestrator:
                                   if k in declared})
         inp = TaskInput(task_id=task.task_id, kind=kind, entity_type=task.entity_type,
                         entity_id=task.entity_id, attempt=task.attempts)
+        timeout_s = float(getattr(agent, "timeout_s", self._agent_timeout_s))
+        if timeout_s + 60 > self._lease.total_seconds():
+            # A long-running agent (discovery) keeps its lease for its whole time budget,
+            # so the reaper does not re-queue it while it is still working.
+            task.lease_until = self._clock() + timedelta(seconds=timeout_s + 60)
+            s.commit()
         started = time.monotonic()
         try:
-            output = await asyncio.wait_for(agent.run(inp, ctx), self._agent_timeout_s)
+            output = await asyncio.wait_for(agent.run(inp, ctx), timeout_s)
         except (ModelError, TimeoutError) as e:
             code = e.code if isinstance(e, ModelError) else ErrorCode.MODEL_TIMEOUT
             self._record_run(s, task, agent, AgentRunStatus.FAILED, started, code)
