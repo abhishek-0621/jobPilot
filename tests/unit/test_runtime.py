@@ -51,7 +51,7 @@ def test_build_runtime_registers_kinds(factory: sessionmaker[Session], tmp_path:
     assert set(rt.adapters) == {"simulated"}
     assert set(rt.tools["sources"]) == {"greenhouse", "lever", "ashby", "smartrecruiters",
                                            "workday", "himalayas", "remotive", "remoteok", "jobicy",
-                                           "workingnomads"}
+                                           "workingnomads", "weworkremotely"}
     for kind, agent in rt.agents.items():
         assert set(agent.tools) <= set(rt.tools), kind
     assert not rt.owns_client

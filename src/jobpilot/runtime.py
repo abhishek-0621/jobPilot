@@ -49,6 +49,7 @@ from jobpilot.discovery.sources.lever import LeverSource
 from jobpilot.discovery.sources.remoteok import RemoteOKSource
 from jobpilot.discovery.sources.remotive import RemotiveSource
 from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
+from jobpilot.discovery.sources.weworkremotely import WeWorkRemotelySource
 from jobpilot.discovery.sources.workday import WorkdaySource
 from jobpilot.discovery.sources.workingnomads import WorkingNomadsSource
 from jobpilot.documents.model import split_skills
@@ -407,6 +408,7 @@ def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
         # public remote-job boards (prefs.remote_boards); always the manual apply path
         "himalayas": HimalayasSource(client),
         "remotive": RemotiveSource(client),
+        "weworkremotely": WeWorkRemotelySource(client),
         "remoteok": RemoteOKSource(client),
         "jobicy": JobicySource(client),
         "workingnomads": WorkingNomadsSource(client),
