@@ -16,12 +16,13 @@ _WHERE = "kind = 'DISCOVER' AND status IN ('QUEUED', 'RUNNING')"
 
 
 def upgrade() -> None:
-    # Pre-existing duplicates (the old check-then-insert race): keep a RUNNING one if any,
-    # else the oldest QUEUED one, and cancel the other QUEUED duplicates.
+    # Pre-existing duplicates (the old check-then-insert race): keep one active row (the
+    # oldest RUNNING one, else the oldest QUEUED one) and cancel every other QUEUED or
+    # RUNNING DISCOVER row. No worker runs during a migration.
     op.execute(
-        "UPDATE task SET status = 'CANCELLED' WHERE kind = 'DISCOVER' AND status = 'QUEUED' "
+        "UPDATE task SET status = 'CANCELLED' WHERE " + _WHERE + " "
         "AND task_id != (SELECT task_id FROM task WHERE " + _WHERE + " "
-        "ORDER BY status = 'RUNNING' DESC, task_id LIMIT 1)")
+        "ORDER BY status = 'RUNNING' DESC, rowid LIMIT 1)")
     op.create_index('uq_task_active_discover', 'task', ['kind'], unique=True,
                     sqlite_where=sa.text(_WHERE))
 

@@ -11,8 +11,11 @@ import ipaddress
 import re
 import socket
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
+
+import httpcore
+import httpx
 
 from jobpilot.contracts.models import Contract
 from jobpilot.discovery.normalize import html_to_text, require_http
@@ -196,15 +199,68 @@ async def resolve_host(host: str) -> list[str]:
     return [str(i[4][0]) for i in infos]
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
 def _public_ip(addr: str) -> bool:
+    """Globally routable unicast only (rejects private, CGNAT 100.64/10, loopback, link-
+    local, reserved...); IPv6 forms that embed an IPv4 address must embed a global one."""
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
-                or ip.is_reserved or ip.is_unspecified)
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded: list[ipaddress.IPv4Address] = []
+        if ip.ipv4_mapped is not None:
+            embedded.append(ip.ipv4_mapped)
+        if ip in _NAT64:
+            embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        if ip.sixtofour is not None:
+            embedded.append(ip.sixtofour)
+        if ip.teredo is not None:
+            embedded += list(ip.teredo)
+        if embedded:
+            return all(e.is_global and not e.is_multicast for e in embedded)
+    return ip.is_global and not ip.is_multicast
+
+
+class PinnedBackend(httpcore.AsyncNetworkBackend):
+    """Resolves the host itself, refuses unless every address is public, and connects to
+    the address it checked (TLS still uses the original host name for SNI and
+    certificates). This closes the DNS-rebinding gap between check and connect."""
+
+    def __init__(self, resolve: Resolver | None = None,
+                 inner: httpcore.AsyncNetworkBackend | None = None) -> None:
+        self._resolve = resolve
+        self._inner = inner or httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host: str, port: int, timeout: float | None = None,
+                          local_address: str | None = None,
+                          socket_options: Any = None) -> httpcore.AsyncNetworkStream:
+        try:
+            addrs = await (self._resolve or resolve_host)(host)
+        except (OSError, UnicodeError) as e:
+            raise httpcore.ConnectError(f"cannot resolve {host}") from e
+        if not addrs or not all(_public_ip(a) for a in addrs):
+            raise httpcore.ConnectError(f"{host} resolves to a non-public address")
+        return await self._inner.connect_tcp(addrs[0], port, timeout=timeout,
+                                             local_address=local_address,
+                                             socket_options=socket_options)
+
+    async def connect_unix_socket(self, path: str, timeout: float | None = None,
+                                  socket_options: Any = None) -> httpcore.AsyncNetworkStream:
+        raise httpcore.ConnectError("unix sockets are not allowed")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def pinned_client() -> httpx.AsyncClient:
+    """An httpx client whose every connection goes through ``PinnedBackend`` (no proxy)."""
+    transport = httpx.AsyncHTTPTransport()
+    transport._pool = httpcore.AsyncConnectionPool(  # only way to set the network backend
+        ssl_context=httpx.create_ssl_context(), network_backend=PinnedBackend())
+    return httpx.AsyncClient(transport=transport)
 
 
 async def resolves_public(host: str, resolve: Resolver) -> bool:

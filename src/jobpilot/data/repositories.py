@@ -1,4 +1,4 @@
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, literal_column, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -121,7 +121,9 @@ def assessments_for(s: Session, job_ids: list[str] | None = None,
                     version: int | None = None) -> dict[str, MatchAssessmentRow]:
     """One query: per job, the assessment for ``version`` (the active profile version)
     when there is one, else its latest. ``job_ids`` None means every job."""
-    q = select(MatchAssessmentRow).order_by(MatchAssessmentRow.profile_version)
+    # profile_version is part of the key; rowid breaks any tie toward the newest row.
+    q = select(MatchAssessmentRow).order_by(MatchAssessmentRow.profile_version,
+                                            literal_column("match_assessment.rowid"))
     if job_ids is not None:
         q = q.where(MatchAssessmentRow.job_id.in_(job_ids))
     out: dict[str, MatchAssessmentRow] = {}

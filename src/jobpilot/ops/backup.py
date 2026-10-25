@@ -34,6 +34,8 @@ TOP_FILES = ("db.sqlite", "manifest.json")
 # Restore extraction caps, checked from the tar headers before anything is written.
 MAX_RESTORE_BYTES = 20 * 1024**3
 MAX_RESTORE_MEMBERS = 200_000
+MAX_RESTORE_RATIO = 20  # uncompressed bytes per archive byte
+MIN_RESTORE_CAP_BYTES = 1024**3  # the ratio cap never goes below 1 GB
 
 
 class RestoreError(RuntimeError):
@@ -261,9 +263,11 @@ def _extract_verified(archive: Path, dest: Path) -> None:
             raise RestoreError(f"archive has too many members ({len(members)} > "
                                f"{MAX_RESTORE_MEMBERS})")
         total = sum(m.size for m in members if m.isfile())
-        if total > MAX_RESTORE_BYTES:
+        cap = min(MAX_RESTORE_BYTES, max(MAX_RESTORE_RATIO * archive.stat().st_size,
+                                         MIN_RESTORE_CAP_BYTES))
+        if total > cap:
             raise RestoreError(f"archive is too large to restore ({total:,} bytes > "
-                               f"{MAX_RESTORE_BYTES:,})")
+                               f"{cap:,})")
         tar.extractall(dest, members=members, filter="data")
     mpath = dest / "manifest.json"
     if not mpath.is_file() or not (dest / "db.sqlite").is_file():

@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
@@ -78,6 +78,11 @@ def start_discovery(s: Session, orch: Orchestrator) -> tuple[str, str]:
     except IntegrityError:
         s.rollback()
         raise ActionConflict(DISCOVERY_RUNNING) from None
+    except OperationalError as e:
+        if "locked" not in str(e).lower():
+            raise
+        s.rollback()
+        raise ActionConflict("The database is busy; try starting discovery again.") from None
     s.commit()
     return task_id, run_id
 
