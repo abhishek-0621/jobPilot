@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -661,3 +662,27 @@ def test_concurrent_leases_each_task_once(tmp_path: Path) -> None:
     assert sorted(got[0] + got[1]) == sorted(ids)
     for e in engines:
         e.dispose()
+
+
+async def test_agent_timeout_s_overrides_default_and_extends_lease(factory) -> None:
+    class SlowAgent(StubAgent):
+        timeout_s = 5.0
+
+        async def run(self, inp: Any, ctx: AgentContext) -> Any:
+            await asyncio.sleep(0.2)
+            return await super().run(inp, ctx)
+
+    clock = FakeClock()
+    seen: list[Any] = []
+
+    def handler(s: Session, t: TaskRow, out: Any) -> list:
+        seen.append(s.get(TaskRow, t.task_id).lease_until)
+        return []
+
+    orch = make_orch(factory, clock, {TaskKind.MATCH: SlowAgent(good_output)},
+                     handlers={TaskKind.MATCH: handler}, agent_timeout_s=0.05,
+                     lease_seconds=1)
+    tid = orch.enqueue(TaskKind.MATCH, "job", seed_job(factory))
+    await orch.run_once()
+    assert task(factory, tid).status == TaskStatus.SUCCEEDED.value
+    assert seen and seen[0] >= T0 + timedelta(seconds=60)

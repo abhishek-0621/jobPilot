@@ -1,5 +1,6 @@
 """DISCOVER: fetch public boards, prefilter, persist listings, enqueue EXTRACT."""
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -53,6 +54,7 @@ class DiscoverAgent:
     prompt_version = "none"
     output_model = DiscoverOutput
     tools = ("sources", "prefs", "companies", "clock")
+    timeout_s = 1800  # dozens of boards at >=1 s per host plus detail calls
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> DiscoverOutput:
         sources: dict[str, SourceAdapter] = ctx.tools["sources"]
@@ -63,61 +65,65 @@ class DiscoverAgent:
         listings: list[JobListing] = []
         fetched = skipped = 0
 
-        def keep(postings: list[RawPosting]) -> None:
-            nonlocal skipped
-            for p in postings:
-                if len(listings) >= prefs.max_jobs_per_run:
-                    break
-                ok, _reason = prefilter(p, prefs)
-                if not ok:
-                    continue
-                try:
-                    listings.append(_to_listing(p, ctx.task_id, clock()))
-                except (ValidationError, ValueError):
-                    skipped += 1
-
-        for board in companies:
-            if len(listings) >= prefs.max_jobs_per_run:
-                break
+        async def fetch_board(board: CompanyBoard) -> tuple[str, list[RawPosting] | str]:
             key = f"{board.source}:{board.token}"
             adapter = sources.get(board.source)
             if adapter is None:
-                status[key] = "unsupported_source"
-                continue
+                return key, "unsupported_source"
             try:
-                if getattr(adapter, "supports_max_postings", False):
-                    postings = await adapter.list_postings(  # type: ignore[call-arg]
-                        board, max_postings=prefs.max_jobs_per_run)
-                else:
-                    postings = await adapter.list_postings(board)
+                async with gate:
+                    if getattr(adapter, "supports_max_postings", False):
+                        return key, await adapter.list_postings(  # type: ignore[call-arg]
+                            board, max_postings=prefs.max_jobs_per_run)
+                    return key, await adapter.list_postings(board)
             except SourceError as e:
-                status[key] = e.code.value
-                continue
-            status[key] = "ok"
-            fetched += len(postings)
-            keep(postings)
-        for name in prefs.remote_boards:  # public remote boards: one feed, many companies
-            if len(listings) >= prefs.max_jobs_per_run:
-                break
+                return key, e.code.value
+
+        async def fetch_remote(name: str) -> tuple[str, list[RawPosting] | str]:
             key = f"board:{name}"
             remote = sources.get(name)
             if remote is None or getattr(remote, "kind", None) != "remote_board":
-                status[key] = "unsupported_source"
-                continue
+                return key, "unsupported_source"
             try:
-                postings = await remote.list_board(  # type: ignore[attr-defined]
-                    max_postings=prefs.max_jobs_per_run)
+                async with gate:
+                    return key, await remote.list_board(  # type: ignore[attr-defined]
+                        max_postings=prefs.max_jobs_per_run)
             except SourceError as e:
-                status[key] = e.code.value
+                return key, e.code.value
+
+        # Boards on different hosts are fetched concurrently (each adapter still rate-limits
+        # per host). Results keep board order so the run stays deterministic.
+        gate = asyncio.Semaphore(BOARD_CONCURRENCY)
+        results = await asyncio.gather(*[fetch_board(b) for b in companies],
+                                       *[fetch_remote(n) for n in prefs.remote_boards])
+        queues: list[list[RawPosting]] = []
+        for key, res in results:
+            if isinstance(res, str):
+                status[key] = res
                 continue
             status[key] = "ok"
-            fetched += len(postings)
-            keep(postings)
+            fetched += len(res)
+            eligible = [p for p in res if prefilter(p, prefs)[0]]
+            if eligible:
+                queues.append(eligible)
+        # Round-robin across boards so a large employer cannot use up the whole
+        # max_jobs_per_run before smaller companies get a turn.
+        depth = 0
+        while len(listings) < prefs.max_jobs_per_run and any(depth < len(q) for q in queues):
+            for q in queues:
+                if depth >= len(q) or len(listings) >= prefs.max_jobs_per_run:
+                    continue
+                try:
+                    listings.append(_to_listing(q[depth], ctx.task_id, clock()))
+                except (ValidationError, ValueError):
+                    skipped += 1
+            depth += 1
         return DiscoverOutput(task_id=ctx.task_id, created_at=clock(), run_id=inp.entity_id,
                               listings=listings, source_status=status, fetched=fetched,
                               skipped=skipped)
 
 
+BOARD_CONCURRENCY = 8
 REMATCH_LIMIT = 200
 
 
