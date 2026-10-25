@@ -334,7 +334,9 @@ async def test_delete_app_removes_contacts_and_drafts(factory, cfg) -> None:
 
 async def test_contact_retention_prunes(factory, cfg) -> None:
     app_id, outreach_id = await _drafted(factory, cfg)
+    from jobpilot.api.actions import skip_outreach
     with factory() as s:
+        skip_outreach(s, outreach_id)  # contacts of drafts under review are kept
         fresh_app = seed_app(s, company="Initech")
         s.add(ContactCandidateRow(contact_id="con_fresh", company="Initech", name="x",
                                   public_source_url="https://initech.example/careers",

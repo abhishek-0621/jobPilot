@@ -31,8 +31,7 @@ from jobpilot.orchestrator.state_machine import transition
 from jobpilot.outreach.contacts import (
     USER_CONFIDENCE,
     FoundContact,
-    _slug_matches,
-    domain_matches,
+    email_domain_ok,
     public_http_url,
 )
 from jobpilot.profile.importer import _DEFAULT_DECISION, _decision_defaults, active_profile
@@ -323,9 +322,7 @@ def add_contact(s: Session, outreach_id: str, *, name: str, title: str | None,
         m = _EMAIL.fullmatch(address)
         if m is None:
             raise ValueError("enter a valid email address")
-        ok = domain_matches(m.group(1), company_domain) if company_domain is not None \
-            else _slug_matches(m.group(1), company)
-        if not ok:
+        if not email_domain_ok(m.group(1), company_domain, company):
             raise ValueError("email must be on the company's own domain")
         address = address.lower()
     elif channel == "linkedin":

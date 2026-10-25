@@ -27,9 +27,22 @@ INBOX_LOCAL_PARTS = frozenset({"careers", "jobs", "recruiting", "recruitment", "
 _RANK = {"user": 0, "posting_named": 1, "posting_inbox": 2, "careers_inbox": 2}
 
 # ATS / job-board hosts: never the company's own domain.
-NON_COMPANY_HOSTS = ("greenhouse.io", "lever.co", "ashbyhq.com", "smartrecruiters.com",
-                     "myworkdayjobs.com", "workday.com", "linkedin.com", "naukri.com",
-                     "indeed.com", "glassdoor.com", "glassdoor.co.in")
+NON_COMPANY_HOSTS = (
+    "greenhouse.io", "lever.co", "ashbyhq.com", "smartrecruiters.com", "myworkdayjobs.com",
+    "myworkdaysite.com", "workday.com", "jobvite.com", "workable.com", "icims.com",
+    "bamboohr.com", "recruitee.com", "taleo.net", "breezy.hr", "wellfound.com",
+    "angel.co", "jazzhr.com", "applytojob.com", "teamtailor.com", "personio.de",
+    "personio.com", "rippling.com", "rippling-ats.com", "dover.com", "dover.io", "keka.com",
+    "darwinbox.in", "darwinbox.com", "zohorecruit.com", "zohorecruit.in", "freshteam.com",
+    "successfactors.com", "successfactors.eu", "oraclecloud.com", "pinpointhq.com",
+    "comeet.com", "comeet.co", "recruiterbox.com", "hire.trakstar.com", "jobscore.com",
+    "hirehive.com", "gem.com", "notion.site", "google.com", "forms.gle", "typeform.com",
+    "github.io", "github.com", "herokuapp.com", "vercel.app", "netlify.app", "pages.dev",
+    "web.app", "firebaseapp.com", "wixsite.com", "squarespace.com", "webflow.io",
+    "linkedin.com", "naukri.com", "indeed.com", "glassdoor.com", "glassdoor.co.in",
+    "instahyre.com", "iimjobs.com", "hirist.com", "cutshort.io", "foundit.in",
+    "monster.com", "ziprecruiter.com", "gmail.com", "outlook.com", "yahoo.com",
+    "hotmail.com")
 _SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
 
 _EMAIL_RE = re.compile(
@@ -102,10 +115,22 @@ def _is_ip(host: str) -> bool:
     return True
 
 
-def _keep(domain: str, company_dom: str | None, company: str | None) -> bool:
-    if company_dom is not None:
-        return domain_matches(domain, company_dom)
+def third_party(domain: str) -> bool:
+    return _host_in(domain.lower().rstrip("."), NON_COMPANY_HOSTS)
+
+
+def email_domain_ok(domain: str, company_dom: str | None, company: str | None) -> bool:
+    """Accept an email domain only when it is the company's own: it matches the company
+    domain and is not a known ATS/platform/mail host; otherwise the slug check."""
+    if third_party(domain):
+        return False
+    if company_dom is not None and not third_party(company_dom) \
+            and domain_matches(domain, company_dom):
+        return True
     return company is not None and _slug_matches(domain, company)
+
+
+_keep = email_domain_ok
 
 
 def extract_from_posting(text: str, company_dom: str | None, *, company: str | None = None,
@@ -153,11 +178,12 @@ def public_http_url(url: str | None) -> str | None:
 
 
 async def fetch_careers_inbox(url: str | None, fetcher: RateLimitedFetcher,
-                              company_dom: str | None) -> list[FoundContact]:
+                              company_dom: str | None, company: str | None = None
+                              ) -> list[FoundContact]:
     """One GET of the careers page; ``mailto:`` links with an allowlisted local part on the
     company domain. Any fetch error yields no contacts."""
     url = public_http_url(url)
-    if url is None or company_dom is None:
+    if url is None or (company_dom is None and company is None):
         return []
     try:
         html = await fetcher.get_text(url)
@@ -171,7 +197,7 @@ async def fetch_careers_inbox(url: str | None, fetcher: RateLimitedFetcher,
             continue
         local, domain = m.group(1).lower(), m.group(2).lower().strip(".")
         address = f"{local}@{domain}"
-        if local not in INBOX_LOCAL_PARTS or not domain_matches(domain, company_dom) \
+        if local not in INBOX_LOCAL_PARTS or not email_domain_ok(domain, company_dom, company) \
                 or address in seen:
             continue
         seen.add(address)

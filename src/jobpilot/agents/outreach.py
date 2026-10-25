@@ -14,6 +14,7 @@ from importlib import resources
 from typing import Any
 
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.agents.cover_letter import _LETTER_WORDS, _mask
@@ -102,12 +103,21 @@ def _day(applied_on: str | None) -> str | None:
     return f"{d.day} {d.strftime('%B')} {d.year}"
 
 
+def _clean(text: str) -> bool:
+    return bool(text.strip()) and not _PLACEHOLDER_RE.search(text) \
+        and not _CONTACT_RE.search(text)
+
+
 def opening(role: str, company: str, applied_on: str | None) -> str:
-    """The first sentence; a date appears only when one was recorded."""
+    """The first sentence; a date appears only when one was recorded. The job's untrusted
+    title/company are replaced by neutral words when they carry placeholders or contact
+    details."""
+    what = f"the {role.strip()} role" if _clean(role) else "the role"
+    where = company.strip() if _clean(company) else "the company"
     day = _day(applied_on)
     if day is None:
-        return f"I recently applied for the {role} role at {company}."
-    return f"I applied for the {role} role at {company} on {day}."
+        return f"I recently applied for {what} at {where}."
+    return f"I applied for {what} at {where} on {day}."
 
 
 def compose(first: str, sentences: list[str], full_name: str) -> str:
@@ -327,10 +337,18 @@ def make_outreach_handler(cfg: AppConfig) -> Handler:
                 CandidateFactRow.verified_by_user.is_(True))}
             if any(i not in verified for i in out.evidence_fact_ids):
                 raise OutputRejected("unverified_fact")
-        draft = mutations.create_outreach_draft(
-            s, application_id=app.application_id, company=job.company, company_key=key,
-            campaign_id=campaign, contacts=out.contacts, message_text=out.message_text,
-            actor=_ACTOR)
+        try:
+            with s.begin_nested():
+                draft = mutations.create_outreach_draft(
+                    s, application_id=app.application_id, company=job.company,
+                    company_key=key, campaign_id=campaign, contacts=out.contacts,
+                    message_text=out.message_text, actor=_ACTOR)
+        except IntegrityError:  # (company_key, campaign_id) taken: one draft per company
+            record_event(s, entity_type="application", entity_id=app.application_id,
+                         actor=_ACTOR, action=DUPLICATE_EVENT, outcome="skipped",
+                         details={"application_id": app.application_id,
+                                  "outreach_id": None})
+            return []
         transition(s, draft, OutreachStatus.CONTACT_RESEARCH, actor=_ACTOR,
                    reason="research_started")
         if not out.contacts:

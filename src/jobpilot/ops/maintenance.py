@@ -15,7 +15,12 @@ from sqlalchemy.orm import Session
 from jobpilot.config import AppConfig
 from jobpilot.data.db import make_engine, make_session_factory, utcnow
 from jobpilot.data.mutations import detach_contacts
-from jobpilot.data.tables import ApplicationRow, ContactCandidateRow, DocumentArtifactRow
+from jobpilot.data.tables import (
+    ApplicationRow,
+    ContactCandidateRow,
+    DocumentArtifactRow,
+    OutreachDraftRow,
+)
 from jobpilot.observability.events import last_event, record_event
 from jobpilot.ops.backup import pre_restore_dirs, restore_marker
 from jobpilot.ops.lock import ops_lock
@@ -90,6 +95,10 @@ def _prune_pre_restore(cfg: AppConfig, cutoff: datetime) -> int:
     return n
 
 
+# Contacts a draft still needs (the user has not finished with it) are never pruned.
+_UNDER_REVIEW = ("DRAFT_READY", "NEEDS_REVIEW", "APPROVED")
+
+
 def _prune_contacts(engine: Engine, s: Session, cutoff: datetime) -> int:
     """Remove old contacts researched for finished applications; drafts that pointed at
     them are unbound first (their approval is revoked). Drafts and events stay."""
@@ -103,7 +112,10 @@ def _prune_contacts(engine: Engine, s: Session, cutoff: datetime) -> int:
     ids = list(s.execute(select(ContactCandidateRow.contact_id).where(
         ContactCandidateRow.created_at < cutoff,
         ContactCandidateRow.application_id.in_(select(ApplicationRow.application_id).where(
-            ApplicationRow.status.in_(terminal))))).scalars())
+            ApplicationRow.status.in_(terminal))),
+        ContactCandidateRow.contact_id.not_in(select(OutreachDraftRow.contact_id).where(
+            OutreachDraftRow.contact_id.is_not(None),
+            OutreachDraftRow.status.in_(_UNDER_REVIEW))))).scalars())
     if not ids:
         return 0
     detach_contacts(s, ids, reason="retention")

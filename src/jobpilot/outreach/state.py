@@ -6,6 +6,7 @@ leads to outreach, so no draft ever refers to an application that was not made.
 """
 
 import json
+import re
 from datetime import date
 
 from sqlalchemy import select
@@ -59,8 +60,19 @@ def recorded_applied_on(s: Session, app: ApplicationRow) -> str | None:
     return None
 
 
+_SUFFIXES = frozenset({"inc", "llc", "ltd", "limited", "pvt", "private", "gmbh", "corp",
+                       "corporation", "co", "plc", "technologies", "technology", "labs",
+                       "india", "ai", "software", "solutions", "group", "sa", "bv", "ag",
+                       "llp", "company"})
+
+
 def company_key(company: str) -> str:
-    return company_slug(company) or company.casefold().strip()
+    """Normalized company identity for dedupe: legal/common suffixes are dropped
+    ("Acme, Inc." == "Acme"), keeping at least one token."""
+    tokens = re.findall(r"[a-z0-9]+", company.casefold())
+    while len(tokens) > 1 and tokens[-1] in _SUFFIXES:
+        tokens.pop()
+    return "".join(tokens) or company_slug(company) or company.casefold().strip()
 
 
 def app_company_key(s: Session, app: ApplicationRow) -> str | None:
