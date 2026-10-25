@@ -27,8 +27,8 @@ something is wrong.
 - Nothing is submitted until you approve a review batch in the dashboard; the approval is
   bound to the exact content hash you saw, so anything that changes afterwards must be
   re-reviewed.
-- Approved applications go to a **simulated** portal only. No real applications or outreach
-  messages are ever sent.
+- Approved applications go to a **simulated** portal only. No real applications are sent,
+  and JobPilot never sends outreach messages (it only drafts them for you).
 - The dashboard shows status counts, pending approvals, the job feed (with links to the
   original listings) and the full activity log.
 
@@ -162,6 +162,28 @@ Never automated:
 
 Screenshots and documents live under `storage/artifacts/<application_id>/`
 (`form_vN.png`, `resume_vN.pdf`, ...), are served only through `/artifacts`, and stay local.
+
+## Recruiter outreach
+
+After you have really applied (you clicked **Mark as applied**, or a live submission was
+confirmed), JobPilot drafts one short note to a public recruiting contact at that company
+and puts it in the **Outreach** page. It **never sends anything**: no email, no LinkedIn,
+no browser. You review the draft, approve it, send it yourself (copy, **Open in your mail
+app**, or **Open profile** for LinkedIn) and then click **Mark as sent**.
+
+- Contacts come only from public sources: an email published in the job posting or a
+  `careers@`/`jobs@`/`recruiting@`-style inbox on the company's careers page, always on
+  the company's own domain. Addresses are never guessed. Add the optional careers page to a
+  board in `companies.yaml` as `extra: {careers_url: "https://www.example.com/careers"}`.
+- LinkedIn recruiters get in only when you add them yourself on the draft page.
+- If nothing public is found the draft says "No suitable public contact found"; adding a
+  contact brings it back to review.
+- The note uses only your verified facts (no new numbers, tools, names or claims) and is at
+  most 120 words. Editing it or switching the contact revokes your approval.
+- One draft per company per campaign (`outreach.campaign` in `config/app.yaml`, default
+  `default`). Set `outreach.auto_draft: false` to draft only when you click **Draft
+  outreach** on an application.
+- Dry-run (simulated) submissions never get outreach.
 
 ## Going live
 

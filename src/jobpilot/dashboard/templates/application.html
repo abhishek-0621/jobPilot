@@ -13,6 +13,9 @@
 {% if submission.shot %}<p><a href="/artifacts/{{ submission.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Submission evidence screenshot</a></p>{% endif %}
 {% if submission.error_code or submission.error_codes %}<p>Error evidence: {% if submission.error_code %}<span class="warn">{{ submission.error_code }}</span>{% endif %}{% for c in submission.error_codes %}<span class="warn">{{ c }}</span>{% endfor %}</p>{% endif %}
 {% if app.status == "SUBMISSION_UNCERTAIN" or app.status == "SUBMISSION_FAILED" %}<p><a href="/ui/uncertain">Resolve on the Uncertain page</a></p>{% endif %}
+<h2>Recruiter outreach</h2>
+<p>Recruiter contacted: {{ outreach }}{% if outreach_draft %} · <a href="/ui/outreach/{{ outreach_draft.outreach_id }}">Outreach draft</a>{% endif %}</p>
+{% if can_draft_outreach %}<form method="post" action="/ui/applications/{{ app.application_id }}/outreach"><button type="submit">Draft outreach</button> <span class="muted">Finds a public recruiting contact and drafts a short note for you to review. JobPilot never sends it.</span></form>{% endif %}
 <h2>Resume</h2>
 {% if resume %}
 <p class="muted">Version {{ resume.version }}{% if docx %} · <a href="/artifacts/{{ docx.artifact_id }}" download>Download DOCX</a>{% endif %} · <a href="/artifacts/{{ resume.artifact_id }}" target="_blank" rel="noopener noreferrer">Open PDF</a></p>
