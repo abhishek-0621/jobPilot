@@ -154,3 +154,76 @@ async def test_dry_run_portal_not_listed_stays_simulated(
             DocumentArtifactRow.type == "submit_confirmation")).first() is None
     assert form_posts == []  # simulated: the fixture never saw a request
     assert clicks == []
+
+
+async def _rerun_with(p: Pipeline, cfg: AppConfig, live: list[str]) -> None:
+    """Restart with live mode flipped and drain the queued SUBMIT."""
+    cfg2 = cfg.model_copy(update={"live_portals": live})
+    rt = build_runtime(cfg2, p.factory, client=p.runtime.client)
+    orch = Orchestrator(p.factory, cfg2, rt.agents, {"simulated": p.adapter},
+                        handlers=rt.handlers, gateway=p.gateway,  # type: ignore[arg-type]
+                        tools=rt.tools, submitter_factory=rt.submitter_factory)
+    await orch.run_until_idle()
+
+
+def _gate_reasons(p: Pipeline, app_id: str) -> list[str]:
+    with p.factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.status == "APPROVED"
+        task = s.execute(select(TaskRow).where(
+            TaskRow.kind == TaskKind.SUBMIT.value)).scalar_one()
+        assert task.status == "FAILED"
+        ev = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "gate_denied")).scalar_one()
+        return list(json.loads(ev.redacted_details_json)["reasons"])
+
+
+async def test_simulated_request_never_runs_live_after_flip(
+        pipe: Pipeline, form_server: str, form_posts: list[str]) -> None:  # noqa: F811
+    client, cfg, app_id, batch_id, _ = await _run(pipe, form_server, [])
+    assert client.post(f"/ui/batches/{batch_id}/submit").status_code == 200
+    with pipe.factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.submit_live_intent is None
+        ev = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "submit_requested")).scalar_one()
+        assert json.loads(ev.redacted_details_json)["live"] == {app_id: False}
+    await _rerun_with(pipe, cfg, ["greenhouse"])  # user flips live on and restarts
+    assert _gate_reasons(pipe, app_id) == ["live_intent_missing"]
+    assert form_posts == []
+
+
+async def test_live_request_never_silently_simulated_after_flip(
+        pipe: Pipeline, form_server: str, form_posts: list[str]) -> None:  # noqa: F811
+    client, cfg, app_id, batch_id, _ = await _run(pipe, form_server, ["greenhouse"])
+    assert client.post(f"/ui/batches/{batch_id}/submit",
+                       data={"confirm": "SUBMIT"}).status_code == 200
+    with pipe.factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.submit_live_intent == "greenhouse"
+        ev = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "submit_requested")).scalar_one()
+        assert json.loads(ev.redacted_details_json)["live"] == {app_id: True}
+    await _rerun_with(pipe, cfg, [])  # user flips live off and restarts
+    assert _gate_reasons(pipe, app_id) == ["live_mode_off"]
+    assert form_posts == []
+
+
+async def test_orphan_requeue_without_live_intent_is_gate_denied(
+        pipe: Pipeline, form_server: str, form_posts: list[str]) -> None:  # noqa: F811
+    client, cfg, app_id, batch_id, _ = await _run(pipe, form_server, [])
+    assert client.post(f"/ui/batches/{batch_id}/submit").status_code == 200
+    with pipe.factory() as s:  # the SUBMIT task is gone: only the request remains
+        for t in s.execute(select(TaskRow).where(
+                TaskRow.kind == TaskKind.SUBMIT.value)).scalars():
+            s.delete(t)
+        s.commit()
+    cfg2 = cfg.model_copy(update={"live_portals": ["greenhouse"]})
+    rt = build_runtime(cfg2, pipe.factory, client=pipe.runtime.client)
+    orch = Orchestrator(pipe.factory, cfg2, rt.agents, {"simulated": pipe.adapter},
+                        handlers=rt.handlers, gateway=pipe.gateway,  # type: ignore[arg-type]
+                        tools=rt.tools, submitter_factory=rt.submitter_factory)
+    orch.recover_on_startup()  # re-queues the requested submit
+    await orch.run_until_idle()
+    assert _gate_reasons(pipe, app_id) == ["live_intent_missing"]
+    assert form_posts == []

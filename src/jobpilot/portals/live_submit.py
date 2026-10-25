@@ -185,9 +185,9 @@ class LiveSubmitter:
                 app_id = s.execute(select(AuditEventRow.entity_id).where(
                     AuditEventRow.action == SUBMIT_CLICKED,
                     AuditEventRow.redacted_details_json.contains(
-                        click_needle(idempotency_key))).limit(1)).scalar_one()
+                        click_needle(idempotency_key))).limit(1)).scalar()
         return SubmitResult(task_id=idempotency_key, created_at=datetime.now(UTC),
-                            application_id=app_id, status=_A.SUBMISSION_UNCERTAIN,
+                            application_id=app_id or "", status=_A.SUBMISSION_UNCERTAIN,
                             error_code=ErrorCode.SUBMIT_NO_CONFIRMATION.value,
                             retry_allowed=False, next_action="check_application_history")
 

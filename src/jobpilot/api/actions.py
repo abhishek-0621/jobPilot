@@ -26,7 +26,7 @@ from jobpilot.observability.events import (
     prior_unresolved_click,
     record_event,
 )
-from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
 from jobpilot.orchestrator.state_machine import transition
@@ -162,7 +162,7 @@ def request_submit(s: Session, orch: Orchestrator, batch_id: str,
                    cfg: AppConfig) -> list[str]:
     """User action: submit approved applications of a batch. Marks submit_requested_at
     and queues SUBMIT for each in one transaction. Live portals need ``confirm ==
-    "SUBMIT"``. Returns the queued ids. Commits.
+    "SUBMIT"``, which records the live intent. Returns the queued ids. Commits.
 
     Raises LookupError / ActionConflict / ConfirmationRequired."""
     if s.execute(select(ApprovalBatchRow.batch_id)
@@ -181,11 +181,18 @@ def request_submit(s: Session, orch: Orchestrator, batch_id: str,
     try:
         for app in eligible:
             app.submit_requested_at = now
+            # Live intent is recorded only with the typed confirmation for a portal that
+            # is live now; the engine refuses to run live (or to simulate) without a match.
+            app.submit_live_intent = (app.portal if app.portal in live
+                                      and confirm == CONFIRM_WORD else None)
             orch.enqueue_in(s, TaskKind.SUBMIT, "application", app.application_id)
         ids = [a.application_id for a in eligible]
         record_event(s, entity_type="approval_batch", entity_id=batch_id, actor="user",
                      action="submit_requested", outcome="ok",
-                     details={"application_ids": ids})
+                     details={"application_ids": ids,
+                              "portals": {a.application_id: a.portal for a in eligible},
+                              "live": {a.application_id: a.submit_live_intent is not None
+                                       for a in eligible}})
         s.commit()  # the request and its SUBMIT tasks become durable together
     except Exception:
         s.rollback()
@@ -239,6 +246,7 @@ def prepare_again(s: Session, orch: Orchestrator, application_id: str) -> str:
         raise ActionConflict(f"Only failed submissions can be prepared again "
                              f"(status is {app.status}).")
     ApprovalService(s).invalidate_application(application_id, "prepare_again")
+    forget_live_intent(app)  # invalidation already did; explicit for a non-approved app
     app.submit_requested_at = None
     app.form_snapshot_hash = None
     app.idempotency_key = None

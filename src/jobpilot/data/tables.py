@@ -102,6 +102,8 @@ class ApplicationRow(Base):
     confirmation_reference: Mapped[str | None] = mapped_column(String, nullable=True)
     form_snapshot_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     submit_requested_at: Mapped[datetime | None] = _ts(nullable=True)
+    # portal named when the user typed SUBMIT while that portal was live; else None
+    submit_live_intent: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class DocumentArtifactRow(Base):

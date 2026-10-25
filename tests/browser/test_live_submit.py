@@ -78,6 +78,7 @@ async def seed_approved(factory: sessionmaker[Session], cfg: AppConfig, url: str
         job = s.get(JobRow, app.job_id)
         assert job is not None
         job.application_url, job.source, app.portal = url, portal, portal
+        app.submit_live_intent = portal  # stands in for the typed SUBMIT request
         art_dir = cfg.storage_path / "artifacts" / app.application_id
         art_dir.mkdir(parents=True)
         resume = art_dir / "resume_v1.pdf"
@@ -463,6 +464,7 @@ def _prepare_again_and_reapprove(factory: sessionmaker[Session], app_id: str,
         svc = ApprovalService(s)
         batch = svc.build_batch([app_id])
         svc.approve(batch.batch_id, batch.version, batch.content_hash or "", [app_id])
+        app.submit_live_intent = app.portal  # the user re-requests with SUBMIT
         s.commit()
 
 
@@ -510,3 +512,21 @@ async def test_prepare_again_submits_once_more_only_after_user_resolution(
         assert form_posts == ["/submit_noconfirm"]
         assert len(clicks) == 1
         assert [d["reasons"] for d in denied] == [["prior_click"]]
+
+
+async def test_prepare_again_clears_live_intent(
+        factory: sessionmaker[Session], tmp_path: Path) -> None:
+    from jobpilot.api.actions import prepare_again
+
+    cfg = live_cfg(tmp_path)
+    with factory() as s:
+        app = make_app_row(s, status="SUBMISSION_FAILED")
+        app.submit_live_intent = "greenhouse"
+        app_id = app.application_id
+        s.commit()
+    orch = Orchestrator(factory, cfg, {}, {"simulated": SimulatedAdapter()})
+    with factory() as s:
+        prepare_again(s, orch, app_id)
+    with factory() as s:
+        row = s.get(ApplicationRow, app_id)
+        assert row is not None and row.submit_live_intent is None

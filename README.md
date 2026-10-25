@@ -125,6 +125,12 @@ Real submission needs **two independent switches**, both edited by hand in
 Either one alone keeps every submission simulated. Restart JobPilot after editing; a red
 bar at the top of every page lists the portals that submit for real.
 
+Switching live mode on (or off) does not affect submissions already requested. A request
+made while a portal was simulated never runs live, and one confirmed with `SUBMIT` never
+silently runs simulated: such a queued submit stops (`live_intent_missing` /
+`live_mode_off`), the application stays `APPROVED`, and you press *Submit approved
+applications* again (typing `SUBMIT` for a live portal).
+
 What happens when you press *Submit approved applications* for a live portal:
 
 - You must type `SUBMIT` to confirm; the server rejects the request otherwise.

@@ -49,7 +49,7 @@ from jobpilot.observability.events import (
     record_event,
     submit_click_recorded,
 )
-from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.policies import PolicyConfig, may_send_outreach, may_submit
 from jobpilot.orchestrator.state_machine import transition
 from jobpilot.portals.base import (
@@ -167,7 +167,10 @@ def add_task(
 
 
 def _submit_action(s: Session, app: ApplicationRow) -> str:
-    """Idempotency action per attempt: a user-resolved "not submitted" starts a new one."""
+    """Idempotency action per attempt: a user-resolved "not submitted" starts a new one.
+
+    Pairs with ``prior_unresolved_click``: a click is only "resolved" by the same
+    USER_RESOLVED_NOT_SUBMITTED event counted here, so a new key never re-clicks blindly."""
     n = len(s.execute(select(AuditEventRow.event_id).where(
         AuditEventRow.entity_type == "application",
         AuditEventRow.entity_id == app.application_id,
@@ -404,6 +407,18 @@ class Orchestrator:
     async def _run_submit(self, s: Session, task: TaskRow) -> None:
         app = get_application(s, task.entity_id)
         adapter, simulated = self._adapter_for(app)
+        # The run-time config must match the intent recorded with the request: never run
+        # live without a typed SUBMIT for live, never simulate a request meant to be real.
+        # The application stays APPROVED; the user re-requests.
+        intent_ok = app.submit_live_intent is not None and app.submit_live_intent == app.portal
+        if not simulated and not intent_ok:
+            self._fail(s, task, "gate_denied", {"reasons": ["live_intent_missing"]})
+            s.commit()
+            return
+        if simulated and app.submit_live_intent is not None:
+            self._fail(s, task, "gate_denied", {"reasons": ["live_mode_off"]})
+            s.commit()
+            return
         if self._cfg.dry_run and not isinstance(adapter, SimulatedAdapter):
             self._fail(s, task, "gate_denied", {"reasons": ["dry_run"]})
             s.commit()
@@ -696,6 +711,7 @@ class Orchestrator:
                 log.warning("approved app %s already has a recorded click", app_id)
                 continue  # defensive: a click is never repeated
             if svc.active_approval_for(app_id) is None:
+                forget_live_intent(get_application(s, app_id))
                 transition(s, get_application(s, app_id), ApplicationStatus.READY_FOR_REVIEW,
                            actor=_ACTOR, reason="approval_item_revoked")
             elif app_id not in live and get_application(s, app_id).submit_requested_at:
