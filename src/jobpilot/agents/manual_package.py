@@ -62,7 +62,7 @@ def first_paragraph(letter: str | None) -> str | None:
     if not letter:
         return None
     parts = [p.strip() for p in letter.split("\n\n") if p.strip()]
-    return parts[1] if len(parts) > 2 else (parts[0] if parts else None)
+    return parts[1] if len(parts) >= 2 else (parts[0] if parts else None)
 
 
 def package_answers(company: str, role: str, mctx: MappingContext) -> list[FieldAnswer]:

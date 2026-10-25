@@ -3,7 +3,7 @@ profile.importer and data.mutations."""
 
 import json
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -17,15 +17,19 @@ from sqlalchemy.orm import Session
 from jobpilot.agents.form_prep import answer_rows, unresolved_required
 from jobpilot.api.actions import (
     ANSWERABLE_STATUSES,
+    MANUAL_STATUSES,
     ActionConflict,
     ConfirmationRequired,
     add_manual_job,
     approve_batch,
+    mark_applied,
+    not_applying,
     prepare_again,
     regenerate_documents,
     request_submit,
     reread_form,
     resolve_uncertain,
+    save_manual_answers,
     save_user_answers,
     select_job,
     start_discovery,
@@ -69,6 +73,7 @@ from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
 
+MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
 NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
 UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
@@ -166,9 +171,13 @@ def _library_fields(aliases_path: Path) -> list[dict[str, str]]:
 
 
 def _counts(s: Session) -> dict[str, Any]:
+    apps = counts_by_status(s, ApplicationRow)
+    auto = apps.get(ApplicationStatus.CONFIRMED.value, 0)
+    manual = apps.get(ApplicationStatus.SUBMITTED_BY_USER.value, 0)
     return {
+        "applied": {"total": auto + manual, "automated": auto, "manual": manual},
         "sections": [
-            ("Applications", counts_by_status(s, ApplicationRow)),
+            ("Applications", apps),
             ("Jobs", counts_by_status(s, JobRow)),
             ("Batches", counts_by_status(s, ApprovalBatchRow)),
             ("Outreach", counts_by_status(s, OutreachDraftRow)),
@@ -228,13 +237,16 @@ def jobs(request: Request, s: Db, status: str | None = None,
     version = _active_version(s)
     selected = {a.job_id: a.application_id
                 for a in s.execute(select(ApplicationRow)).scalars()}
+    app_status = {a.job_id: a.status for a in s.execute(select(ApplicationRow)).scalars()}
     rows = []
     for job, _score in jobs_with_scores(s, status or None):
         if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
                 and status != JobStatus.DUPLICATE.value:
             continue
         m = _assessment(s, job.job_id, version)
-        rows.append({"job": job, "score": None if m is None else m.total_score,
+        rows.append({"job": job, "label": MANUAL_APPLIED_LABEL if app_status.get(
+                         job.job_id) == ApplicationStatus.SUBMITTED_BY_USER.value
+                     else job.status, "score": None if m is None else m.total_score,
                      "application_id": selected.get(job.job_id),
                      "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
                      "selectable": job.status == JobStatus.MATCHED.value
@@ -447,6 +459,94 @@ async def save_answers_ui(request: Request, application_id: str, s: Db,
     except ActionConflict as e:
         raise HTTPException(409, str(e)) from e
     return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
+
+
+def _text_value(raw_json: str) -> str:
+    value = json.loads(raw_json)
+    return "" if value is None or value == "" else _display(value)
+
+
+def _manual_app(s: Session, application_id: str) -> ApplicationRow:
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    return app
+
+
+@router.get("/ui/applications/{application_id}/apply", response_class=HTMLResponse)
+def apply_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
+    app = _manual_app(s, application_id)
+    if app.status not in MANUAL_STATUSES:
+        raise HTTPException(409, f"No manual apply page for status {app.status}")
+    rows = []
+    for r in answer_rows(s, application_id):
+        rows.append({"field_id": r.field_id, "label": r.label, "decision": r.decision,
+                     "value": _text_value(r.proposed_value_json),
+                     "editable": user_editable(r.decision, r.field_type)})
+    return _page(request, s, "apply.html", {
+        "app": app, "job": s.get(JobRow, app.job_id), "rows": rows,
+        "resume": _latest_artifact(s, application_id, "resume"),
+        "docx": _latest_artifact(s, application_id, "resume_docx"),
+        "cover": _latest_artifact(s, application_id, "cover_letter"),
+        "letter": _artifact_text(request, _latest_artifact(
+            s, application_id, "cover_letter_text")),
+        "ready": app.status == ApplicationStatus.MANUAL_APPLY_READY.value,
+        "today": date.today().isoformat()})
+
+
+@router.post("/ui/applications/{application_id}/apply/answers")
+async def save_manual_answers_ui(request: Request, application_id: str,
+                                 s: Db) -> RedirectResponse:
+    form = await request.form()
+    rows = {r.field_id: r for r in answer_rows(s, application_id)}
+    values: dict[str, str] = {}
+    for key, raw in form.items():
+        if not key.startswith("v:") or not isinstance(raw, str):
+            continue
+        row = rows.get(key[2:])
+        if row is None:  # unknown field: the action refuses it
+            values[key[2:]] = raw.strip()
+        elif raw.strip() != _text_value(row.proposed_value_json):
+            values[row.field_id] = raw.strip()
+    try:
+        save_manual_answers(s, application_id, values)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/apply", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/mark-applied")
+def mark_applied_ui(application_id: str, s: Db, reference: Annotated[str, Form()] = "",
+                    applied_on: Annotated[str, Form()] = "") -> RedirectResponse:
+    try:
+        day = date.fromisoformat(applied_on.strip()) if applied_on.strip() else None
+        mark_applied(s, application_id, reference, day)
+    except ValueError as e:
+        s.rollback()
+        raise HTTPException(422, str(e)) from e
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except (ActionConflict, IllegalTransition) as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/apply", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/not-applying")
+def not_applying_ui(application_id: str, s: Db) -> RedirectResponse:
+    try:
+        not_applying(s, application_id)
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except (ActionConflict, IllegalTransition) as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}", status_code=303)
 
 
 @router.post("/ui/applications/{application_id}/reread")

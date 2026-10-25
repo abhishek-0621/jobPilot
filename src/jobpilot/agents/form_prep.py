@@ -74,13 +74,8 @@ def make_form_opener(cfg: AppConfig) -> FormOpener:
     return open_form
 
 
-MANUAL_MODE = "manual_apply_mode"
-
-
 def form_url(app: dict[str, Any]) -> str:
-    """The form to open; refuses (before any browser opens) apps on the manual path."""
-    if apply_mode(app) != "automated":
-        raise OutputRejected(MANUAL_MODE)
+    """The form to open; the registry refuses (before any browser opens) manual-path apps."""
     try:
         return registry_form_url(app)
     except PortalConfigError as e:
@@ -246,7 +241,7 @@ def prepare_form_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         raise OutputRejected("not_form_in_progress")
     job = s.get(JobRow, app.job_id)
     if job is None or apply_mode(job) != "automated":
-        raise OutputRejected(MANUAL_MODE)
+        raise OutputRejected("manual_apply_mode")
     stale = stale_follow_up(s, task, app.application_id,
                             _doc_versions(s, app, out.profile_version), _ACTOR)
     if stale is not None:

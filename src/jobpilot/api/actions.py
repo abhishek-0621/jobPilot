@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -82,9 +83,13 @@ def add_manual_job(s: Session, orch: Orchestrator, *, url: str, title: str, comp
     job_id = row.canonical_job_id or row.job_id
     if created and row.canonical_job_id is None:
         orch.enqueue_in(s, TaskKind.EXTRACT, "job", row.job_id)
+    details: dict[str, Any] = {"job_id": row.job_id, "canonical_job_id": job_id}
+    existing = s.get(JobRow, job_id)
+    if existing is not None and existing.source != MANUAL_SOURCE:
+        details |= {"matched_existing": True, "existing_source": existing.source}
     record_event(s, entity_type="job", entity_id=job_id, actor="user",
                  action="job_added_manually", outcome="ok" if created else "known",
-                 details={"job_id": row.job_id, "canonical_job_id": job_id})
+                 details=details)
     s.commit()
     return job_id
 
@@ -360,3 +365,67 @@ def reread_form(s: Session, orch: Orchestrator, application_id: str) -> str:
     task_id = orch.enqueue_in(s, TaskKind.PREPARE_FORM, "application", application_id)
     s.commit()
     return task_id
+
+
+MAX_REFERENCE_CHARS = 100
+MANUAL_STATUSES = (ApplicationStatus.MANUAL_APPLY_READY.value,
+                   ApplicationStatus.SUBMITTED_BY_USER.value)
+
+
+def _manual_ready(s: Session, application_id: str, what: str) -> ApplicationRow:
+    app = _app(s, application_id)
+    if app.status != ApplicationStatus.MANUAL_APPLY_READY.value:
+        raise ActionConflict(f"{what} (status is {app.status}).")
+    return app
+
+
+def mark_applied(s: Session, application_id: str, reference: str | None,
+                 applied_on: date | None) -> None:
+    """The user states they applied themselves: MANUAL_APPLY_READY -> SUBMITTED_BY_USER
+    (actor "user", no evidence). The optional reference is stored; the event keeps ids,
+    whether a reference was given and the date only. Commits.
+
+    Raises LookupError / ActionConflict (wrong status or already marked) / ValueError
+    (reference over 100 chars, date in the future)."""
+    ref = (reference or "").strip()
+    if len(ref) > MAX_REFERENCE_CHARS:
+        raise ValueError(f"Reference must be at most {MAX_REFERENCE_CHARS} characters")
+    if applied_on is not None and applied_on > utcnow().date():
+        raise ValueError("Applied date cannot be in the future")
+    app = _manual_ready(s, application_id, "Only manual applications ready to apply can be "
+                        "marked as applied")
+    transition(s, app, ApplicationStatus.SUBMITTED_BY_USER, actor="user",
+               reason="marked_applied")
+    app.confirmation_reference = ref or None
+    record_event(s, entity_type="application", entity_id=application_id, actor="user",
+                 action="user_marked_applied", outcome="ok",
+                 details={"application_id": application_id, "job_id": app.job_id,
+                          "has_reference": bool(ref),
+                          "applied_on": applied_on.isoformat() if applied_on else None})
+    s.commit()
+
+
+def not_applying(s: Session, application_id: str) -> None:
+    """The user will not apply: MANUAL_APPLY_READY -> REJECTED_BY_USER. Commits."""
+    app = _manual_ready(s, application_id, "Only manual applications ready to apply can be "
+                        "dropped")
+    transition(s, app, ApplicationStatus.REJECTED_BY_USER, actor="user",
+               reason="user_not_applying")
+    s.commit()
+
+
+def save_manual_answers(s: Session, application_id: str, values: dict[str, str]) -> None:
+    """Store the user's edits to drafted answers (source "user"; the decision and the
+    application status stay as they are). Commits.
+
+    Raises LookupError / ActionConflict (status, unknown or non-editable field)."""
+    _manual_ready(s, application_id, "Answers can only be edited before you mark the "
+                  "application as applied")
+    rows = {r.field_id: r for r in answer_rows(s, application_id)}
+    for fid, value in values.items():
+        row = rows.get(fid)
+        if row is None or not user_editable(row.decision, row.field_type):
+            s.rollback()
+            raise ActionConflict(f"Field {fid} cannot be edited here.")
+        set_answer(s, application_id, fid, value, actor="user", source_fact_id=USER_SOURCE)
+    s.commit()

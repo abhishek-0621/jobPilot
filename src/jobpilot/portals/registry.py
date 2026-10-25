@@ -32,7 +32,7 @@ def allowed_hosts(adapter_cls: type[PlaywrightFormAdapter], url: str) -> set[str
     return hosts
 
 
-def form_url(app: dict[str, Any]) -> str:
+def _raw_form_url(app: dict[str, Any]) -> str:
     url = app.get("application_url")
     if url:
         return str(url)
@@ -41,6 +41,14 @@ def form_url(app: dict[str, Any]) -> str:
     if cls is None or not canonical:
         raise PortalConfigError("no_application_url")
     return cls.apply_url(str(canonical))
+
+
+def form_url(app: dict[str, Any]) -> str:
+    """Where the form lives. Raises PortalConfigError for an application that must take
+    the manual path, so no caller can open a browser for it."""
+    if apply_mode(app) != "automated":
+        raise PortalConfigError("manual_apply_mode")
+    return _raw_form_url(app)
 
 
 AUTOMATED_SOURCES = frozenset({"greenhouse", "lever", "ashby"})
@@ -62,7 +70,7 @@ def apply_mode(job: Any) -> str:
     if data.get("source") not in AUTOMATED_SOURCES:
         return "manual"
     try:
-        url = form_url(data)
+        url = _raw_form_url(data)
     except PortalConfigError:
         return "manual"
     host = urlsplit(url).hostname or ""
