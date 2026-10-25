@@ -366,3 +366,79 @@ async def test_weak_evidence_is_uncertain(
     assert form_posts == [post]
     app, _task, events = _state(factory, app_id)
     assert app.status == "SUBMISSION_UNCERTAIN" and _clicks(events) == 1
+
+
+def _force_approved(factory: sessionmaker[Session], app_id: str) -> None:
+    """Simulate a bug that puts a clicked application back in APPROVED."""
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None
+        app.status = "APPROVED"
+        s.commit()
+
+
+@pytest.mark.parametrize(("confirm_s", "timeout_s"), [
+    (1.0, 120.0),  # detect_confirmation gives up: SUBMIT_NO_CONFIRMATION
+    (30.0, 8.0),  # the engine's wait_for fires first: SUBMIT_TIMEOUT
+])
+async def test_timeout_uncertain_no_second_click(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str], confirm_s: float, timeout_s: float) -> None:
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg,
+                                 f"{form_server}/greenhouse_submit_noconfirm.html")
+    loader = make_submit_loader(factory, cfg.storage_path)
+    made: list[LiveSubmitter] = []
+
+    def submitter(portal: str) -> LiveSubmitter:
+        made.append(LiveSubmitter(cfg, portal, loader, make_before_click(factory), factory,
+                                  confirm_timeout_s=confirm_s, timeout_s=timeout_s))
+        return made[-1]
+
+    await run_submit(factory, cfg, app_id, submitter)
+    assert form_posts == ["/submit_noconfirm"]
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.status == "SUBMISSION_UNCERTAIN"
+        key = app.idempotency_key
+    assert key is not None
+    existing = await made[-1].find_existing_submission(key)
+    assert existing is not None and existing.status == "SUBMISSION_UNCERTAIN"
+
+    _force_approved(factory, app_id)
+    calls: list[str] = []
+    orig = LiveSubmitter.submit
+
+    async def spy(self: LiveSubmitter, a: object) -> object:
+        calls.append("submit")
+        return await orig(self, a)  # type: ignore[arg-type]
+
+    LiveSubmitter.submit = spy  # type: ignore[method-assign,assignment]
+    try:
+        await run_submit(factory, cfg, app_id, submitter)
+    finally:
+        LiveSubmitter.submit = orig  # type: ignore[method-assign]
+    assert calls == [] and form_posts == ["/submit_noconfirm"]
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.status == "SUBMISSION_UNCERTAIN"
+        clicks = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "submit_clicked")).scalars().all()
+    assert len(clicks) == 1
+
+
+async def test_crash_after_click_is_uncertain(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    async def boom(self: object, *args: object) -> None:
+        raise RuntimeError("injected fault after click")
+
+    monkeypatch.setattr(GreenhouseAdapter, "detect_confirmation", boom)
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg, f"{form_server}/greenhouse_submit.html")
+    await run_submit(factory, cfg, app_id, _quick(cfg, factory))
+    assert form_posts == ["/submit_ok"]
+    app, task, events = _state(factory, app_id)
+    assert app.status == "SUBMISSION_UNCERTAIN" and task.status == "FAILED"
+    assert _clicks(events) == 1
+    assert any(e.action == "submit_error" for e in events)

@@ -425,13 +425,14 @@ class Orchestrator:
                               "simulated": simulated})
         s.commit()  # write-ahead: never act before this is durable
 
+        timeout_s = getattr(adapter, "timeout_s", self._adapter_timeout_s)
         try:
             result = await asyncio.wait_for(
-                adapter.find_existing_submission(key), self._adapter_timeout_s)
+                adapter.find_existing_submission(key), timeout_s)
             if result is None:
                 result = await asyncio.wait_for(adapter.submit(ApprovedApplication(
                     application_id=app.application_id, approved_hash=approved_hash or "",
-                    idempotency_key=key)), self._adapter_timeout_s)
+                    idempotency_key=key)), timeout_s)
         except TimeoutError:
             transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
                        reason="submit_timeout")
@@ -534,6 +535,11 @@ class Orchestrator:
                                    "evidence_artifact_id": evidence_id}
         if r.error_codes:
             details["error_codes"] = r.error_codes
+        if (r.status is ApplicationStatus.SUBMISSION_FAILED
+                and submit_click_recorded(s, app.idempotency_key)):
+            # a click happened: a "failed" page cannot prove nothing was submitted
+            r = r.model_copy(update={"status": ApplicationStatus.SUBMISSION_UNCERTAIN})
+            details["coerced"] = "failed_coerced_after_click"
         if r.status in (ApplicationStatus.SUBMITTED, ApplicationStatus.CONFIRMED):
             transition(s, app, ApplicationStatus.SUBMITTED, actor=_ACTOR,
                        reason="submitted", details=details)
@@ -543,7 +549,7 @@ class Orchestrator:
         elif r.status in (ApplicationStatus.SUBMISSION_UNCERTAIN,
                           ApplicationStatus.SUBMISSION_FAILED):
             transition(s, app, ApplicationStatus(r.status), actor=_ACTOR,
-                       reason="adapter_result", details=details)
+                       reason=details.get("coerced", "adapter_result"), details=details)
         elif r.status is not ApplicationStatus.SUBMITTED:
             raise ValueError(f"unexpected submit status {r.status!r}")
         app.confirmation_reference = r.confirmation_reference
@@ -662,6 +668,9 @@ class Orchestrator:
         ).order_by(ApplicationRow.application_id)).scalars().all()
         svc = ApprovalService(s)
         for app_id in apps:
+            if submit_click_recorded(s, get_application(s, app_id).idempotency_key):
+                log.warning("approved app %s already has a recorded click", app_id)
+                continue  # defensive: a click is never repeated
             if svc.active_approval_for(app_id) is None:
                 transition(s, get_application(s, app_id), ApplicationStatus.READY_FOR_REVIEW,
                            actor=_ACTOR, reason="approval_item_revoked")

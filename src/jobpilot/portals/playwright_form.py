@@ -207,7 +207,8 @@ _ERROR_SEL = '.error, [aria-invalid="true"]'
 _MARK = "data-jp-baseline"
 
 # Error elements present before the click get a marker; only unmarked ones with text
-# can later mean FAILED (a new document has no markers, but needs non-empty text).
+# count as new page errors (recorded as error codes; the outcome is still UNCERTAIN,
+# never FAILED). A new document has no markers, but needs non-empty text.
 _MARK_ERRORS_JS = "() => { document.querySelectorAll('" + _ERROR_SEL \
     + "').forEach(e => e.setAttribute('" + _MARK + "', '1')); }"
 

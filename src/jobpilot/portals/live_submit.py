@@ -42,6 +42,7 @@ from jobpilot.portals.registry import ADAPTERS, allowed_hosts, form_url
 _A = ApplicationStatus
 _SHOT_RE = re.compile(r"^submit_v(\d+)\.png$")
 CONFIRM_TIMEOUT_S = 30.0
+LIVE_SUBMIT_TIMEOUT_S = 120.0  # engine wait_for budget for one live submit
 
 
 @dataclass
@@ -86,8 +87,10 @@ def documents_current(ctx: SubmitContext) -> bool:
 class LiveSubmitter:
     def __init__(self, cfg: AppConfig, portal: str, loader: SubmitLoader,
                  before_click: BeforeClick, session_factory: sessionmaker[Session],
-                 *, confirm_timeout_s: float = CONFIRM_TIMEOUT_S) -> None:
+                 *, confirm_timeout_s: float = CONFIRM_TIMEOUT_S,
+                 timeout_s: float = LIVE_SUBMIT_TIMEOUT_S) -> None:
         self.cfg = cfg
+        self.timeout_s = timeout_s
         self.name = portal
         self._loader = loader
         self._before_click = before_click

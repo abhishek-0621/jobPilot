@@ -606,3 +606,86 @@ async def test_outreach_send_live_mode_gate_denied(factory) -> None:
         assert d is not None and d.status == "APPROVED" and d.evidence_ref is None
         assert "send_started" not in [e.action for e in list_events(s, "o1")]
     assert task(factory, tid).status == TaskStatus.FAILED
+
+
+def _record_click(factory: sessionmaker[Session], app_id: str, key: str) -> None:
+    from jobpilot.portals.live_submit import make_before_click
+    with factory() as s:
+        get_application(s, app_id).idempotency_key = key
+        s.commit()
+    make_before_click(factory)(app_id, key)
+
+
+@pytest.mark.parametrize("clicked", [True, False])
+async def test_restart_with_inflight_live_submit_uncertain(factory, clicked: bool) -> None:
+    """Crash after (or before: unprovable) the click: UNCERTAIN, never re-run."""
+    from jobpilot.contracts.enums import ApplicationStatus
+    from jobpilot.orchestrator.state_machine import transition
+
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+    adapter = SimulatedAdapter()
+    orch = make_orch(factory, clock, adapter=adapter)
+    tid = orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    with factory() as s:
+        transition(s, get_application(s, app_id), ApplicationStatus.SUBMISSION_IN_PROGRESS,
+                   actor="system", reason="test")
+        t = s.get(TaskRow, tid)
+        t.status, t.lease_until = TaskStatus.RUNNING.value, T0 - timedelta(seconds=1)  # type: ignore[union-attr]
+        s.commit()
+    if clicked:
+        _record_click(factory, app_id, "key-live-1")
+    assert orch.recover_on_startup() == [tid]
+    await orch.run_until_idle()
+    with factory() as s:
+        assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
+        submits = s.execute(select(TaskRow).where(TaskRow.kind == "SUBMIT")).scalars().all()
+    assert [t.task_id for t in submits] == [tid]
+    assert task(factory, tid).status == TaskStatus.FAILED
+    assert adapter.submit_calls == 0
+
+
+async def test_orphan_sweep_skips_clicked(factory) -> None:
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+    _record_click(factory, app_id, "key-live-2")
+    orch = make_orch(factory, clock)
+    orch.recover_on_startup()
+    with factory() as s:
+        assert s.execute(select(TaskRow).where(TaskRow.kind == "SUBMIT")).first() is None
+        assert get_application(s, app_id).status == "APPROVED"
+
+
+class _ClickThenFail(SimulatedAdapter):
+    """Records the click like LiveSubmitter, then reports a FAILED page."""
+
+    def __init__(self, factory: sessionmaker[Session]) -> None:
+        super().__init__()
+        self._factory = factory
+
+    async def submit(self, approved_application: Any) -> Any:
+        from jobpilot.contracts.enums import ApplicationStatus
+        from jobpilot.contracts.models import SubmitResult
+        from jobpilot.portals.live_submit import make_before_click
+        self.submit_calls += 1
+        make_before_click(self._factory)(approved_application.application_id,
+                                         approved_application.idempotency_key)
+        return SubmitResult(task_id=approved_application.idempotency_key, created_at=T0,
+                            application_id=approved_application.application_id,
+                            status=ApplicationStatus.SUBMISSION_FAILED,
+                            retry_allowed=False, next_action="none")
+
+
+async def test_failed_result_coerced_after_click(factory) -> None:
+    clock = FakeClock()
+    app_id = seed_approved_app(factory)
+    adapter = _ClickThenFail(factory)
+    orch = make_orch(factory, clock, adapter=adapter)
+    orch.enqueue(TaskKind.SUBMIT, "application", app_id)
+    await orch.run_until_idle()
+    with factory() as s:
+        assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
+        reasons = [e.redacted_details_json for e in list_events(s, app_id)
+                   if e.action == "status_changed"]
+    assert adapter.submit_calls == 1
+    assert any("failed_coerced_after_click" in r for r in reasons)
