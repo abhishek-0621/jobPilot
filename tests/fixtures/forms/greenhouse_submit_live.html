@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Application form</title></head>
+<body>
+<h1>Apply for Backend Engineer</h1>
+
+<form id="application_form" method="post" action="/submit_noop" enctype="multipart/form-data">
+  <div class="field"><label for="first_name">First Name *</label>
+    <input type="text" id="first_name" name="first_name" required></div>
+  <div class="field"><label for="email">Email *</label>
+    <input type="email" id="email" name="email" required></div>
+  <div class="field"><label for="resume">Resume/CV *</label>
+    <input type="file" id="resume" name="resume"></div>
+  <div class="error" id="live" aria-live="polite"></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<script>
+const form = document.getElementById('application_form');
+form.addEventListener('submit', e => {  // the page submits in place and stays
+  e.preventDefault();
+  const live = document.getElementById('live');
+  live.textContent = 'Saving…';
+  fetch(form.action, {method: 'POST', body: new FormData(form)})
+    .then(() => setTimeout(() => { live.textContent = ''; }, 1500));
+});
+</script>
+</body></html>

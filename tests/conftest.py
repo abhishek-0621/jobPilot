@@ -92,7 +92,8 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _FORMS = Path(__file__).resolve().parent / "fixtures" / "forms"
 
 
-_REDIRECTS = {"/submit_ok": "/confirmation.html", "/submit_thanks": "/thank-you.html"}
+_REDIRECTS = {"/submit_ok": "/confirmation.html", "/submit_thanks": "/thank-you.html",
+              "/submit_listing": "/jobs-board.html"}
 _POST_PAGES = {
     "/submit_keep": (
         '<!doctype html><html><body><form id="application_form"><div class="error"></div>'
@@ -122,8 +123,9 @@ def form_posts() -> list[str]:
 def form_server(form_posts: list[str]) -> Iterator[str]:
     """Serve tests/fixtures/forms on 127.0.0.1 (ephemeral port); yields the base URL.
     Every POST is recorded in ``form_posts``. POST /submit_ok (/submit_thanks) redirects
-    (303) to /confirmation.html (/thank-you.html), /submit_noop redirects back to the
-    Referer (same page), /submit_noconfirm a neutral page, /submit_keep a page keeping an empty
+    (303) to /confirmation.html (/thank-you.html), /submit_listing to /jobs-board.html,
+    /submit_noop back to the Referer (same page), /submit_noconfirm a neutral page,
+    /submit_keep a page keeping an empty
     ``.error`` box, /submit_error the form again with a visible error; else 405.
     GET /jobs/submitted-roles/1 serves greenhouse_submit_noop.html."""
     class Recording(_QuietHandler):

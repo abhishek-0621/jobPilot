@@ -335,3 +335,28 @@ async def test_preexisting_error_box_is_not_failure(
     assert form_posts == [post]
     app, _task, _events = _state(factory, app_id)
     assert app.status == status
+
+
+@pytest.mark.parametrize(("page", "post"), [
+    # static "Thank you for your interest" h1; the form renders late after the no-op POST
+    ("greenhouse_submit_interest.html", "/submit_noop"),
+    # redirect to a form-less listing whose h1 says "submitted"
+    ("greenhouse_submit_listing.html", "/submit_listing"),
+    # a pre-existing live error region shows "Saving..." then clears; the page stays
+    ("greenhouse_submit_live.html", "/submit_noop"),
+])
+async def test_weak_evidence_is_uncertain(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str], page: str, post: str) -> None:
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg, f"{form_server}/{page}")
+    loader = make_submit_loader(factory, cfg.storage_path)
+
+    def submitter(portal: str) -> LiveSubmitter:
+        return LiveSubmitter(cfg, portal, loader, make_before_click(factory), factory,
+                             confirm_timeout_s=2.5)
+
+    await run_submit(factory, cfg, app_id, submitter)
+    assert form_posts == [post]
+    app, _task, events = _state(factory, app_id)
+    assert app.status == "SUBMISSION_UNCERTAIN" and _clicks(events) == 1

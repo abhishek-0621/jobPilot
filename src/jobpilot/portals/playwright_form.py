@@ -195,7 +195,6 @@ CONFIRM_PATH = re.compile(
     re.I)
 CONFIRM_TEXT = re.compile(r"thank you for applying|application (has been )?(received|submitted)"
                           r"|we('ve| have) received your application", re.I)
-_SUCCESS_WORDS = re.compile(r"thank|received|submitted", re.I)
 # Keywords are case-insensitive; the id itself is upper-case and carries a digit, so
 # "Application received" never yields "received" as a reference.
 CONFIRMATION_REF = re.compile(
@@ -203,16 +202,24 @@ CONFIRMATION_REF = re.compile(
     r"((?=[A-Z-]*[0-9])[A-Z0-9-]{4,})\b")
 _POLL_S = 0.5
 
+_ERROR_SEL = '.error, [aria-invalid="true"]'
+_MARK = "data-jp-baseline"
+
+# Error elements present before the click get a marker; only unmarked ones with text
+# can later mean FAILED (a new document has no markers, but needs non-empty text).
+_MARK_ERRORS_JS = "() => { document.querySelectorAll('" + _ERROR_SEL \
+    + "').forEach(e => e.setAttribute('" + _MARK + "', '1')); }"
+
 _PAGE_STATE_JS = "(sels) => {" + _HELPERS + r"""
   let root = null;
   for (const s of sels) { root = document.querySelector(s); if (root) break; }
   const visible = el => !!(el.offsetParent || el.getClientRects().length);
   const errors = root ? [...root.querySelectorAll('.error, [aria-invalid="true"]')]
-    .filter(visible).map(e => e.tagName + '#' + e.id + '.' + e.className + '['
-      + (e.getAttribute('name') || '') + ']|' + norm(e.textContent)) : [];
+    .filter(e => visible(e) && !e.hasAttribute('data-jp-baseline')
+      && (norm(e.textContent) || e.matches('input, select, textarea'))).length : 0;
   const success = [...document.querySelectorAll(
     '[class*=success], [class*=confirmation], h1, h2')].filter(visible)
-    .map(e => norm(e.textContent)).join(' \n ');
+    .map(e => norm(e.textContent)).filter(Boolean);
   return { text: document.body ? document.body.innerText : '', form: !!root,
            errors, success };
 }"""
@@ -223,7 +230,7 @@ class PageBaseline:
     """The form page just before the click; evidence must be new relative to it."""
     url: str
     text: str
-    errors: frozenset[str]
+    success: frozenset[str]
 
 
 def _no_fragment(url: str) -> str:
@@ -472,21 +479,29 @@ class PlaywrightFormAdapter:
         return {**state, "url": self.page.url}
 
     async def capture_baseline(self) -> PageBaseline:
+        await self.page.evaluate(_MARK_ERRORS_JS)
         state = await self._page_state()
         return PageBaseline(url=state["url"], text=state["text"] or "",
-                            errors=frozenset(state["errors"]))
+                            success=frozenset(state["success"]))
 
     async def detect_confirmation(self, baseline: PageBaseline,
                                   timeout_s: float = 30) -> Confirmation:
         """Poll every 500 ms for evidence that is new since ``baseline``:
         * the URL changed to one whose path has a confirmation segment;
-        * a confirmation phrase absent before the click, with the form gone or the URL
-          changed;
-        * the form gone and a success element saying thank/received/submitted.
-        Error elements that were not there before, with the form still present, mean
-        FAILED. Anything else until the timeout is UNCERTAIN."""
+        * a confirmation phrase absent before the click, with the URL changed or the form
+          absent on two consecutive polls;
+        * the form absent on two consecutive polls and a success element (not there
+          before) whose text is such a new confirmation phrase.
+        Error elements created after the click, with text, while the form is present,
+        mean FAILED. Anything else until the timeout is UNCERTAIN."""
         deadline = time.monotonic() + timeout_s
         before = baseline.text.casefold()
+        absent = 0
+
+        def new_phrase(text: str) -> bool:
+            return any(m.group(0).casefold() not in before
+                       for m in CONFIRM_TEXT.finditer(text))
+
         while True:
             try:
                 state: dict[str, Any] | None = await self._page_state()
@@ -494,14 +509,15 @@ class PlaywrightFormAdapter:
                 state = None
             if state is not None:
                 url, text, form = state["url"], state["text"] or "", state["form"]
+                absent = 0 if form else absent + 1
+                gone = absent >= 2
                 moved = _no_fragment(url) != _no_fragment(baseline.url)
-                new_phrase = any(m.group(0).casefold() not in before
-                                 for m in CONFIRM_TEXT.finditer(text))
+                success = [s for s in state["success"] if s not in baseline.success]
                 if ((moved and CONFIRM_PATH.search(urlsplit(url).path))
-                        or (new_phrase and (moved or not form))
-                        or (not form and _SUCCESS_WORDS.search(state["success"]))):
+                        or (new_phrase(text) and (moved or gone))
+                        or (gone and any(new_phrase(s) for s in success))):
                     return Confirmation(ApplicationStatus.CONFIRMED, parse_reference(text))
-                if form and set(state["errors"]) - baseline.errors:
+                if form and state["errors"]:
                     return Confirmation(ApplicationStatus.SUBMISSION_FAILED)
             if time.monotonic() >= deadline:
                 return Confirmation(ApplicationStatus.SUBMISSION_UNCERTAIN)
