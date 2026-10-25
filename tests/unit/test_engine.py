@@ -705,3 +705,26 @@ async def test_lease_kind_filter(factory) -> None:
     assert tailor_agent.calls == 0
     assert await orch.run_until_idle() == 1  # default None leases every kind
     assert task(factory, tailor).status == TaskStatus.SUCCEEDED
+
+
+def test_concurrent_leases_each_task_once(tmp_path: Path) -> None:
+    import threading
+    db = tmp_path / "shared.db"
+    upgrade_to_head(db)
+    engines = [make_engine(db), make_engine(db)]
+    orchs = [Orchestrator(make_session_factory(e), cfg(), {}, {}) for e in engines]
+    ids = {orchs[0].enqueue(TaskKind.MATCH, "job", f"j{i}") for i in range(40)}
+    got: list[list[str]] = [[], []]
+
+    def work(i: int) -> None:
+        while (tid := orchs[i]._lease_next()) is not None:
+            got[i].append(tid)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(2)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert sorted(got[0] + got[1]) == sorted(ids)
+    for e in engines:
+        e.dispose()

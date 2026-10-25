@@ -1,5 +1,6 @@
 """`jobpilot` command line: setup, doctor, start, migrate."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -192,11 +193,12 @@ async def _discover_now(cfg: AppConfig) -> int:
 
 def _run_maintenance_if_available(cfg: AppConfig) -> None:
     """Task 4 adds `jobpilot.ops.maintenance.run_maintenance`; until then this is a no-op."""
-    try:
-        from jobpilot.ops.maintenance import run_maintenance  # type: ignore[import-not-found]
-    except ImportError:
+    import importlib
+    import importlib.util
+
+    if importlib.util.find_spec("jobpilot.ops.maintenance") is None:
         return
-    run_maintenance(cfg)
+    importlib.import_module("jobpilot.ops.maintenance").run_maintenance(cfg)
 
 
 @app.command()
@@ -260,8 +262,6 @@ def schedule_install(
         "--with-server", help="Also keep `jobpilot start` running from login")] = False,
 ) -> None:
     """Install the daily discovery LaunchAgent (never submits anything)."""
-    import os
-
     from jobpilot.ops import schedule as sched
 
     _require_macos()
@@ -273,7 +273,9 @@ def schedule_install(
         raise typer.Exit(1)
     try:
         paths = sched.install(cfg, home=Path.home(), runner=_launchctl, uid=os.getuid(),
-                              at=when, with_server=with_server, uv_path=str(Path(uv).resolve()),
+                              at=when, with_server=with_server,
+                              config_dir=(None if config_dir == Path("config")
+                                          else config_dir.resolve()), uv_path=os.path.abspath(uv),
                               repo_dir=_REPO_DIR)
     except (ValueError, RuntimeError) as e:
         typer.echo(str(e))
@@ -286,20 +288,20 @@ def schedule_install(
 @schedule_app.command("uninstall")
 def schedule_uninstall() -> None:
     """Remove the JobPilot LaunchAgents."""
-    import os
-
     from jobpilot.ops import schedule as sched
 
     _require_macos()
-    removed = sched.uninstall(home=Path.home(), runner=_launchctl, uid=os.getuid())
+    try:
+        removed = sched.uninstall(home=Path.home(), runner=_launchctl, uid=os.getuid())
+    except RuntimeError as e:
+        typer.echo(str(e))
+        raise typer.Exit(1) from e
     typer.echo("Removed: " + ", ".join(removed) if removed else "Nothing was installed.")
 
 
 @schedule_app.command("status")
 def schedule_status(config_dir: ConfigDir = Path("config")) -> None:
     """Show whether each agent is installed/loaded and the next run."""
-    import os
-
     from jobpilot.ops import schedule as sched
 
     _require_macos()

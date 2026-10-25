@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.config import AppConfig
@@ -248,19 +248,27 @@ class Orchestrator:
                 or_(TaskRow.not_before.is_(None), TaskRow.not_before <= now))
             if kinds is not None:
                 query = query.where(TaskRow.kind.in_([k.value for k in kinds]))
-            task = s.execute(
-                query
-                .order_by(TaskRow.not_before.is_not(None), TaskRow.not_before,
-                          TaskRow.task_id)
-                .limit(1)
-            ).scalar_one_or_none()
-            if task is None:
-                return None
-            task.status = TaskStatus.RUNNING.value
-            task.attempts += 1
-            task.lease_until = now + self._lease
-            s.commit()
-            return task.task_id
+            for _ in range(5):  # compare-and-set: another process may win the row
+                task = s.execute(
+                    query
+                    .order_by(TaskRow.not_before.is_not(None), TaskRow.not_before,
+                              TaskRow.task_id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                if task is None:
+                    return None
+                task_id = task.task_id
+                won = s.execute(
+                    update(TaskRow)
+                    .where(TaskRow.task_id == task_id,
+                           TaskRow.status == TaskStatus.QUEUED.value)
+                    .values(status=TaskStatus.RUNNING.value, attempts=TaskRow.attempts + 1,
+                            lease_until=now + self._lease))
+                s.commit()
+                if won.rowcount == 1:  # type: ignore[attr-defined]
+                    return task_id
+                s.expire_all()
+            return None
 
     # ---- execution -------------------------------------------------------
     async def run_once(self, kinds: set[TaskKind] | None = None) -> bool:

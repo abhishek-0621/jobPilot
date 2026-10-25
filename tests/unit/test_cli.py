@@ -246,3 +246,28 @@ def test_discover_run_now_runs_cycle_then_maintenance(
     r = runner.invoke(cli.app, ["discover", "--run-now", "--config-dir", str(d)])
     assert r.exit_code == 0, r.output
     assert seen == ["cycle", "maint"] and "3 tasks" in r.output
+
+
+def test_schedule_install_passes_unresolved_uv_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _config(tmp_path)
+    real = tmp_path / "Cellar" / "uv" / "0.1" / "bin"
+    real.mkdir(parents=True)
+    (real / "uv").write_text("")
+    link = tmp_path / "bin" / "uv"
+    link.parent.mkdir()
+    link.symlink_to(real / "uv")
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: str(link))
+    seen: dict[str, Any] = {}
+
+    def fake_install(cfg: Any, **kw: Any) -> list[Path]:
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr("jobpilot.ops.schedule.install", fake_install)
+    r = runner.invoke(cli.app, ["schedule", "install", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    assert seen["uv_path"] == str(link) != str(link.resolve())
+    assert seen["config_dir"] == d.resolve()

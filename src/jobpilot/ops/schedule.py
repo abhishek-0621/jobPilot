@@ -7,6 +7,7 @@ never touch the real system.
 
 import plistlib
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -37,14 +38,15 @@ class AgentStatus:
 
 
 def _subcommand(program_args: Sequence[str]) -> str:
-    args = list(program_args)
-    if "jobpilot" not in args:
-        raise ValueError("program_args must invoke `jobpilot`")
-    i = args.index("jobpilot") + 1
-    if i >= len(args) or args[i] not in ALLOWED_SUBCOMMANDS:
+    """Require exactly [<abs uv>, run, --project, <dir>, jobpilot, <allowed sub>, ...]."""
+    a = [str(x) for x in program_args]
+    if (len(a) < 6 or not a[0].startswith("/") or a[1] != "run" or a[2] != "--project"
+            or not a[3].startswith("/") or a[4] != "jobpilot"
+            or a[5] not in ALLOWED_SUBCOMMANDS):
         raise ValueError(
-            f"jobpilot subcommand not allowed in a LaunchAgent: {args[i:i + 1] or 'none'}")
-    return args[i]
+            "LaunchAgent command must be [<abs uv>, run, --project, <abs dir>, jobpilot, "
+            f"<one of {sorted(ALLOWED_SUBCOMMANDS)}>, ...]")
+    return a[5]
 
 
 def render_plist(
@@ -72,7 +74,8 @@ def render_plist(
         d["StartCalendarInterval"] = dict(calendar)
     if keep_alive:
         d["RunAtLoad"] = True
-        d["KeepAlive"] = True
+        d["KeepAlive"] = {"SuccessfulExit": False}
+        d["ThrottleInterval"] = 30
     return plistlib.dumps(d)
 
 
@@ -110,29 +113,33 @@ def _loaded(runner: Runner, uid: int, label: str) -> bool:
 
 def _jobs(
     cfg: AppConfig, *, at: str, with_server: bool, uv_path: str, repo_dir: Path,
+    config_dir: Path | None = None,
 ) -> list[tuple[str, list[str], dict[str, int] | None, bool, str]]:
     hour, minute = parse_hhmm(at)
     base = [uv_path, "run", "--project", str(repo_dir), "jobpilot"]
+    extra = ["--config-dir", str(config_dir)] if config_dir is not None else []
     jobs: list[tuple[str, list[str], dict[str, int] | None, bool, str]] = [
-        (DISCOVER_LABEL, [*base, "discover", "--run-now"],
+        (DISCOVER_LABEL, [*base, "discover", *extra, "--run-now"],
          {"Hour": hour, "Minute": minute}, False, "discover.log")]
     if with_server:
-        jobs.append((SERVER_LABEL, [*base, "start"], None, True, "server.log"))
+        jobs.append((SERVER_LABEL, [*base, "start", *extra], None, True, "server.log"))
     return jobs
 
 
 def install(
     cfg: AppConfig, *, home: Path, runner: Runner, uid: int, at: str, with_server: bool,
-    uv_path: str, repo_dir: Path,
+    uv_path: str, repo_dir: Path, config_dir: Path | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> list[Path]:
     """Write the plists and bootstrap them. Idempotent: a loaded agent is booted out first."""
+    jobs = _jobs(cfg, at=at, with_server=with_server, uv_path=uv_path, repo_dir=repo_dir,
+                 config_dir=config_dir)  # validates `at` before anything is created
     logs = logs_dir(cfg, repo_dir)
     logs.mkdir(parents=True, exist_ok=True)
     logs.chmod(0o700)
     _agents_dir(home).mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for label, args, calendar, keep_alive, log_name in _jobs(
-            cfg, at=at, with_server=with_server, uv_path=uv_path, repo_dir=repo_dir):
+    for label, args, calendar, keep_alive, log_name in jobs:
         data = render_plist(label, args, calendar=calendar, keep_alive=keep_alive,
                             log_path=logs / log_name, env={"PATH": LAUNCH_PATH},
                             working_dir=repo_dir)
@@ -140,7 +147,11 @@ def install(
         path.write_bytes(data)
         if _loaded(runner, uid, label):
             runner(["launchctl", "bootout", _target(uid, label)])
-        r = runner(["launchctl", "bootstrap", f"gui/{uid}", str(path)])
+        cmd = ["launchctl", "bootstrap", f"gui/{uid}", str(path)]
+        r = runner(cmd)
+        if r.returncode != 0:
+            sleep(1)
+            r = runner(cmd)
         if r.returncode != 0:
             raise RuntimeError(f"launchctl bootstrap failed for {label}")
         written.append(path)
@@ -150,13 +161,18 @@ def install(
 def uninstall(*, home: Path, runner: Runner, uid: int) -> list[str]:
     """Boot out and remove whichever JobPilot agents are installed. Returns their labels."""
     removed: list[str] = []
+    failed: list[str] = []
     for label in (DISCOVER_LABEL, SERVER_LABEL):
         path = plist_path(home, label)
-        if _loaded(runner, uid, label):
-            runner(["launchctl", "bootout", _target(uid, label)])
+        if _loaded(runner, uid, label) and runner(
+                ["launchctl", "bootout", _target(uid, label)]).returncode != 0:
+            failed.append(label)  # still loaded: keep the plist so it can be retried
+            continue
         if path.exists():
             path.unlink()
             removed.append(label)
+    if failed:
+        raise RuntimeError("launchctl bootout failed; plist kept for: " + ", ".join(failed))
     return removed
 
 
