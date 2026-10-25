@@ -271,3 +271,36 @@ def test_schedule_install_passes_unresolved_uv_path(
     assert r.exit_code == 0, r.output
     assert seen["uv_path"] == str(link) != str(link.resolve())
     assert seen["config_dir"] == d.resolve()
+
+
+def test_start_writes_and_removes_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = tmp_path / "storage" / "run" / "server.pid"
+    seen: list[bool] = []
+    monkeypatch.setattr(cli.uvicorn, "run", lambda app, **kw: seen.append(pid.exists()))
+    r = runner.invoke(cli.app, ["start", "--config-dir", str(_config(tmp_path))])
+    assert r.exit_code == 0, r.output
+    assert seen == [True] and not pid.exists()
+
+
+def test_backup_and_restore_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.ops import backup as bk
+
+    cfg_dir = _config(tmp_path)
+    assert runner.invoke(cli.app, ["migrate", "--config-dir", str(cfg_dir)]).exit_code == 0
+    r = runner.invoke(cli.app, ["backup", "--keep", "2", "--config-dir", str(cfg_dir)])
+    assert r.exit_code == 0, r.output
+    assert "bytes" in r.output and "personal data" in r.output
+    archive = next((tmp_path / "storage" / "backups").glob("jobpilot-*.tar.gz"))
+    r = runner.invoke(cli.app, ["restore", str(archive), "--config-dir", str(cfg_dir)])
+    assert r.exit_code == 1 and "RESTORE" in r.output
+    monkeypatch.setattr(bk, "_port_open", lambda _h, _p: False)
+    monkeypatch.setattr(bk.restore, "__kwdefaults__",
+                        {**bk.restore.__kwdefaults__,
+                         "server_running": lambda c: bk.server_running(
+                             c, port_open=lambda _h, _p: False)})
+    r = runner.invoke(cli.app, ["restore", str(archive), "--confirm", "RESTORE",
+                                "--config-dir", str(cfg_dir)])
+    assert r.exit_code == 0, r.output
+    assert "Previous data saved" in r.output

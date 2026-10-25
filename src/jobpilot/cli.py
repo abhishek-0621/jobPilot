@@ -113,8 +113,47 @@ def start(config_dir: ConfigDir = Path("config")) -> None:
     cfg = load_config(config_dir)
     _migrate(cfg)
     api = app_from_config(config_dir)  # lifespan runs recover_on_startup + worker loop
+    from jobpilot.ops.backup import remove_pid_file, write_pid_file
+
     typer.echo(f"JobPilot running at http://{cfg.bind_host}:{cfg.port}  (Ctrl+C to stop)")
-    uvicorn.run(api, host=cfg.bind_host, port=cfg.port)
+    write_pid_file(cfg)
+    try:
+        uvicorn.run(api, host=cfg.bind_host, port=cfg.port)
+    finally:
+        remove_pid_file(cfg)
+
+
+@app.command()
+def backup(
+    keep: Annotated[int | None, typer.Option(min=1, help="Archives to keep")] = None,
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Back up the database, profiles and artifacts to storage/backups."""
+    from jobpilot.ops.backup import backup as do_backup
+
+    cfg = load_config(config_dir)
+    path = do_backup(cfg, keep=keep)
+    typer.echo(f"Backup written: {path} ({path.stat().st_size:,} bytes)")
+    typer.echo("Warning: backups contain your personal data. Keep them private.")
+
+
+@app.command()
+def restore(
+    archive: Annotated[Path, typer.Argument(help="Backup .tar.gz to restore")],
+    confirm: Annotated[str, typer.Option(help="Type RESTORE to confirm")] = "",
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Replace the database, profiles and artifacts with a backup (CLI only)."""
+    from jobpilot.ops.backup import RestoreError
+    from jobpilot.ops.backup import restore as do_restore
+
+    cfg = load_config(config_dir)
+    try:
+        pre = do_restore(cfg, archive, confirm=confirm)
+    except RestoreError as e:
+        typer.echo(f"Restore refused: {e}")
+        raise typer.Exit(1) from e
+    typer.echo(f"Restored from {archive}. Previous data saved in {pre}")
 
 
 @app.command()

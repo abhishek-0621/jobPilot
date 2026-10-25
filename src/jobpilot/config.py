@@ -43,6 +43,7 @@ class AppConfig(BaseModel):
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
     schedule: ScheduleConfig = ScheduleConfig()
+    backup_keep: int = 14
     model_routes: dict[str, ModelRoute]
 
     @field_validator("live_portals", mode="before")
