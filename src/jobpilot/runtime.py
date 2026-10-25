@@ -20,6 +20,7 @@ from jobpilot.agents.form_prep import (
     make_validate_handler,
     prepare_form_handler,
 )
+from jobpilot.agents.manual_package import ManualPackageAgent, manual_package_handler
 from jobpilot.agents.match import MatchAgent, make_match_handler
 from jobpilot.agents.tailor import TailorAgent, make_tailor_handler
 from jobpilot.config import AppConfig
@@ -386,6 +387,7 @@ def build_runtime(
         TaskKind.TAILOR: TailorAgent(),
         TaskKind.COVER_LETTER: CoverLetterAgent(),
         TaskKind.PREPARE_FORM: PrepareFormAgent(),
+        TaskKind.MANUAL_PACKAGE: ManualPackageAgent(),
         TaskKind.VALIDATE: ValidateAgent(),
     }
     handlers: dict[TaskKind, Handler] = {
@@ -395,6 +397,7 @@ def build_runtime(
         TaskKind.TAILOR: make_tailor_handler(cfg.storage_path),
         TaskKind.COVER_LETTER: make_cover_letter_handler(cfg.storage_path),
         TaskKind.PREPARE_FORM: prepare_form_handler,
+        TaskKind.MANUAL_PACKAGE: manual_package_handler,
         TaskKind.VALIDATE: make_validate_handler(cfg.storage_path),
     }
     return Runtime(agents=agents, handlers=handlers,

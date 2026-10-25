@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, JobStatus
+from jobpilot.contracts.models import JobListing
 from jobpilot.data.db import utcnow
 from jobpilot.data.mutations import set_answer
-from jobpilot.data.repositories import create_application
+from jobpilot.data.repositories import create_application, upsert_job
 from jobpilot.data.tables import (
     ApplicationRow,
     ApprovalBatchRow,
@@ -20,6 +21,7 @@ from jobpilot.data.tables import (
     JobRow,
     TaskRow,
 )
+from jobpilot.discovery.normalize import html_to_text, normalize_url, require_http
 from jobpilot.ids import new_id
 from jobpilot.observability.events import (
     USER_RESOLVED_NOT_SUBMITTED,
@@ -30,6 +32,7 @@ from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
 from jobpilot.orchestrator.state_machine import transition
+from jobpilot.util.hashing import content_hash
 
 DISCOVERY_RUNNING = "A discovery run is already queued or running."
 
@@ -49,6 +52,41 @@ def start_discovery(s: Session, orch: Orchestrator) -> tuple[str, str]:
     task_id = orch.enqueue_in(s, TaskKind.DISCOVER, "run", run_id)
     s.commit()
     return task_id, run_id
+
+
+MANUAL_SOURCE = "manual"
+
+
+def add_manual_job(s: Session, orch: Orchestrator, *, url: str, title: str, company: str,
+                   location: str | None, description: str) -> str:
+    """Add a job the user found anywhere (LinkedIn, Naukri, ...). The pasted text is
+    untrusted: it is reduced to plain text like a scraped description. A new canonical
+    job gets EXTRACT in the same transaction; a known one returns its id. Commits.
+
+    Raises ValueError (non-http(s) URL, missing title/company)."""
+    checked = require_http(url)
+    if checked is None:
+        raise ValueError("URL must be an absolute http(s) URL")
+    title, company = title.strip(), company.strip()
+    if not title or not company:
+        raise ValueError("Title and company are required")
+    norm = normalize_url(checked)
+    now = utcnow()
+    listing = JobListing(
+        task_id="manual", created_at=now, job_id="", source=MANUAL_SOURCE,
+        source_job_id=content_hash(norm)[7:23], canonical_url=norm, application_url=norm,
+        company=company, title=title, location=(location or "").strip() or None,
+        description_text=html_to_text(description or ""), first_seen_at=now,
+        last_seen_at=now, extraction_confidence=0.0)
+    row, created = upsert_job(s, listing)
+    job_id = row.canonical_job_id or row.job_id
+    if created and row.canonical_job_id is None:
+        orch.enqueue_in(s, TaskKind.EXTRACT, "job", row.job_id)
+    record_event(s, entity_type="job", entity_id=job_id, actor="user",
+                 action="job_added_manually", outcome="ok" if created else "known",
+                 details={"job_id": row.job_id, "canonical_job_id": job_id})
+    s.commit()
+    return job_id
 
 
 def select_job(s: Session, orch: Orchestrator, job_id: str) -> ApplicationRow:

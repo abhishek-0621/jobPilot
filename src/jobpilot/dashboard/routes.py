@@ -19,6 +19,7 @@ from jobpilot.api.actions import (
     ANSWERABLE_STATUSES,
     ActionConflict,
     ConfirmationRequired,
+    add_manual_job,
     approve_batch,
     prepare_again,
     regenerate_documents,
@@ -250,6 +251,33 @@ def run_discovery(request: Request, s: Db, orch: Orch) -> HTMLResponse:
     except ActionConflict as e:
         return _message(request, str(e), 409)
     return _message(request, "Discovery started", 200, ok=True)
+
+
+@router.get("/ui/jobs/new", response_class=HTMLResponse)
+def new_job_form(request: Request, s: Db) -> HTMLResponse:
+    return _page(request, s, "job_new.html", {"error": None, "form": {}})
+
+
+@router.post("/ui/jobs/new", response_model=None)
+def new_job(
+    request: Request, s: Db, orch: Orch,
+    url: Annotated[str, Form()] = "", title: Annotated[str, Form()] = "",
+    company: Annotated[str, Form()] = "", location: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """Add a job found anywhere (LinkedIn, Naukri, ...). JobPilot never opens such sites;
+    the application is prepared as a manual package."""
+    try:
+        job_id = add_manual_job(s, orch, url=url, title=title, company=company,
+                                location=location, description=description)
+    except ValueError as e:
+        s.rollback()
+        resp = _page(request, s, "job_new.html", {"error": str(e), "form": {
+            "url": url, "title": title, "company": company, "location": location,
+            "description": description}})
+        resp.status_code = 422
+        return resp
+    return RedirectResponse(f"/ui/jobs/{job_id}", status_code=303)
 
 
 @router.get("/ui/jobs/{job_id}", response_class=HTMLResponse)

@@ -41,3 +41,29 @@ def form_url(app: dict[str, Any]) -> str:
     if cls is None or not canonical:
         raise PortalConfigError("no_application_url")
     return cls.apply_url(str(canonical))
+
+
+AUTOMATED_SOURCES = frozenset({"greenhouse", "lever", "ashby"})
+# Sites that need a login or forbid automation: never opened by a browser, always manual.
+DENY_HOSTS = ("linkedin.com", "naukri.com", "indeed.com", "glassdoor.com", "glassdoor.co.in",
+              "myworkdayjobs.com", "smartrecruiters.com")
+
+
+def denied_host(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in DENY_HOSTS)
+
+
+def apply_mode(job: Any) -> str:
+    """"automated" only for a supported form portal whose application host is not
+    deny-listed; everything else (manual adds, LinkedIn, Workday, ...) is "manual"."""
+    data = job if isinstance(job, dict) else {
+        k: getattr(job, k, None) for k in ("source", "application_url", "canonical_url")}
+    if data.get("source") not in AUTOMATED_SOURCES:
+        return "manual"
+    try:
+        url = form_url(data)
+    except PortalConfigError:
+        return "manual"
+    host = urlsplit(url).hostname or ""
+    return "manual" if not host or denied_host(host) else "automated"
