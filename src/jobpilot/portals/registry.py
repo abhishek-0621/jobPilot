@@ -54,6 +54,7 @@ def form_url(app: dict[str, Any]) -> str:
 AUTOMATED_SOURCES = frozenset({"greenhouse", "lever", "ashby"})
 # Sites that need a login or forbid automation: never opened by a browser, always manual.
 DENY_HOSTS = ("linkedin.com", "naukri.com", "indeed.com", "glassdoor.com", "glassdoor.co.in",
+              "foundit.in", "indeed.co.in",
               "myworkdayjobs.com", "smartrecruiters.com")
 
 
