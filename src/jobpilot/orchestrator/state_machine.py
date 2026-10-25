@@ -49,8 +49,9 @@ _APPLICATION: dict[StrEnum, set[StrEnum]] = {
                                A.READY_FOR_REVIEW, A.NEEDS_USER_INPUT},
     A.SUBMITTED: {A.CONFIRMED, A.SUBMISSION_UNCERTAIN},
     A.SUBMISSION_UNCERTAIN: {A.CONFIRMED, A.SUBMISSION_FAILED},
-    # "Prepare again" after a failed submission (explicit user action only).
-    A.SUBMISSION_FAILED: {A.FORM_IN_PROGRESS},
+    # "Prepare again" after a failed submission (explicit user action only); straight to
+    # DOCUMENTS_PENDING when retention pruned the documents.
+    A.SUBMISSION_FAILED: {A.FORM_IN_PROGRESS, A.DOCUMENTS_PENDING},
 }
 for _s in _PRE_SUBMISSION:
     _APPLICATION[_s] = _APPLICATION.get(_s, set()) | {A.REJECTED_BY_USER}
@@ -104,6 +105,7 @@ RESTRICTED_EDGES: dict[tuple[StrEnum, StrEnum], frozenset[str]] = {
     (A.SUBMISSION_UNCERTAIN, A.CONFIRMED): frozenset({"user", "verification"}),
     (A.SUBMISSION_UNCERTAIN, A.SUBMISSION_FAILED): frozenset({"user", "verification"}),
     (A.SUBMISSION_FAILED, A.FORM_IN_PROGRESS): frozenset({"user"}),
+    (A.SUBMISSION_FAILED, A.DOCUMENTS_PENDING): frozenset({"user"}),
     (A.MANUAL_APPLY_READY, A.SUBMITTED_BY_USER): frozenset({"user"}),
     (A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW): frozenset({"presubmit"}),
     (A.SUBMISSION_IN_PROGRESS, A.NEEDS_USER_INPUT): frozenset({"presubmit"}),

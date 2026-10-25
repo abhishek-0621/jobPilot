@@ -17,7 +17,7 @@ from jobpilot.data.db import make_engine, make_session_factory, utcnow
 from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow
 from jobpilot.observability.events import last_event, record_event
 from jobpilot.ops.lock import ops_lock
-from jobpilot.ops.purge import _app_artifact_dir, remove_artifacts
+from jobpilot.ops.purge import DeleteRefused, _app_artifact_dir, remove_artifacts
 from jobpilot.orchestrator.state_machine import TERMINAL_APPLICATION
 
 log = logging.getLogger(__name__)
@@ -43,10 +43,14 @@ def _prune_artifacts(cfg: AppConfig, s: Session, cutoff: datetime) -> int:
             continue
         has_rows = s.execute(select(DocumentArtifactRow.artifact_id).where(
             DocumentArtifactRow.application_id == app_id).limit(1)).first() is not None
-        target = _app_artifact_dir(cfg, app_id)
-        if not has_rows and not (target is not None and target.is_dir()):
+        try:
+            target = _app_artifact_dir(cfg, app_id)
+            if not has_rows and target is None:
+                continue
+            rows, files = remove_artifacts(cfg, s, app_id)
+        except DeleteRefused as e:
+            log.warning("skipping artifacts of %s: %s", app_id, e)
             continue
-        rows, files = remove_artifacts(cfg, s, app_id)
         record_event(s, entity_type="application", entity_id=app_id, actor="maintenance",
                      action=ARTIFACTS_PRUNED, outcome="ok",
                      details={"app_id": app_id, "artifacts_n": rows, "files_n": files})

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus
-from jobpilot.data.mutations import clear_application_content
+from jobpilot.data.mutations import clear_application_content, clear_artifact_refs
 from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, FormFieldAnswerRow
 from jobpilot.observability.events import record_event
 from jobpilot.ops.backup import restore_marker, server_running
@@ -39,24 +39,30 @@ class DeleteRefused(PurgeError):
 
 
 def _app_artifact_dir(cfg: AppConfig, application_id: str) -> Path | None:
-    """storage/artifacts/<id>, only when it resolves strictly inside storage/artifacts."""
+    """storage/artifacts/<id> when it is a real directory directly inside storage/artifacts;
+    None when absent. Raises DeleteRefused for a symlink or anything escaping the base."""
     base = (cfg.storage_path / "artifacts").resolve()
-    target = (base / application_id).resolve()
-    if target == base or not target.is_relative_to(base):
-        return None
-    return target
+    raw = base / application_id
+    if raw.is_symlink():
+        raise DeleteRefused(f"{raw} is a symlink; refusing to delete through it")
+    target = raw.resolve()
+    if target.parent != base:
+        raise DeleteRefused(f"{raw} is not directly inside {base}; refusing")
+    return target if target.is_dir() else None
 
 
 def remove_artifacts(cfg: AppConfig, s: Session, application_id: str) -> tuple[int, int]:
-    """Delete the application's artifact rows and its artifact directory.
-    Returns (artifact rows removed, files removed). Caller commits."""
+    """Delete the application's artifact rows, unbind them from the application and remove
+    its artifact directory. Returns (rows removed, files removed). Commits."""
+    target = _app_artifact_dir(cfg, application_id)  # refuse before touching anything
     rows = s.execute(select(func.count()).select_from(DocumentArtifactRow).where(
         DocumentArtifactRow.application_id == application_id)).scalar_one()
+    clear_artifact_refs(s, application_id)
     s.execute(delete(DocumentArtifactRow).where(
         DocumentArtifactRow.application_id == application_id))
+    s.commit()
     files = 0
-    target = _app_artifact_dir(cfg, application_id)
-    if target is not None and target.is_dir():
+    if target is not None:
         files = sum(1 for p in target.rglob("*") if p.is_file())
         shutil.rmtree(target)
     return rows, files
@@ -80,25 +86,20 @@ def delete_application(cfg: AppConfig, s: Session, application_id: str, *,
                     if status is ApplicationStatus.SUBMISSION_UNCERTAIN else "")
             raise DeleteRefused(f"cannot delete an application in {status.value}; only "
                                 f"finished applications can be deleted.{hint}")
+        _app_artifact_dir(cfg, application_id)  # refuse a symlinked dir before any change
         answers = s.execute(select(func.count()).select_from(FormFieldAnswerRow).where(
             FormFieldAnswerRow.application_id == application_id)).scalar_one()
         s.execute(delete(FormFieldAnswerRow).where(
             FormFieldAnswerRow.application_id == application_id))
-        artifacts = s.execute(select(func.count()).select_from(DocumentArtifactRow).where(
-            DocumentArtifactRow.application_id == application_id)).scalar_one()
-        s.execute(delete(DocumentArtifactRow).where(
-            DocumentArtifactRow.application_id == application_id))
         ApprovalService(s).invalidate_application(application_id, "data_deleted")
         clear_application_content(s, application_id)
         transition(s, app, ApplicationStatus.DELETED, actor="user", reason="data_deleted")
+        artifacts, _files = remove_artifacts(cfg, s, application_id)  # commits
         record_event(s, entity_type="application", entity_id=application_id, actor="user",
                      action=DATA_DELETED, outcome="ok",
                      details={"app_id": application_id, "answers_n": answers,
                               "artifacts_n": artifacts})
         s.commit()
-        target = _app_artifact_dir(cfg, application_id)
-        if target is not None and target.is_dir():
-            shutil.rmtree(target)
     return {"answers_n": answers, "artifacts_n": artifacts}
 
 

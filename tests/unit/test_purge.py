@@ -265,3 +265,51 @@ def test_scheduled_maintenance_error_exits_zero(tmp_path: Path,
     assert r.exit_code == 0 and "Maintenance failed" in r.output
     r = runner.invoke(cli.app, ["discover", "--run-now", "--config-dir", str(d)])
     assert r.exit_code == 1
+
+
+def test_pruned_failed_app_clears_refs_and_prepare_again_tailors(env: Env) -> None:
+    from jobpilot.api.actions import prepare_again
+    from jobpilot.data.tables import TaskRow
+
+    cfg, factory = env
+    with factory() as s:
+        app_id = _seed(cfg, s, "SUBMISSION_FAILED", changed_days_ago=400)
+    assert run_maintenance(cfg)["artifacts_pruned"] == 1
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None
+        assert app.resume_artifact_id is None and app.cover_letter_artifact_id is None
+        prepare_again(s, Orchestrator(factory, cfg, {}, {}), app_id)
+        assert s.get(ApplicationRow, app_id).status == "DOCUMENTS_PENDING"  # type: ignore[union-attr]
+        kinds = [t.kind for t in s.execute(select(TaskRow).where(
+            TaskRow.entity_id == app_id)).scalars()]
+        assert kinds == ["TAILOR"]
+
+
+def test_delete_refuses_symlinked_app_dir(env: Env) -> None:
+    cfg, factory = env
+    with factory() as s:
+        other = _seed(cfg, s, "READY_FOR_REVIEW")
+        app_id = _seed(cfg, s, "CONFIRMED")
+    victim = cfg.storage_path / "artifacts" / app_id
+    for p in victim.iterdir():
+        p.unlink()
+    victim.rmdir()
+    victim.symlink_to(cfg.storage_path / "artifacts" / other)
+    with factory() as s, pytest.raises(purge.DeleteRefused, match="symlink"):
+        purge.delete_application(cfg, s, app_id, confirm=app_id)
+    assert (cfg.storage_path / "artifacts" / other / "resume_v1.pdf").exists()
+
+
+def test_delete_route_lookup_error_404(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, factory = env
+    with factory() as s:
+        app_id = _seed(cfg, s, "CONFIRMED")
+
+    def gone(*_a: object, **_k: object) -> dict[str, int]:
+        raise LookupError("vanished")
+
+    monkeypatch.setattr(purge, "delete_application", gone)
+    r = _client(cfg, factory).post(f"/ui/applications/{app_id}/delete",
+                                   data={"confirm": app_id})
+    assert r.status_code == 404

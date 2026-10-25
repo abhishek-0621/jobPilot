@@ -56,9 +56,10 @@ def test_terminal_states_have_no_exits():
     for s in (ApplicationStatus.CONFIRMED, ApplicationStatus.REJECTED_BY_USER):
         assert app[s] == frozenset({ApplicationStatus.DELETED})
     assert app[ApplicationStatus.DELETED] == frozenset()
-    # SUBMISSION_FAILED: the user's explicit "Prepare again", or delete
+    # SUBMISSION_FAILED: the user's explicit "Prepare again" (to documents if pruned), or delete
     assert app[ApplicationStatus.SUBMISSION_FAILED] == frozenset(
-        {ApplicationStatus.FORM_IN_PROGRESS, ApplicationStatus.DELETED})
+        {ApplicationStatus.FORM_IN_PROGRESS, ApplicationStatus.DOCUMENTS_PENDING,
+         ApplicationStatus.DELETED})
     assert TRANSITIONS[OutreachStatus][OutreachStatus.SENT] == frozenset()
 
 

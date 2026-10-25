@@ -19,6 +19,7 @@ from jobpilot.data.tables import (
     ApplicationRow,
     ApprovalBatchRow,
     BatchItemRow,
+    DocumentArtifactRow,
     JobRow,
     TaskRow,
 )
@@ -281,7 +282,8 @@ def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
 
 def prepare_again(s: Session, orch: Orchestrator, application_id: str) -> str:
     """User action on a SUBMISSION_FAILED application: revoke its approval, forget the
-    form snapshot and the submit request, and queue PREPARE_FORM. Commits.
+    form snapshot and the submit request, and queue PREPARE_FORM. When its documents are
+    gone (pruned by retention) it goes to DOCUMENTS_PENDING and queues TAILOR. Commits.
 
     Raises LookupError / ActionConflict."""
     app = _app(s, application_id)
@@ -294,9 +296,16 @@ def prepare_again(s: Session, orch: Orchestrator, application_id: str) -> str:
     app.form_snapshot_hash = None
     app.idempotency_key = None
     app.confirmation_reference = None
-    transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor="user",
-               reason="prepare_again")
-    task_id = orch.enqueue_in(s, TaskKind.PREPARE_FORM, "application", application_id)
+    docs_present = app.resume_artifact_id is not None and s.get(
+        DocumentArtifactRow, app.resume_artifact_id) is not None
+    if docs_present:
+        transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor="user",
+                   reason="prepare_again")
+        task_id = orch.enqueue_in(s, TaskKind.PREPARE_FORM, "application", application_id)
+    else:
+        transition(s, app, ApplicationStatus.DOCUMENTS_PENDING, actor="user",
+                   reason="prepare_again_documents_missing")
+        task_id = orch.enqueue_in(s, TaskKind.TAILOR, "application", application_id)
     s.commit()
     return task_id
 

@@ -440,13 +440,17 @@ def delete_application_ui(request: Request, application_id: str, s: Db,
                           ) -> HTMLResponse | RedirectResponse:
     from urllib.parse import quote
 
+    from jobpilot.ops import purge
     from jobpilot.ops.lock import LockHeld
-    from jobpilot.ops.purge import ConfirmationMismatch, DeleteRefused, delete_application
+    from jobpilot.ops.purge import ConfirmationMismatch, DeleteRefused
 
     if s.get(ApplicationRow, application_id) is None:
         raise HTTPException(404, "application not found")
     try:
-        delete_application(request.app.state.cfg, s, application_id, confirm=confirm.strip())
+        purge.delete_application(request.app.state.cfg, s, application_id,
+                                 confirm=confirm.strip())
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
     except ConfirmationMismatch as e:
         return _message(request, str(e), 422)
     except (DeleteRefused, LockHeld) as e:

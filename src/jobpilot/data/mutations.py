@@ -159,3 +159,11 @@ def clear_application_content(s: Session, application_id: str) -> None:
     app.resume_artifact_id = None
     app.cover_letter_artifact_id = None
     s.flush()
+
+
+def clear_artifact_refs(s: Session, application_id: str) -> None:
+    """Retention/deletion removed the documents: unbind them from the application."""
+    app = get_application(s, application_id)
+    app.resume_artifact_id = None
+    app.cover_letter_artifact_id = None
+    s.flush()
