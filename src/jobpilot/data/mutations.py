@@ -220,13 +220,34 @@ def set_library_answer(s: Session, question_key: str, value: Any, *,
         s.add(AnswerLibraryRow(
             answer_id=new_id("ans"), profile_version=version, question_key=question_key,
             value_json=json.dumps(value),
-            decision_default=_decision_defaults().get(question_key, _DEFAULT_DECISION)))
+            decision_default=_decision_defaults(None).get(question_key, _DEFAULT_DECISION)))
     else:
         row.value_json = json.dumps(value)
     record_event(s, entity_type="answer_library", entity_id=question_key, actor=actor,
                  action="answer_library_changed", outcome="ok",
                  details={"question_key": question_key, "cleared": value is None})
     s.flush()
+
+
+def save_essay_to_library(s: Session, application_id: str, field_id: str, *,
+                          actor: str = "user") -> str:
+    """Save an application's essay answer as the library answer for its question type
+    (used for that question type on applications prepared afterwards, still
+    FILL_AND_REVIEW). Returns the library key."""
+    from jobpilot.forms.essay import classify_essay
+
+    row = _answer_row(s, application_id, field_id)
+    if row is None:
+        raise LookupError(f"unknown field {field_id} on {application_id}")
+    key = classify_essay(row.label, "", field_type=row.field_type)
+    if key is None:
+        raise ValueError("not an essay question")
+    value = json.loads(row.proposed_value_json)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("no answer to save")
+    library_key = "essay_" + key.value
+    set_library_answer(s, library_key, value.strip(), actor=actor)
+    return library_key
 
 
 def clear_application_content(s: Session, application_id: str) -> None:

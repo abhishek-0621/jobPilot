@@ -12,6 +12,8 @@ import httpx
 from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.agents.cover_letter import CoverLetterAgent, make_cover_letter_handler
+from jobpilot.agents.essay import LIBRARY_PREFIX as ESSAY_LIBRARY_PREFIX
+from jobpilot.agents.essay import EssayContext
 from jobpilot.agents.extract import ExtractAgent, extract_handler
 from jobpilot.agents.form_prep import (
     PrepareFormAgent,
@@ -44,6 +46,7 @@ from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
 from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
 from jobpilot.discovery.sources.workday import WorkdaySource
+from jobpilot.documents.model import split_skills
 from jobpilot.documents.validate import (
     BANNED_PATH,
     TECH_TERMS_PATH,
@@ -62,6 +65,7 @@ from jobpilot.portals.simulated import SimulatedAdapter
 from jobpilot.profile.importer import PROFILE_ID, active_profile, candidate_years, verified_facts
 from jobpilot.profile.preferences import load_companies, load_search_preferences
 from jobpilot.profile.schema import ProfileFile, load_profile_file
+from jobpilot.profile.stories import StoredBank, stored_bank
 
 
 @dataclass
@@ -269,6 +273,46 @@ def make_mapping_context(cfg: AppConfig, session_factory: sessionmaker[Session],
     return mapping_context
 
 
+def make_essay_context(session_factory: sessionmaker[Session]) -> Callable[[str], EssayContext]:
+    """Verified stories, the user's canned answers and standing rules, verified facts and
+    skills, the job's title/company/requirements and the essay answers saved to the
+    library, for one application. Unverified stories never leave this loader."""
+    def essay_context(application_id: str) -> EssayContext:
+        with session_factory() as s:
+            app = s.get(ApplicationRow, application_id)
+            job = None if app is None else s.get(JobRow, app.job_id)
+            if app is None or job is None:
+                raise OutputRejected("application_not_found")
+            try:
+                data = json.loads(job.extracted_json or "{}")
+            except ValueError:
+                data = {}
+            req = data.get("requirements") if isinstance(data, dict) else None
+            req = req if isinstance(req, dict) else {}
+            try:
+                version, _ = active_profile(s)
+                facts = verified_facts(s)
+            except LookupError:
+                version, facts = None, []
+            library = {} if version is None else {
+                r.question_key: json.loads(r.value_json)
+                for r in s.query(AnswerLibraryRow).filter(
+                    AnswerLibraryRow.profile_version == version,
+                    AnswerLibraryRow.question_key.like(ESSAY_LIBRARY_PREFIX + "%"))}
+            bank = stored_bank(s)
+            bank = StoredBank(stories=[st for st in bank.stories if st.verified],
+                              standing_rules=bank.standing_rules, canned=bank.canned)
+            return EssayContext(
+                bank=bank,
+                facts={f.fact_id: f.value for f in facts if f.category != "skill"},
+                skills=[x for f in facts if f.category == "skill"
+                        for x in split_skills(f.value)],
+                job={"title": job.title, "company": job.company, "requirements": req,
+                     "job_summary": req.get("summary") or ""},
+                library=library)
+    return essay_context
+
+
 def make_stored_answers(
     session_factory: sessionmaker[Session],
 ) -> Callable[[str], list[FieldAnswer]]:
@@ -386,6 +430,7 @@ def build_runtime(
         "application_loader": make_application_loader(session_factory, cfg.storage_path),
         "mapping_context": make_mapping_context(cfg, session_factory, clock),
         "stored_answers": make_stored_answers(session_factory),
+        "essay_context": make_essay_context(session_factory),
         "active_profile_version": make_active_version(session_factory),
         "form_opener": make_form_opener(cfg),
         "profile_file": make_profile_file(cfg),

@@ -5,16 +5,29 @@ deterministic code validates (numbers, tech terms, proper nouns, leadership clai
 placeholders, ``missing`` notes, SWOT parts), retries once, then gives up to the user."""
 
 import re
+from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
 
 from jobpilot.agents.cover_letter import _LETTER_WORDS, _mask
 from jobpilot.contracts.enums import FieldDecision
+from jobpilot.contracts.models import FieldAnswer
 from jobpilot.documents.validate import _PLACEHOLDER_RE, _numbers, validate_rewrite
+from jobpilot.forms.essay import classify_essay
 from jobpilot.llm.prompts import build_messages
-from jobpilot.profile.stories import KEY_THEMES, QuestionKey, StoredBank, Story, Theme
+from jobpilot.orchestrator.engine import OutputRejected
+from jobpilot.portals.base import FormField
+from jobpilot.profile.stories import (
+    KEY_THEMES,
+    QuestionKey,
+    StoredBank,
+    Story,
+    Theme,
+    stored_bank,
+)
 from jobpilot.util.hashing import canonical_json
 from jobpilot.util.textmatch import has_phrase
 
@@ -260,3 +273,107 @@ class EssayAgent:
                 instructions = (base + "\nYour previous attempt was rejected for: "
                                 + ", ".join(codes) + ". Fix every one of these.")
         return _ask(key, ("essay_invalid:" + ",".join(codes))[:_NOTE_MAX])
+
+
+# ---- wiring: form prep / manual package ---------------------------------------------
+
+LIBRARY_PREFIX = "essay_"
+_DRAFT_CONFIDENCE = 0.5
+
+
+@dataclass(frozen=True)
+class EssayContext:
+    """Everything an essay draft may draw on, loaded for one application."""
+    bank: StoredBank
+    facts: dict[str, str]
+    skills: list[str]
+    job: dict[str, Any]
+    library: dict[str, Any] = field(default_factory=dict)
+
+
+def library_key(key: QuestionKey) -> str:
+    return LIBRARY_PREFIX + key.value
+
+
+def _empty(v: Any) -> bool:
+    return v is None or v == "" or v == []
+
+
+def essay_candidates(fields: list[FormField],
+                     answers: list[FieldAnswer]) -> list[tuple[FormField, QuestionKey]]:
+    """Long-text essay questions the deterministic mapper left without a value."""
+    by_id = {a.field_id: a for a in answers}
+    out = []
+    for f in fields:
+        a = by_id.get(f.field_id)
+        if a is None or not _empty(a.proposed_value) or a.decision not in (
+                FieldDecision.ASK_USER, FieldDecision.NOT_APPLICABLE):
+            continue
+        key = classify_essay(f.label, f.help_text, field_type=f.field_type,
+                             options=f.options)
+        if key is not None:
+            out.append((f, key))
+    return out
+
+
+def to_field_answer(f: FormField, d: EssayDraft) -> FieldAnswer:
+    if d.decision == FieldDecision.FILL_AND_REVIEW and d.answer:
+        n = len(d.story_ids)
+        why = (f"Essay ({d.key.value}): your canned answer" if d.note.startswith("canned:")
+               else f"Essay ({d.key.value}) drafted from {n} verified "
+                    f"{'story' if n == 1 else 'stories'}; review before use")
+        if d.note.endswith(":check_numbers"):
+            why += "; check its numbers"
+        return FieldAnswer(field_id=f.field_id, label=f.label, field_type=f.field_type,
+                           proposed_value=d.answer, decision=FieldDecision.FILL_AND_REVIEW,
+                           source_fact_id=d.source, confidence=_DRAFT_CONFIDENCE,
+                           rationale=why[:200])
+    return FieldAnswer(field_id=f.field_id, label=f.label, field_type=f.field_type,
+                       proposed_value=None, decision=FieldDecision.ASK_USER,
+                       source_fact_id=None, confidence=0.0,
+                       rationale=f"Essay ({d.key.value}): {d.note}"[:200])
+
+
+async def draft_essay_answers(fields: list[FormField], answers: list[FieldAnswer],
+                              gateway: Gateway | None, ectx: EssayContext,
+                              terms: set[str] | None = None) -> list[FieldAnswer]:
+    """Replace the empty answers of essay questions with a draft (or an ASK_USER note).
+    An answer saved to the library for that question type is used first."""
+    better: dict[str, FieldAnswer] = {}
+    agent = EssayAgent()
+    for f, key in essay_candidates(fields, answers):
+        saved = ectx.library.get(library_key(key))
+        if isinstance(saved, str) and saved.strip():
+            better[f.field_id] = FieldAnswer(
+                field_id=f.field_id, label=f.label, field_type=f.field_type,
+                proposed_value=saved.strip(), decision=FieldDecision.FILL_AND_REVIEW,
+                source_fact_id=f"library:{library_key(key)}", confidence=_DRAFT_CONFIDENCE,
+                rationale=f"Essay ({key.value}): your saved answer for this question type")
+            continue
+        d = await agent.draft(gateway, question=f.label + (
+            f"\n{f.help_text}" if f.help_text else ""), key=key, bank=ectx.bank,
+            facts=ectx.facts, skills=ectx.skills, job=ectx.job, terms=terms)
+        better[f.field_id] = to_field_answer(f, d)
+    return [better.get(a.field_id, a) for a in answers]
+
+
+def guard_essay_answers(s: Session, answers: list[FieldAnswer]) -> list[FieldAnswer]:
+    """Handler-side check (single writer): an essay answer is never AUTO_FILL, and a draft
+    whose stories are no longer verified goes back to the user."""
+    verified = {st.story_id for st in stored_bank(s).verified()}
+    out = []
+    for a in answers:
+        src = a.source_fact_id or ""
+        if not src.startswith(ESSAY_PREFIX):
+            out.append(a)
+            continue
+        if a.decision not in (FieldDecision.FILL_AND_REVIEW, FieldDecision.ASK_USER):
+            raise OutputRejected("essay_answer_not_reviewed")
+        ids = [i for i in src[len(ESSAY_PREFIX):].split(",") if i]
+        if any(i not in verified for i in ids):
+            a = a.model_copy(update={
+                "proposed_value": None, "decision": FieldDecision.ASK_USER,
+                "source_fact_id": None, "confidence": 0.0,
+                "rationale": "Essay: story_changed before the draft was stored"})
+        out.append(a)
+    return out
