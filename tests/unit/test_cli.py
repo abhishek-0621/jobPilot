@@ -242,7 +242,7 @@ def test_discover_run_now_runs_cycle_then_maintenance(
         return 3
 
     monkeypatch.setattr(cli, "_discover_now", fake_now)
-    monkeypatch.setattr(cli, "_run_maintenance_if_available", lambda cfg: seen.append("maint"))
+    monkeypatch.setattr(cli, "_run_maintenance_if_available", lambda cfg, **_: seen.append("maint"))
     r = runner.invoke(cli.app, ["discover", "--run-now", "--config-dir", str(d)])
     assert r.exit_code == 0, r.output
     assert seen == ["cycle", "maint"] and "3 tasks" in r.output

@@ -1,5 +1,6 @@
 """`jobpilot` command line: setup, doctor, start, migrate."""
 
+import logging
 import os
 import shutil
 import subprocess
@@ -247,17 +248,20 @@ async def _discover_now(cfg: AppConfig) -> int:
 _LOCK_BUSY_SCHEDULED = "Another JobPilot operation holds the lock; skipping this scheduled run."
 
 
-def _run_maintenance_if_available(cfg: AppConfig) -> None:
-    """Task 4 adds `jobpilot.ops.maintenance.run_maintenance`; until then this is a no-op."""
-    import importlib
-    import importlib.util
+def _run_maintenance_if_available(cfg: AppConfig, *, scheduled: bool = False) -> None:
+    """Run retention/maintenance after a discovery run. A scheduled run logs a failure
+    and carries on (exit 0); an interactive one exits 1."""
+    from jobpilot.ops.maintenance import run_maintenance
 
-    if importlib.util.find_spec("jobpilot.ops.maintenance") is None:
-        return
-    from jobpilot.ops.lock import ops_lock
-
-    with ops_lock(cfg):
-        importlib.import_module("jobpilot.ops.maintenance").run_maintenance(cfg)
+    try:
+        counts = run_maintenance(cfg)
+    except Exception as e:
+        logging.getLogger("jobpilot.maintenance").exception("maintenance failed")
+        typer.echo(f"Maintenance failed: {e}")
+        if scheduled:
+            return
+        raise typer.Exit(1) from e
+    typer.echo("Maintenance: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
 @app.command()
@@ -286,7 +290,7 @@ def discover(
                 steps = asyncio.run(_discover_now(cfg))
                 typer.echo(f"Discovery cycle finished ({steps} tasks). "
                            "Other work stays queued for `jobpilot start`.")
-                _run_maintenance_if_available(cfg)
+                _run_maintenance_if_available(cfg, scheduled=scheduled)
         except LockHeld as e:
             if scheduled:
                 typer.echo(f"{_LOCK_BUSY_SCHEDULED} ({e})")
@@ -308,6 +312,86 @@ def discover(
     typer.echo(f"Queued discovery run {run_id}")
     if not _server_running(cfg):
         typer.echo("Run `uv run jobpilot start` to process it.")
+
+
+@app.command()
+def maintenance(config_dir: ConfigDir = Path("config")) -> None:
+    """Prune old data of finished applications and old exports; optimize and check the DB."""
+    from jobpilot.ops.lock import LockHeld
+    from jobpilot.ops.maintenance import run_maintenance
+
+    cfg = load_config(config_dir)
+    if not cfg.db_path.is_file():
+        typer.echo(f"No database at {cfg.db_path}; run `uv run jobpilot setup` first.")
+        raise typer.Exit(1)
+    try:
+        counts = run_maintenance(cfg)
+    except LockHeld as e:
+        typer.echo(str(e))
+        raise typer.Exit(1) from e
+    except Exception as e:
+        typer.echo(f"Maintenance failed: {e}")
+        raise typer.Exit(1) from e
+    typer.echo("Maintenance done: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
+delete_app = typer.Typer(help="Delete data permanently (cannot be undone).",
+                         no_args_is_help=True)
+app.add_typer(delete_app, name="delete")
+
+
+@delete_app.command("app")
+def delete_app_cmd(
+    application_id: Annotated[str, typer.Argument(help="Application id")],
+    confirm: Annotated[str, typer.Option(help="Type the application id to confirm")] = "",
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Delete one finished application's answers and documents (audit history stays)."""
+    from jobpilot.ops.lock import LockHeld
+    from jobpilot.ops.purge import PurgeError, delete_application
+
+    cfg = load_config(config_dir)
+    if not cfg.db_path.is_file():
+        typer.echo(f"No database at {cfg.db_path}; run `uv run jobpilot setup` first.")
+        raise typer.Exit(1)
+    engine = make_engine(cfg.db_path)
+    try:
+        with make_session_factory(engine)() as s:
+            try:
+                counts = delete_application(cfg, s, application_id, confirm=confirm)
+            except (PurgeError, LookupError, LockHeld) as e:
+                typer.echo(f"Delete refused: {e}")
+                raise typer.Exit(1) from e
+    finally:
+        engine.dispose()
+    typer.echo(f"Deleted application {application_id}: {counts['answers_n']} answers, "
+               f"{counts['artifacts_n']} documents. The audit history is kept.")
+
+
+@delete_app.command("all")
+def delete_all_cmd(
+    confirm: Annotated[str, typer.Option(help='Type "DELETE ALL" to confirm')] = "",
+    include_backups: Annotated[bool, typer.Option(
+        "--include-backups", help="Also delete storage/backups")] = False,
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Delete the database and all stored data (CLI only; cannot be undone)."""
+    from jobpilot.ops.lock import LockHeld
+    from jobpilot.ops.purge import PurgeError, delete_all
+
+    cfg = load_config(config_dir)
+    try:
+        removed = delete_all(cfg, confirm=confirm, include_backups=include_backups)
+    except (PurgeError, LockHeld) as e:
+        typer.echo(f"Delete refused: {e}")
+        raise typer.Exit(1) from e
+    for p in removed:
+        typer.echo(f"Removed {p}")
+    if not removed:
+        typer.echo("Nothing to remove.")
+    if not include_backups:
+        typer.echo(f"Backups kept in {cfg.storage_path / 'backups'} "
+                   "(use --include-backups to delete them too).")
 
 
 export_app = typer.Typer(help="Export your data (contains personal data).", no_args_is_help=True)

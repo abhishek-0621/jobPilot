@@ -240,7 +240,7 @@ def _one_line(text: str, limit: int = 120) -> str:
 
 @router.get("/ui/jobs", response_class=HTMLResponse)
 def jobs(request: Request, s: Db, status: str | None = None,
-         show_duplicates: int = 0) -> HTMLResponse:
+         show_duplicates: int = 0, deleted: str | None = None) -> HTMLResponse:
     version = _active_version(s)
     selected = {a.job_id: a.application_id
                 for a in s.execute(select(ApplicationRow)).scalars()}
@@ -260,6 +260,8 @@ def jobs(request: Request, s: Db, status: str | None = None,
                      and job.job_id not in selected})
     return _page(request, s, "jobs.html", {
         "rows": rows, "status": status or "", "show_duplicates": bool(show_duplicates),
+        "flash": f"Deleted the data of application {deleted}. Its audit history is kept."
+        if deleted else None,
         "statuses": [st.value for st in JobStatus]})
 
 
@@ -405,13 +407,51 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
 
 @router.get("/ui/applications/{application_id}/export")
 def export_application_ui(request: Request, application_id: str, s: Db) -> FileResponse:
+    """Build the bundle in a temp dir and stream it; nothing is left in storage/exports."""
+    import shutil
+    import tempfile
+
+    from starlette.background import BackgroundTask
+
     from jobpilot.ops.export import export_application
 
     if s.get(ApplicationRow, application_id) is None:
         raise HTTPException(404, "application not found")
-    path = export_application(request.app.state.cfg, s, application_id)
+    cfg: AppConfig = request.app.state.cfg
+    tmp = Path(tempfile.mkdtemp(prefix="jobpilot-export-"))
+    try:
+        tmp.chmod(0o700)
+        path = export_application(cfg, s, application_id, out_dir=tmp)
+    except LookupError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise HTTPException(404, str(e)) from e
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     return FileResponse(path, media_type="application/zip", filename=path.name,
-                        content_disposition_type="attachment")
+                        content_disposition_type="attachment",
+                        background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
+
+
+@router.post("/ui/applications/{application_id}/delete", response_class=HTMLResponse,
+             response_model=None)
+def delete_application_ui(request: Request, application_id: str, s: Db,
+                          confirm: Annotated[str, Form()] = ""
+                          ) -> HTMLResponse | RedirectResponse:
+    from urllib.parse import quote
+
+    from jobpilot.ops.lock import LockHeld
+    from jobpilot.ops.purge import ConfirmationMismatch, DeleteRefused, delete_application
+
+    if s.get(ApplicationRow, application_id) is None:
+        raise HTTPException(404, "application not found")
+    try:
+        delete_application(request.app.state.cfg, s, application_id, confirm=confirm.strip())
+    except ConfirmationMismatch as e:
+        return _message(request, str(e), 422)
+    except (DeleteRefused, LockHeld) as e:
+        return _message(request, str(e), 409)
+    return RedirectResponse(f"/ui/jobs?deleted={quote(application_id)}", status_code=303)
 
 
 def _display(value: Any) -> str:

@@ -30,6 +30,14 @@
 <h3>Evidence</h3>
 <ul>{% for f in evidence %}<li><span class="mono">{{ f.fact_id }}</span>: {{ f.value }}</li>{% endfor %}</ul>
 {% else %}<p class="muted">Not generated yet.</p>{% endif %}
+{% if app.status in ("CONFIRMED", "SUBMITTED_BY_USER", "REJECTED_BY_USER", "SUBMISSION_FAILED") %}
+<h2>Delete this application's data</h2>
+<p class="muted">Permanently deletes the form answers and documents of this application. This cannot be undone. The job and the audit history are kept.</p>
+<form method="post" action="/ui/applications/{{ app.application_id }}/delete">
+<label>Type the application id to confirm <input type="text" name="confirm" autocomplete="off" required placeholder="{{ app.application_id }}"></label>
+<button type="submit">Delete permanently</button>
+</form>
+{% endif %}
 <h2>Status timeline</h2>
 {% if events %}<ul>{% for e in events %}<li>{{ e.timestamp_utc|local }} · {{ e.actor }} · {{ e.action }} · {{ e.outcome }}</li>{% endfor %}</ul>{% else %}<p class="muted">No events.</p>{% endif %}
 {% endblock %}

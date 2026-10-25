@@ -170,8 +170,9 @@ def _approvals(s: Session, app: ApplicationRow) -> list[ApprovalOut]:
 
 
 def export_application(cfg: AppConfig, s: Session, application_id: str, *,
-                       now: Callable[[], datetime] = utcnow) -> Path:
-    """Write storage/exports/application-<id>-<ts>.zip and return its path."""
+                       now: Callable[[], datetime] = utcnow,
+                       out_dir: Path | None = None) -> Path:
+    """Write <out_dir or storage/exports>/application-<id>-<ts>.zip and return its path."""
     app = s.get(ApplicationRow, application_id)
     if app is None:
         raise LookupError(f"application {application_id} not found")
@@ -222,7 +223,7 @@ def export_application(cfg: AppConfig, s: Session, application_id: str, *,
                 for e in s.execute(select(AuditEventRow).where(
                     AuditEventRow.entity_id == application_id)
                     .order_by(EVENT_ORDER)).scalars()])
-    out_dir = exports_dir(cfg)
+    out_dir = exports_dir(cfg) if out_dir is None else out_dir
     stamp = moment.strftime("%Y%m%d-%H%M%S")
     final = out_dir / f"application-{application_id}-{stamp}.zip"
     n = 1

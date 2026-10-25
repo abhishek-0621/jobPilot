@@ -52,11 +52,13 @@ def test_uncertain_exit_requires_user_or_verification(db_session):
 
 def test_terminal_states_have_no_exits():
     app = TRANSITIONS[ApplicationStatus]
+    # the only exit from a finished application is deleting its data
     for s in (ApplicationStatus.CONFIRMED, ApplicationStatus.REJECTED_BY_USER):
-        assert app[s] == frozenset()
-    # the only exit from SUBMISSION_FAILED is the user's explicit "Prepare again"
+        assert app[s] == frozenset({ApplicationStatus.DELETED})
+    assert app[ApplicationStatus.DELETED] == frozenset()
+    # SUBMISSION_FAILED: the user's explicit "Prepare again", or delete
     assert app[ApplicationStatus.SUBMISSION_FAILED] == frozenset(
-        {ApplicationStatus.FORM_IN_PROGRESS})
+        {ApplicationStatus.FORM_IN_PROGRESS, ApplicationStatus.DELETED})
     assert TRANSITIONS[OutreachStatus][OutreachStatus.SENT] == frozenset()
 
 

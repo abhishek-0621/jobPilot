@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ModelRoute(BaseModel):
@@ -30,6 +30,14 @@ class ScheduleConfig(BaseModel):
         return v
 
 
+class RetentionDays(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifacts: int = Field(365, ge=1)
+    contacts: int = Field(180, ge=1)
+    exports: int = Field(7, ge=1)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +52,7 @@ class AppConfig(BaseModel):
     field_aliases_path: Path = Path("config/field_aliases.yaml")
     schedule: ScheduleConfig = ScheduleConfig()
     backup_keep: int = 14
+    retention_days: RetentionDays = RetentionDays()
     model_routes: dict[str, ModelRoute]
 
     @field_validator("live_portals", mode="before")
