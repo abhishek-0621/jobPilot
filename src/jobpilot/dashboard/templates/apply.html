@@ -22,7 +22,8 @@
 <td>{{ r.label }}</td>
 <td><span class="badge">{{ r.decision }}</span></td>
 <td>{% if r.editable and ready %}<textarea id="ans-{{ loop.index }}" name="v:{{ r.field_id }}" rows="3" style="width:100%" aria-label="{{ r.label }}">{{ r.value }}</textarea>{% else %}<textarea readonly id="ans-{{ loop.index }}" rows="2" style="width:100%" aria-label="{{ r.label }}">{{ r.value }}</textarea>{% endif %}
-{% if r.decision == "ASK_USER" or r.decision == "USER_ONLY" %}<br><span class="muted">Answer this yourself</span>{% endif %}</td>
+{% if r.decision == "ASK_USER" or r.decision == "USER_ONLY" %}<br><span class="muted">Answer this yourself</span>{% endif %}
+{% if r.stories %}<br><span class="muted">Drafted from: {{ r.stories|join(", ") }} — review before pasting</span>{% elif r.rationale %}<br><span class="muted">{{ r.rationale }}</span>{% endif %}</td>
 <td><button type="button" data-copy="ans-{{ loop.index }}">Copy</button></td>
 </tr>{% endfor %}
 </tbody></table></div>

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Stories{% endblock %}
+{% block content %}
+<h1>Story bank</h1>
+<p><a href="/ui/profile">Profile</a></p>
+<p class="muted">Essay answers ("What are you most proud of?", "Biggest failure?", SWOT …) are drafted only from stories you verify here, your verified facts and your own canned answers. Notes under "Missing" are never stated as fact. Every draft is shown for review; nothing is auto-filled.</p>
+{% if not stories %}
+<p class="muted">No story bank imported. Copy <span class="mono">config/stories.example.yaml</span> to <span class="mono">storage/profiles/stories.yaml</span>, write your own stories, then run <span class="mono">uv run jobpilot profile import</span>.</p>
+{% else %}
+{% if standing_rules %}<h2>Standing rules</h2><ul>{% for r in standing_rules %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+{% if canned %}<p class="muted">Canned answers for: {{ canned|join(", ") }}</p>{% endif %}
+{% for item in stories %}{% set st = item.story %}
+<section>
+<h2>{{ st.title }} <span class="badge">{{ "verified" if item.verified else "unverified" }}</span></h2>
+<p class="muted"><span class="mono">{{ st.story_id }}</span> · {{ st.themes|join(", ") }}</p>
+<dl>
+{% if st.situation %}<dt>Situation</dt><dd>{{ st.situation }}</dd>{% endif %}
+{% if st.task %}<dt>Task</dt><dd>{{ st.task }}</dd>{% endif %}
+{% if st.action %}<dt>Action</dt><dd>{{ st.action }}</dd>{% endif %}
+{% if st.result %}<dt>Result</dt><dd>{{ st.result }}</dd>{% endif %}
+{% if st.tradeoffs %}<dt>Trade-offs</dt><dd>{{ st.tradeoffs }}</dd>{% endif %}
+{% if st.evidence %}<dt>Evidence</dt><dd><ul>{% for e in st.evidence %}<li>{{ e }}</li>{% endfor %}</ul></dd>{% endif %}
+{% if st.missing %}<dt>Missing (never used)</dt><dd><ul>{% for m in st.missing %}<li class="err">{{ m }}</li>{% endfor %}</ul></dd>{% endif %}
+</dl>
+<form method="post" action="/ui/profile/stories/{{ st.story_id }}/verify">
+{% if item.verified %}<input type="hidden" name="verified" value="false"><button type="submit">Unverify</button>
+{% else %}<input type="hidden" name="verified" value="true"><button type="submit">Verify</button>{% endif %}
+</form>
+{% if item.used_by %}<p class="muted">Used by: {% for a in item.used_by %}<a href="/ui/applications/{{ a }}/answers">{{ a }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

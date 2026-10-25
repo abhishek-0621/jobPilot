@@ -58,7 +58,11 @@ from jobpilot.contracts.enums import (
     OutreachStatus,
 )
 from jobpilot.contracts.models import is_http_url
-from jobpilot.data.mutations import set_library_answer
+from jobpilot.data.mutations import (
+    essay_story_ids,
+    save_essay_to_library,
+    set_library_answer,
+)
 from jobpilot.data.repositories import (
     batch_items,
     counts_by_status,
@@ -86,6 +90,7 @@ from jobpilot.data.tables import (
 )
 from jobpilot.discovery.board_finder import find_hits
 from jobpilot.forms.classify import classify_sensitive
+from jobpilot.forms.essay import classify_essay
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.observability.events import SUBMIT_CLICKED, last_event, prior_unresolved_click
 from jobpilot.ops import schedule as sched
@@ -100,6 +105,7 @@ from jobpilot.profile.preferences import (
     append_companies,
     load_companies,
 )
+from jobpilot.profile.stories import stored_bank, verify_story
 
 MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
@@ -499,9 +505,14 @@ def answers_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
     if app is None:
         raise HTTPException(404, "application not found")
     rows = []
+    titles = {st.story.story_id: st.story.title for st in stored_bank(s).stories}
     for r in answer_rows(s, application_id):
         value = json.loads(r.proposed_value_json)
+        story_ids = essay_story_ids(r.source_fact_id)
         rows.append({
+            "stories": [titles.get(i, f"{i} (removed)") for i in story_ids],
+            "essay": isinstance(value, str) and bool(value.strip())
+            and classify_essay(r.label, "", field_type=r.field_type) is not None,
             "field_id": r.field_id, "label": r.label, "field_type": r.field_type,
             "decision": r.decision, "value": value, "display": _display(value),
             "source": r.source_fact_id, "rationale": r.rationale, "required": r.required,
@@ -513,6 +524,23 @@ def answers_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
         "app": app, "job": s.get(JobRow, app.job_id), "rows": rows,
         "missing": unresolved_required(s, application_id),
         "editable_status": app.status in ANSWERABLE_STATUSES})
+
+
+@router.post("/ui/applications/{application_id}/answers/{field_id}/library",
+             response_model=None)
+def save_essay_library_ui(request: Request, application_id: str, field_id: str,
+                          s: Db) -> HTMLResponse | RedirectResponse:
+    """Save this essay answer as the library answer for its question type."""
+    try:
+        save_essay_to_library(s, application_id, field_id, actor="user")
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        s.rollback()
+        return _message(request, str(e), 422)
+    s.commit()
+    return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
 
 
 @router.post("/ui/applications/{application_id}/answers")
@@ -566,9 +594,13 @@ def apply_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
     if app.status not in MANUAL_STATUSES:
         raise HTTPException(409, f"No manual apply page for status {app.status}")
     rows = []
+    titles = {st.story.story_id: st.story.title for st in stored_bank(s).stories}
     for r in answer_rows(s, application_id):
         rows.append({"field_id": r.field_id, "label": r.label, "decision": r.decision,
                      "value": _text_value(r.proposed_value_json),
+                     "rationale": r.rationale if r.rationale.startswith("Essay") else "",
+                     "stories": [titles.get(i, f"{i} (removed)")
+                                 for i in essay_story_ids(r.source_fact_id)],
                      "editable": user_editable(r.decision, r.field_type)})
     return _page(request, s, "apply.html", {
         "app": app, "job": s.get(JobRow, app.job_id), "rows": rows,
@@ -902,6 +934,35 @@ def verify_section(category: str, s: Db) -> RedirectResponse:
             verify_fact(s, f.fact_id, True, actor="user")
     s.commit()
     return RedirectResponse("/ui/profile", status_code=303)
+
+
+@router.get("/ui/profile/stories", response_class=HTMLResponse)
+def stories_page(request: Request, s: Db) -> HTMLResponse:
+    bank = stored_bank(s)
+    used: dict[str, set[str]] = {}
+    for app_id, src in s.execute(select(
+            FormFieldAnswerRow.application_id, FormFieldAnswerRow.source_fact_id).where(
+            FormFieldAnswerRow.source_fact_id.like("essay:%"))):
+        for sid in essay_story_ids(src):
+            used.setdefault(sid, set()).add(app_id)
+    return _page(request, s, "stories.html", {
+        "stories": [{"story": st.story, "verified": st.verified,
+                     "used_by": sorted(used.get(st.story.story_id, ()))}
+                    for st in bank.stories],
+        "standing_rules": bank.standing_rules,
+        "canned": sorted(k.value for k in bank.canned)})
+
+
+@router.post("/ui/profile/stories/{story_id}/verify")
+def verify_story_ui(story_id: str, s: Db,
+                    verified: Annotated[str, Form()] = "") -> RedirectResponse:
+    try:
+        verify_story(s, story_id, verified == "true", actor="user")
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    s.commit()
+    return RedirectResponse("/ui/profile/stories", status_code=303)
 
 
 @router.post("/ui/profile/answers")

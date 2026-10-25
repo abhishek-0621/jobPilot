@@ -32,7 +32,8 @@
   {% if r.decision == "USER_ONLY" %}<br><span class="muted">You are answering this yourself</span>{% endif %}
 {% else %}{{ r.display }}{% endif %}</td>
 <td><span class="mono">{{ r.source or "—" }}</span></td>
-<td class="muted">{{ r.rationale }}</td>
+<td class="muted">{{ r.rationale }}{% if r.stories %}<br>Drafted from: {{ r.stories|join(", ") }}{% endif %}
+{% if r.essay %}<br><button type="submit" formaction="/ui/applications/{{ app.application_id }}/answers/{{ r.field_id }}/library" formmethod="post">Save to answer library</button>{% endif %}</td>
 </tr>{% endfor %}
 </tbody></table></div>
 {% if editable_status %}<button type="submit">Save answers</button>{% else %}<p class="muted">Answers can be changed while the application needs your input or failed validation.</p>{% endif %}

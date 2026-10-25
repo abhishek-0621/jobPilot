@@ -60,6 +60,44 @@ Then, in the dashboard:
    de-duplicated, extracted and scored by the local model; those below `min_match_score`
    or failing a hard filter (location, seniority, excluded keyword, experience gap) are rejected with a reason.
 
+## Story bank
+
+Open-ended questions ("What are you most proud of?", "Biggest failure?", "Strengths and
+weaknesses / SWOT", "Describe a challenging project", "Tell us about a time you helped a
+customer / disagreed / led / learned fast", "Why AI?") are answered from **your own
+stories**, never invented ones.
+
+1. Copy `config/stories.example.yaml` (a fictional example) to
+   `storage/profiles/stories.yaml` (git-ignored) and write your stories: `story_id`,
+   `title`, `themes`, `situation`, `task`, `action`, `result`, optional `tradeoffs`,
+   `evidence` (metrics exactly as you would state them) and `missing` (your own "[ADD]"
+   notes for details you still need to fill in). Add `standing_rules` (e.g. how to state
+   your years of experience) and `canned` answers you wrote yourself (e.g. `weaknesses`).
+   Unknown keys or themes are rejected.
+2. `uv run jobpilot profile import` imports the story bank along with the profile (counts
+   only are printed).
+3. Open **Profile → Story bank** (`/ui/profile/stories`) and verify each story. Only
+   verified stories are used. Editing a story makes it unverified again, and any drafted
+   answer that used it goes back to you for review.
+
+How answers are drafted (no fabrication):
+
+- An essay question (long-text field, matched by the patterns in
+  `config/essay_questions.yaml`) is drafted by the local model (route `essay`) from at most
+  two verified stories, your verified facts and your standing rules. Sensitive questions
+  (compensation, reasons for leaving, work authorisation, demographics, legal) are never
+  drafted.
+- Every number, technology and name in a draft must appear in the stories or facts used;
+  leadership claims need a story that says so; nothing from `missing` notes is ever
+  stated; SWOT answers need four labelled parts, with Weaknesses/Threats drawn only from
+  your weakness material. A draft that fails is retried once, then left to you.
+- Drafts are always **FILL_AND_REVIEW**: shown on the answers page with "Drafted from:
+  <story titles>" and approved like any other answer (editing one revokes approval). A
+  question with no suitable verified story is **ASK_USER** with a note such as
+  `needs_story:customer`. A canned answer is used verbatim.
+- After reviewing a draft you can **Save to answer library** for that question type; it is
+  then offered (still for review) on later applications.
+
 ## Job sources
 
 Automated discovery uses public, login-free job-board APIs only:
