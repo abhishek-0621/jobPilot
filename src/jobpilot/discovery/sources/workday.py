@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from jobpilot.contracts.enums import ErrorCode
-from jobpilot.discovery.normalize import require_http
+from jobpilot.discovery.normalize import normalize_url, require_http
 from jobpilot.discovery.sources.base import RateLimitedFetcher, RawPosting, SourceError
 from jobpilot.profile.preferences import CompanyBoard
 
@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 PAGE = 20
 MAX_PAGES = 5
 _EXTERNAL_PATH = re.compile(r"^/job/[A-Za-z0-9_./%-]+$")
+_ENCODED_SEPARATOR = re.compile(r"%2[ef]", re.IGNORECASE)
 
 
 class WorkdaySource:
@@ -51,7 +52,8 @@ class WorkdaySource:
                     item["title"]  # shape check before any detail call
                     path = item.get("externalPath")
                     if not isinstance(path, str) or not _EXTERNAL_PATH.fullmatch(path) \
-                            or ".." in path:
+                            or ".." in path \
+                            or _ENCODED_SEPARATOR.search(path):
                         rejected += 1
                         continue
                     items.append(item)
@@ -78,7 +80,8 @@ class WorkdaySource:
 def _parse(item: dict[str, Any], detail: dict[str, Any], board: CompanyBoard, host: str,
            site: str) -> RawPosting | None:
     info = detail["jobPostingInfo"]
-    url = require_http(info.get("externalUrl")) or f"{host}/{site}{item['externalPath']}"
+    url = normalize_url(
+        require_http(info.get("externalUrl")) or f"{host}/{site}{item['externalPath']}")
     location = info.get("location") or item.get("locationsText") or None
     if location and "Remote" in str(info.get("remoteType") or ""):
         location = f"{location} (Remote)"

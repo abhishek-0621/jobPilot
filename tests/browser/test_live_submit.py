@@ -27,6 +27,7 @@ from jobpilot.forms.browser import portal_page
 from jobpilot.observability.events import EVENT_ORDER
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind
+from jobpilot.portals.ashby import AshbyAdapter
 from jobpilot.portals.greenhouse import GreenhouseAdapter
 from jobpilot.portals.lever import LeverAdapter
 from jobpilot.portals.live_submit import LiveSubmitter, SubmitContext, make_before_click
@@ -41,8 +42,9 @@ pytestmark = [
     pytest.mark.skipif(not chromium_available(), reason="Chromium not installed"),
 ]
 
-Portal = Literal["greenhouse", "lever"]
-_ADAPTERS = {"greenhouse": GreenhouseAdapter, "lever": LeverAdapter}
+Portal = Literal["greenhouse", "lever", "ashby"]
+_ADAPTERS = {"greenhouse": GreenhouseAdapter, "lever": LeverAdapter, "ashby": AshbyAdapter}
+_IDENTITY_IDS = {"ashby": ("_systemfield_name", "_systemfield_email", "_systemfield_resume")}
 
 
 @pytest.fixture
@@ -55,7 +57,7 @@ def factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
 
 def live_cfg(tmp_path: Path) -> AppConfig:
     return AppConfig(storage_path=tmp_path / "storage", db_path=tmp_path / "live.db",
-                     dry_run=False, live_portals=["greenhouse", "lever"],
+                     dry_run=False, live_portals=["greenhouse", "lever", "ashby"],
                      browser_headless=True, model_routes={"a": ModelRoute(model_tag="m1")})
 
 
@@ -86,10 +88,12 @@ async def seed_approved(factory: sessionmaker[Session], cfg: AppConfig, url: str
         app.resume_artifact_id = store.write_artifact(
             s, app.application_id, "resume", resume, [], root=cfg.storage_path,
             profile_version=1).artifact_id
+        name_id, email_id, resume_id = _IDENTITY_IDS.get(
+            portal, ("first_name", "email", "resume"))
         for fid, ftype, value, source in [
-                ("first_name", "text", "Testy", "fact_identity_first"),
-                ("email", "email", "candidate@example.com", "fact_identity_email"),
-                ("resume", "file", str(resume), "artifact:resume"),
+                (name_id, "text", "Testy", "fact_identity_first"),
+                (email_id, "email", "candidate@example.com", "fact_identity_email"),
+                (resume_id, "file", str(resume), "artifact:resume"),
                 *[(f, "text", "x", "fact_x") for f in extra_answers]]:
             s.add(FormFieldAnswerRow(
                 application_id=app.application_id, field_id=fid, label=fid,
@@ -148,7 +152,7 @@ def _assert_no_click(factory: sessionmaker[Session], app_id: str, code: str,
     return app
 
 
-@pytest.mark.parametrize("portal", ["greenhouse", "lever"])
+@pytest.mark.parametrize("portal", ["greenhouse", "lever", "ashby"])
 async def test_live_submit_confirmed(factory: sessionmaker[Session], tmp_path: Path,
                                      form_server: str, form_posts: list[str],
                                      portal: Portal) -> None:

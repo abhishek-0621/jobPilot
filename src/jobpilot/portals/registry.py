@@ -4,12 +4,13 @@ browser may reach. Shared by form preparation and live submission."""
 from typing import Any
 from urllib.parse import urlsplit
 
+from jobpilot.portals.ashby import AshbyAdapter
 from jobpilot.portals.greenhouse import GreenhouseAdapter
 from jobpilot.portals.lever import LeverAdapter
 from jobpilot.portals.playwright_form import PlaywrightFormAdapter
 
 ADAPTERS: dict[str, type[PlaywrightFormAdapter]] = {
-    "greenhouse": GreenhouseAdapter, "lever": LeverAdapter}
+    "greenhouse": GreenhouseAdapter, "lever": LeverAdapter, "ashby": AshbyAdapter}
 _LOOPBACK = frozenset({"127.0.0.1", "localhost"})
 
 

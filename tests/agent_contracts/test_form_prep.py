@@ -32,6 +32,7 @@ from jobpilot.data.tables import (
 from jobpilot.documents import store
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind
+from jobpilot.portals.ashby import AshbyAdapter
 from jobpilot.portals.base import FillReport, FormField, FormSnapshot, ValidationReport
 from jobpilot.portals.greenhouse import GreenhouseAdapter
 from jobpilot.portals.lever import LeverAdapter
@@ -291,7 +292,8 @@ def test_form_url_and_hosts() -> None:
     assert form_url({"source": "greenhouse",
                      "canonical_url": "https://boards.greenhouse.io/a/jobs/1"}) == \
         "https://boards.greenhouse.io/a/jobs/1"
-    assert ADAPTERS == {"greenhouse": GreenhouseAdapter, "lever": LeverAdapter}
+    assert ADAPTERS == {"greenhouse": GreenhouseAdapter, "lever": LeverAdapter,
+                        "ashby": AshbyAdapter}
     hosts = allowed_hosts(LeverAdapter, "https://jobs.lever.co/a/1/apply")
     assert hosts == {"jobs.lever.co", "api.lever.co"}
     assert "127.0.0.1" not in allowed_hosts(GreenhouseAdapter, "https://boards.greenhouse.io/x")

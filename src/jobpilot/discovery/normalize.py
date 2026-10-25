@@ -28,8 +28,9 @@ def require_http(url: str | None) -> str | None:
     """The URL if it is an absolute http(s) URL, else None (never trust a source's scheme)."""
     if not url:
         return None
-    parts = urlsplit(url.strip())
-    return url if parts.scheme.lower() in ("http", "https") and parts.netloc else None
+    stripped = url.strip()
+    parts = urlsplit(stripped)
+    return stripped if parts.scheme.lower() in ("http", "https") and parts.netloc else None
 
 
 def normalize_title(title: str) -> str:

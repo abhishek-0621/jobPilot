@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Ashby-like application</title></head>
+<body>
+<h1>Apply for Backend Engineer</h1>
+<form data-testid="application-form" id="application-form" method="get" onsubmit="return false">
+  <div class="field"><label for="_systemfield_name">Name *</label>
+    <input type="text" id="_systemfield_name" name="_systemfield_name" required></div>
+  <div class="field"><label for="_systemfield_email">Email *</label>
+    <input type="email" id="_systemfield_email" name="_systemfield_email" required></div>
+  <div class="field"><label for="_systemfield_resume">Resume *</label>
+    <input type="file" id="_systemfield_resume" name="_systemfield_resume"></div>
+  <div class="field"><label for="phone">Phone</label>
+    <input type="tel" id="phone" name="phone_q1"></div>
+  <div class="field"><label for="linkedin">LinkedIn URL</label>
+    <input type="text" id="linkedin" name="linkedin_q2"></div>
+  <div class="field"><label for="why">Why do you want to work here?</label>
+    <textarea id="why" name="why_q3"></textarea></div>
+  <fieldset class="field"><legend>Are you legally authorized to work in this country? *</legend>
+    <label><input type="radio" name="auth_q4" value="yes"> Yes</label>
+    <label><input type="radio" name="auth_q4" value="no"> No</label></fieldset>
+  <div class="field"><label><input type="checkbox" id="declaration" name="declaration_q5">
+    I confirm the information above is accurate</label></div>
+  <button type="submit" id="submit_app"
+    onclick="window.__submitted = true;">Submit Application</button>
+</form>
+</body></html>

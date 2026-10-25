@@ -250,6 +250,16 @@ async def test_workday_parses_fixture() -> None:
     assert p.posted_at == datetime(2026, 10, 8, tzinfo=UTC)
 
 
+async def test_workday_urls_are_normalized() -> None:
+    det = json.loads((FIX / "workday_detail.json").read_text())
+    det["jobPostingInfo"]["externalUrl"] = (
+        f"{WD_BASE.replace('https://', 'HTTPS://www.')}/External/job/x/?utm_source=a#frag")
+    async with client(_wd_handler([], detail=det)) as c:
+        p = (await WorkdaySource(c, min_interval_s=0).list_postings(WD))[0]
+    assert p.canonical_url == "https://sample.wd3.myworkdayjobs.com/External/job/x"
+    assert p.application_url == p.canonical_url
+
+
 async def test_workday_remote_and_public_url_fallback() -> None:
     det = json.loads((FIX / "workday_detail.json").read_text())
     det["jobPostingInfo"].update(externalUrl="javascript:alert(1)", remoteType="Remote",
@@ -305,7 +315,7 @@ async def test_workday_detail_shape_change() -> None:
 
 async def test_workday_rejects_bad_external_path() -> None:
     bad = ["/job/../admin", "/other/x", "job/x", "/job/a b", "https://evil.test/job/x",
-           "/job/%2e%2e/x/..", ""]
+           "/job/%2e%2e/x/..", "/job/a%2Fb", "/job/a%2fb", "/job/%2E/x", ""]
     listing = {"total": 8, "jobPostings": [
         {"title": "T", "externalPath": p, "locationsText": ""} for p in bad] + [
         {"title": "Good", "externalPath": "/job/Bengaluru/Machine-Learning-Engineer_R-1001"}]}
@@ -355,6 +365,7 @@ def test_require_http() -> None:
 
     assert require_http("https://a.test/x") == "https://a.test/x"
     assert require_http("HTTP://a.test") == "HTTP://a.test"
+    assert require_http("  https://a.test/x \n") == "https://a.test/x"
     for bad in ("javascript:alert(1)", "ftp://a.test", "//a.test/x", "/x", "", None,
                 "https://"):
         assert require_http(bad) is None

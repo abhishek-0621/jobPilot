@@ -271,3 +271,13 @@ async def test_llm_cannot_unlock_sensitive(key: str) -> None:
     sugg = await suggest_keys([plain], gw2, ALIASES)
     assert "work_authorization" not in sugg.values()
     assert "demographics" not in sugg.values()
+
+
+@pytest.mark.parametrize("label,key,files", [
+    ("_systemfield_name", "full_name", False),
+    ("_systemfield_email", "email", False),
+    ("_systemfield_resume", "resume", True),
+])
+def test_ashby_systemfield_aliases(label: str, key: str, files: bool) -> None:
+    from jobpilot.forms.mapping import _match_key
+    assert _match_key(label, ALIASES, files=files)[0] == key

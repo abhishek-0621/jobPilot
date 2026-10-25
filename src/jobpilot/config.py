@@ -24,7 +24,7 @@ class AppConfig(BaseModel):
     db_path: Path = Path("storage/jobpilot.db")
     storage_path: Path = Path("storage")
     dry_run: bool = True
-    live_portals: list[Literal["greenhouse", "lever"]] = []
+    live_portals: list[Literal["greenhouse", "lever", "ashby"]] = []
     ollama_url: str = "http://127.0.0.1:11434"
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
