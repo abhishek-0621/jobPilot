@@ -70,6 +70,8 @@ def setup(config_dir: ConfigDir = Path("config")) -> None:
         subprocess.run(["ollama", "pull", tag], check=True)  # streams to this terminal
     _migrate(cfg)
     typer.echo(f"Storage ready at {cfg.storage_path}; database migrated.")
+    typer.echo("Optional: copy config/stories.example.yaml to "
+               f"{cfg.storage_path / 'profiles' / 'stories.yaml'} for essay answers.")
     typer.echo("Setup complete. Next: uv run jobpilot start")
     typer.echo(_BENCH_HINT)
 
@@ -115,6 +117,9 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
         days = int((time.time() - pre.stat().st_mtime) // 86400)
         typer.echo(f"[info] {pre.name}: pre-restore copy of your data, {days} days old "
                    "(removed by maintenance after retention_days.artifacts)")
+    stories_file = cfg.storage_path / "profiles" / "stories.yaml"
+    typer.echo(f"[info] story bank: {'present' if stories_file.exists() else 'none'}"
+               " (optional; see config/stories.example.yaml)")
     typer.echo(f"[info] dry_run: {cfg.dry_run}")
     if not all(ok for _, ok, _ in checks):
         raise typer.Exit(1)
@@ -196,10 +201,14 @@ def profile_import(
     path: Annotated[Path, typer.Option(help="Profile YAML to import")] = Path(
         "storage/profiles/profile.yaml"),
     config_dir: ConfigDir = Path("config"),
+    stories: Annotated[Path | None, typer.Option(
+        help="Story bank YAML (default: stories.yaml next to the profile)")] = None,
 ) -> None:
-    """Import the profile YAML as a new version. Prints counts only, never values."""
+    """Import the profile YAML as a new version, and the story bank when it exists.
+    Prints counts only, never values."""
     from jobpilot.profile.importer import active_profile, import_profile
     from jobpilot.profile.schema import load_profile_file
+    from jobpilot.profile.stories import import_stories, load_stories_file
 
     if not path.exists():
         typer.echo(f"Profile file not found: {path}. Create it (see "
@@ -208,11 +217,19 @@ def profile_import(
     cfg = load_config(config_dir)
     _migrate(cfg)
     pf = load_profile_file(path)
+    stories_path = stories if stories is not None else path.parent / "stories.yaml"
+    if stories is not None and not stories_path.exists():
+        typer.echo(f"Story bank not found: {stories_path}")
+        raise typer.Exit(1)
+    sf = load_stories_file(stories_path) if stories_path.exists() else None
+    story_counts: dict[str, int] | None = None
     engine = make_engine(cfg.db_path)
     try:
         with make_session_factory(engine)() as s:
             version = import_profile(s, pf, aliases_path=cfg.field_aliases_path)
             facts = active_profile(s)[1]
+            if sf is not None:
+                story_counts = import_stories(s, sf)
             s.commit()
     finally:
         engine.dispose()
@@ -223,6 +240,13 @@ def profile_import(
     for cat in sorted(counts):
         typer.echo(f"  {cat}: {counts[cat]}")
     typer.echo(f"  verified (carried over): {sum(f.verified_by_user for f in facts)}")
+    if story_counts is None:
+        typer.echo("No story bank (optional): copy config/stories.example.yaml to "
+                   f"{path.parent / 'stories.yaml'} for essay answers.")
+    else:
+        typer.echo(f"Imported story bank: {story_counts['stories']} stories "
+                   f"({story_counts['verified']} verified, {story_counts['changed']} changed),"
+                   f" {story_counts['canned']} canned answers")
     if pf.open_questions:
         typer.echo("Open questions:")
         for q in pf.open_questions:

@@ -12,12 +12,13 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.contracts.enums import FieldDecision, OutreachStatus
+from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, OutreachStatus
 from jobpilot.contracts.models import FieldAnswer, is_http_url
 from jobpilot.data.db import utcnow
 from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import (
     AnswerLibraryRow,
+    ApplicationRow,
     ContactCandidateRow,
     DocumentArtifactRow,
     FormFieldAnswerRow,
@@ -45,6 +46,24 @@ def _answer_row(s: Session, application_id: str, field_id: str) -> FormFieldAnsw
     )).scalar_one_or_none()
 
 
+ESSAY_PREFIX = "essay:"
+USER_SOURCE = "user"
+
+
+def essay_story_ids(source: str | None) -> list[str]:
+    """Story ids recorded in an essay answer's source (``essay:<id>,<id>``)."""
+    if not source or not source.startswith(ESSAY_PREFIX):
+        return []
+    return [i for i in source[len(ESSAY_PREFIX):].split(",") if i]
+
+
+def _check_essay(source: str | None, decision: FieldDecision | str | None) -> None:
+    if source and source.startswith(ESSAY_PREFIX) and decision is not None \
+            and FieldDecision(decision) not in (FieldDecision.FILL_AND_REVIEW,
+                                                FieldDecision.ASK_USER):
+        raise ValueError("essay answers are FILL_AND_REVIEW or ASK_USER only")
+
+
 def set_answer(s: Session, application_id: str, field_id: str, value: Any, *,
                actor: str, source_fact_id: str | None = None,
                decision: FieldDecision | None = None, rationale: str | None = None,
@@ -53,6 +72,7 @@ def set_answer(s: Session, application_id: str, field_id: str, value: Any, *,
     row = _answer_row(s, application_id, field_id)
     if row is None:
         raise LookupError(f"unknown field {field_id} on {application_id}")
+    _check_essay(source_fact_id or row.source_fact_id, decision or row.decision)
     row.proposed_value_json = canonical_json(value)
     if source_fact_id is not None:
         row.source_fact_id = source_fact_id
@@ -76,6 +96,7 @@ def upsert_answer_initial(s: Session, application_id: str, answer: FieldAnswer, 
         raise ValueError(f"field {answer.field_id} already has an answer")
     if ApprovalService(s).active_approval_for(application_id) is not None:
         raise ValueError(f"application {application_id} has an active approval")
+    _check_essay(answer.source_fact_id, answer.decision)
     s.add(FormFieldAnswerRow(
         application_id=application_id, field_id=answer.field_id, label=answer.label,
         field_type=answer.field_type, proposed_value_json=canonical_json(answer.proposed_value),
@@ -85,6 +106,50 @@ def upsert_answer_initial(s: Session, application_id: str, answer: FieldAnswer, 
     record_event(s, entity_type="application", entity_id=application_id, actor=actor,
                  action="answer_created", outcome="ok", details={"field_id": answer.field_id})
     s.flush()
+
+
+_STORY_STALE_STATUSES = (
+    ApplicationStatus.FORM_IN_PROGRESS.value, ApplicationStatus.NEEDS_USER_INPUT.value,
+    ApplicationStatus.VALIDATION_FAILED.value, ApplicationStatus.READY_FOR_REVIEW.value,
+    ApplicationStatus.APPROVED.value, ApplicationStatus.MANUAL_APPLY_READY.value)
+
+
+def invalidate_story_answers(s: Session, story_ids: list[str], *, reason: str,
+                             actor: str = "system") -> int:
+    """Drafted essay answers that used a changed, removed or unverified story go back to
+    the user (ASK_USER, draft kept for reference); approvals are revoked and a reviewed
+    application returns to NEEDS_USER_INPUT. The user's own answers are never touched.
+    Returns the number of answers changed."""
+    if not story_ids:
+        return 0
+    wanted = set(story_ids)
+    rows = s.execute(select(FormFieldAnswerRow).join(
+        ApplicationRow, ApplicationRow.application_id == FormFieldAnswerRow.application_id
+    ).where(FormFieldAnswerRow.source_fact_id.like(ESSAY_PREFIX + "%"),
+            ApplicationRow.status.in_(_STORY_STALE_STATUSES))).scalars().all()
+    apps: set[str] = set()
+    n = 0
+    for r in rows:
+        if not wanted & set(essay_story_ids(r.source_fact_id)):
+            continue
+        if r.decision == FieldDecision.ASK_USER.value and r.rationale.startswith(reason):
+            continue
+        set_answer(s, r.application_id, r.field_id, json.loads(r.proposed_value_json),
+                   actor=actor, decision=FieldDecision.ASK_USER,
+                   rationale=f"{reason}: a story this draft used changed; review or "
+                             "re-draft it")
+        apps.add(r.application_id)
+        n += 1
+    for app_id in sorted(apps):
+        app = get_application(s, app_id)
+        if app.status == ApplicationStatus.READY_FOR_REVIEW.value:
+            transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=actor, reason=reason)
+            transition(s, app, ApplicationStatus.NEEDS_USER_INPUT, actor=actor, reason=reason)
+        record_event(s, entity_type="application", entity_id=app_id, actor=actor,
+                     action="essay_answers_stale", outcome="ok",
+                     details={"reason": reason})
+    s.flush()
+    return n
 
 
 def remove_answer(s: Session, application_id: str, field_id: str, *, actor: str) -> None:
