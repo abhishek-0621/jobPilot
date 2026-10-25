@@ -171,3 +171,14 @@ def form_server(form_posts: list[str]) -> Iterator[str]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.fixture(autouse=True)
+def _no_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Careers fetches resolve their host first; tests never use real DNS."""
+    import jobpilot.outreach.contacts as contacts
+
+    async def fake_resolve(host: str) -> list[str]:
+        return ["93.184.216.34"]  # a public documentation-style address
+
+    monkeypatch.setattr(contacts, "resolve_host", fake_resolve)

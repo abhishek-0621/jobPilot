@@ -43,7 +43,7 @@ def test_vendor_email_never_kept_for_company() -> None:
                                 company="Acme") == []
     # slug fallback still works for the company's own domain
     assert [c.address for c in extract_from_posting(
-        "careers@acme.example", "jobvite.com", company="Acme")] == ["careers@acme.example"]
+        "careers@acme.dev", "jobvite.com", company="Acme")] == ["careers@acme.dev"]
 
 
 async def test_vendor_careers_inbox_rejected() -> None:

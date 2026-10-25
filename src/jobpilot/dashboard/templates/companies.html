@@ -7,11 +7,10 @@
 <form method="post" action="/ui/companies">
 <p><label>Company name <input type="text" name="name" required maxlength="100"></label> <button type="submit">Add company</button></p>
 </form>
-{% if results is not none %}
+{% if summary %}
 <div class="msg" role="status">
-{% if results %}Found {{ results|length }} board(s) for {{ searched }}; {{ added }} added, {{ results|length - added }} already configured.
-<ul>{% for h in results %}<li>{{ h.board.source }} · <span class="mono">{{ h.board.token }}</span> · {{ h.postings }} postings</li>{% endfor %}</ul>
-{% else %}No live public boards found for {{ searched }}. Try the exact name, or add the board by hand.{% endif %}
+{% if summary.found %}Found {{ summary.found }} board(s) for {{ summary.searched }}; {{ summary.added }} added, {{ summary.found - summary.added }} already configured.
+{% else %}No live public boards found for {{ summary.searched }}. Try the exact name, or add the board by hand.{% endif %}
 </div>
 {% endif %}
 <h2>Configured boards</h2>

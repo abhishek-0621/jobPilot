@@ -13,6 +13,10 @@ _TRACKING_PARAM = re.compile(
 def normalize_url(url: str) -> str:
     parts = urlsplit(url.strip())
     host = parts.netloc.lower()
+    scheme = parts.scheme.lower()
+    default = {"http": ":80", "https": ":443"}.get(scheme)
+    if default and host.endswith(default):
+        host = host[: -len(default)]
     if host.startswith("www."):
         host = host[4:]
     query = sorted(
@@ -21,7 +25,7 @@ def normalize_url(url: str) -> str:
         if not _TRACKING_PARAM.match(k)
     )
     path = parts.path.rstrip("/") or "/"
-    return urlunsplit((parts.scheme.lower(), host, path, urlencode(query), ""))
+    return urlunsplit((scheme, host, path, urlencode(query), ""))
 
 
 def require_http(url: str | None) -> str | None:

@@ -18,6 +18,7 @@ BASE = "https://api.ashbyhq.com/posting-api/job-board"
 
 class AshbySource:
     source = "ashby"
+    supports_max_postings = False
 
     def __init__(
         self,

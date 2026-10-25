@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
@@ -69,7 +70,19 @@ def start_discovery(s: Session, orch: Orchestrator) -> tuple[str, str]:
     if active is not None:
         raise ActionConflict(DISCOVERY_RUNNING)
     run_id = new_id("run")
-    task_id = orch.enqueue_in(s, TaskKind.DISCOVER, "run", run_id)
+    try:
+        # The partial unique index uq_task_active_discover closes the check-then-insert
+        # race: a concurrent start that got there first makes this insert fail.
+        with s.begin_nested():
+            task_id = orch.enqueue_in(s, TaskKind.DISCOVER, "run", run_id)
+    except IntegrityError:
+        s.rollback()
+        raise ActionConflict(DISCOVERY_RUNNING) from None
+    except OperationalError as e:
+        if "locked" not in str(e).lower():
+            raise
+        s.rollback()
+        raise ActionConflict("The database is busy; try starting discovery again.") from None
     s.commit()
     return task_id, run_id
 

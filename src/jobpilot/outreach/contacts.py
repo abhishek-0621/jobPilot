@@ -6,10 +6,16 @@ Posting text and careers pages are untrusted: only regex-extracted, domain-check
 addresses and a deterministic name/title pattern leave this module.
 """
 
+import asyncio
 import ipaddress
 import re
-from typing import Literal
+import socket
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
+
+import httpcore
+import httpx
 
 from jobpilot.contracts.models import Contract
 from jobpilot.discovery.normalize import html_to_text, require_http
@@ -85,10 +91,17 @@ def company_slug(company: str) -> str:
     return re.sub(r"[^a-z0-9]", "", company.casefold())
 
 
+# Slug fallback (no known company domain) only on common TLDs: a lookalike on an exotic
+# TLD (acme.zip, acme.xyz) is never taken for the company's own domain.
+SLUG_TLDS = frozenset({"com", "io", "ai", "co", "in", "co.in", "net", "org", "dev", "tech",
+                       "app"})
+
+
 def _slug_matches(domain: str, company: str) -> bool:
     labels = base_domain(domain).split(".")
     slug = company_slug(company)
-    return bool(slug) and len(labels) >= 2 and re.sub(r"[^a-z0-9]", "", labels[0]) == slug
+    return bool(slug) and len(labels) >= 2 and ".".join(labels[1:]) in SLUG_TLDS \
+        and re.sub(r"[^a-z0-9]", "", labels[0]) == slug
 
 
 def company_domain(canonical_url: str | None, application_url: str | None,
@@ -177,13 +190,99 @@ def public_http_url(url: str | None) -> str | None:
     return url
 
 
+Resolver = Callable[[str], Awaitable[list[str]]]
+
+
+async def resolve_host(host: str) -> list[str]:
+    """Every address ``host`` resolves to (A and AAAA)."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return [str(i[4][0]) for i in infos]
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _public_ip(addr: str) -> bool:
+    """Globally routable unicast only (rejects private, CGNAT 100.64/10, loopback, link-
+    local, reserved...); IPv6 forms that embed an IPv4 address must embed a global one."""
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded: list[ipaddress.IPv4Address] = []
+        if ip.ipv4_mapped is not None:
+            embedded.append(ip.ipv4_mapped)
+        if ip in _NAT64:
+            embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        if ip.sixtofour is not None:
+            embedded.append(ip.sixtofour)
+        if ip.teredo is not None:
+            embedded += list(ip.teredo)
+        if embedded:
+            return all(e.is_global and not e.is_multicast for e in embedded)
+    return ip.is_global and not ip.is_multicast
+
+
+class PinnedBackend(httpcore.AsyncNetworkBackend):
+    """Resolves the host itself, refuses unless every address is public, and connects to
+    the address it checked (TLS still uses the original host name for SNI and
+    certificates). This closes the DNS-rebinding gap between check and connect."""
+
+    def __init__(self, resolve: Resolver | None = None,
+                 inner: httpcore.AsyncNetworkBackend | None = None) -> None:
+        self._resolve = resolve
+        self._inner = inner or httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host: str, port: int, timeout: float | None = None,
+                          local_address: str | None = None,
+                          socket_options: Any = None) -> httpcore.AsyncNetworkStream:
+        try:
+            addrs = await (self._resolve or resolve_host)(host)
+        except (OSError, UnicodeError) as e:
+            raise httpcore.ConnectError(f"cannot resolve {host}") from e
+        if not addrs or not all(_public_ip(a) for a in addrs):
+            raise httpcore.ConnectError(f"{host} resolves to a non-public address")
+        return await self._inner.connect_tcp(addrs[0], port, timeout=timeout,
+                                             local_address=local_address,
+                                             socket_options=socket_options)
+
+    async def connect_unix_socket(self, path: str, timeout: float | None = None,
+                                  socket_options: Any = None) -> httpcore.AsyncNetworkStream:
+        raise httpcore.ConnectError("unix sockets are not allowed")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def pinned_client() -> httpx.AsyncClient:
+    """An httpx client whose every connection goes through ``PinnedBackend`` (no proxy)."""
+    transport = httpx.AsyncHTTPTransport()
+    transport._pool = httpcore.AsyncConnectionPool(  # only way to set the network backend
+        ssl_context=httpx.create_ssl_context(), network_backend=PinnedBackend())
+    return httpx.AsyncClient(transport=transport)
+
+
+async def resolves_public(host: str, resolve: Resolver) -> bool:
+    """True only when ``host`` resolves and every address is public (no private, loopback,
+    link-local, reserved or unspecified address). Resolution errors are refusals."""
+    try:
+        addrs = await resolve(host)
+    except (OSError, UnicodeError):
+        return False
+    return bool(addrs) and all(_public_ip(a) for a in addrs)
+
+
 async def fetch_careers_inbox(url: str | None, fetcher: RateLimitedFetcher,
-                              company_dom: str | None, company: str | None = None
-                              ) -> list[FoundContact]:
+                              company_dom: str | None, company: str | None = None, *,
+                              resolve: Resolver | None = None) -> list[FoundContact]:
     """One GET of the careers page; ``mailto:`` links with an allowlisted local part on the
-    company domain. Any fetch error yields no contacts."""
+    company domain. Any fetch error yields no contacts. A host that resolves to a private,
+    loopback or link-local address is never fetched."""
     url = public_http_url(url)
     if url is None or (company_dom is None and company is None):
+        return []
+    if not await resolves_public(urlsplit(url).hostname or "", resolve or resolve_host):
         return []
     try:
         html = await fetcher.get_text(url)

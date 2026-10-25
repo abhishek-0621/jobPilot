@@ -9,7 +9,7 @@
 <p class="muted">Active profile version {{ version }}. Only verified facts are ever used.</p>
 {% for category, facts in sections.items() %}
 <h2>{{ category }}</h2>
-<form method="post" action="/ui/profile/sections/{{ category }}/verify"><button type="submit">Verify all in section</button></form>
+<form method="post" action="/ui/profile/sections/{{ category|urlencode }}/verify"><button type="submit">Verify all in section</button></form>
 <div class="table-wrap"><table><thead><tr><th>Verified</th><th>Field</th><th>Value</th></tr></thead><tbody>
 {% for f in facts %}<tr><td><input type="checkbox" aria-label="Verify {{ f.fact_id }}" name="verified" value="true" {% if f.verified_by_user %}checked{% endif %}
  hx-post="/ui/profile/facts/{{ f.fact_id }}/verify" hx-vals='js:{"verified": event.target.checked ? "true" : "false"}' hx-target="#fact-msg-{{ loop.index0 }}-{{ category }}" hx-swap="innerHTML">

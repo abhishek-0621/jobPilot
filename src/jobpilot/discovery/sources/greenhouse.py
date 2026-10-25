@@ -19,6 +19,7 @@ BASE = "https://boards-api.greenhouse.io/v1/boards"
 
 class GreenhouseSource:
     source = "greenhouse"
+    supports_max_postings = False
 
     def __init__(
         self,

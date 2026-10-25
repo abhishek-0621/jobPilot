@@ -11,8 +11,10 @@ import shutil
 import tempfile
 import zipfile
 from collections.abc import Callable
-from datetime import datetime
-from pathlib import Path
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
+from pathlib import Path, PurePath
 from typing import Any
 
 from pydantic import BaseModel
@@ -304,7 +306,15 @@ def export_application(cfg: AppConfig, s: Session, application_id: str, *,
 
 
 def _plain(v: Any) -> Any:
-    return v.isoformat() if isinstance(v, datetime) else v
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        return str(v)
+    if isinstance(v, Enum):
+        return v.value
+    if isinstance(v, PurePath):
+        return str(v)
+    return v
 
 
 def export_all(cfg: AppConfig, s: Session, *, now: Callable[[], datetime] = utcnow) -> Path:
@@ -324,7 +334,7 @@ def export_all(cfg: AppConfig, s: Session, *, now: Callable[[], datetime] = utcn
             rows = [{k: _plain(v) for k, v in r._mapping.items()}
                     for r in s.execute(table.select())]
             f = work / f"{table.name}.json"
-            f.write_text(json.dumps(rows, indent=2, sort_keys=True))
+            f.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
             f.chmod(0o600)
         for tree in TREES:
             if (cfg.storage_path / tree).is_dir():

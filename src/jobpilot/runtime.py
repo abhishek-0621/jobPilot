@@ -58,7 +58,7 @@ from jobpilot.forms.model import BoundArtifacts, MappingContext, load_aliases
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import active_profile_version
 from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
-from jobpilot.outreach.contacts import FoundContact, fetch_careers_inbox
+from jobpilot.outreach.contacts import FoundContact, fetch_careers_inbox, pinned_client
 from jobpilot.portals.base import PortalAdapter
 from jobpilot.portals.live_submit import LiveSubmitter, SubmitContext, make_before_click
 from jobpilot.portals.simulated import SimulatedAdapter
@@ -77,10 +77,13 @@ class Runtime:
     client: httpx.AsyncClient
     owns_client: bool = field(default=False)
     submitter_factory: Callable[[str], PortalAdapter] | None = None
+    careers_client: httpx.AsyncClient | None = None  # owned, IP-pinned careers fetches
 
     async def aclose(self) -> None:
         if self.owns_client:
             await self.client.aclose()
+        if self.careers_client is not None:
+            await self.careers_client.aclose()
 
 
 def make_job_loader(session_factory: sessionmaker[Session]) -> Callable[[str], dict | None]:
@@ -401,12 +404,14 @@ def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
 
 def make_careers_inbox(
     client: httpx.AsyncClient,
-) -> Callable[[str | None, str | None], Any]:
-    """One rate-limited GET of a configured careers page (same User-Agent as sources)."""
+) -> Callable[[str | None, str | None, str | None], Any]:
+    """One rate-limited GET of a configured careers page (same User-Agent as sources).
+    The company name enables the slug fallback when the company domain is unknown."""
     fetcher = RateLimitedFetcher(client)
 
-    async def careers_inbox(url: str | None, domain: str | None) -> list[FoundContact]:
-        return await fetch_careers_inbox(url, fetcher, domain)
+    async def careers_inbox(url: str | None, domain: str | None,
+                            company: str | None = None) -> list[FoundContact]:
+        return await fetch_careers_inbox(url, fetcher, domain, company)
     return careers_inbox
 
 
@@ -419,6 +424,7 @@ def build_runtime(
 ) -> Runtime:
     owns = client is None
     http = client if client is not None else httpx.AsyncClient()
+    careers_http = client if client is not None else pinned_client()
     prefs = Provided(lambda: load_search_preferences(cfg))
     tools: dict[str, Any] = {
         "sources": build_sources(http),
@@ -438,7 +444,8 @@ def build_runtime(
         "tech_terms": lambda: load_tech_terms(TECH_TERMS_PATH),
         "cover_letter_banned": lambda: load_banned(BANNED_PATH),
         "outreach_context": make_outreach_loader(session_factory, cfg),
-        "careers_inbox": make_careers_inbox(http),
+        # Careers pages are arbitrary hosts: connect only to the public IP that was checked.
+        "careers_inbox": make_careers_inbox(careers_http),
     }
     agents: dict[TaskKind, Agent[Any, Any]] = {
         TaskKind.DISCOVER: DiscoverAgent(),
@@ -465,4 +472,5 @@ def build_runtime(
     return Runtime(agents=agents, handlers=handlers,
                    adapters={"simulated": SimulatedAdapter()}, tools=tools,
                    client=http, owns_client=owns,
+                   careers_client=careers_http if owns else None,
                    submitter_factory=make_submitter_factory(cfg, session_factory))

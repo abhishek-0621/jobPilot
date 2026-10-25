@@ -1,5 +1,6 @@
 """MATCH: explainable job matching; LLM judges three dimensions, code scores the rest."""
 
+import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -167,6 +168,8 @@ class MatchAgent:
         concerns = [c.strip() for c in raw.concerns
                     if c.strip() and not c.strip().casefold().startswith(_HARD_PREFIX)]
         concerns += [f"{_HARD_PREFIX}{r}" for r in failed]
+        if not all(math.isfinite(v) for v in (*dims.values(), raw.confidence)):
+            raise OutputRejected("non_finite_score")
         return MatchAssessment(
             job_id=inp.entity_id, profile_version=version, task_id=ctx.task_id,
             created_at=datetime.now(UTC), total_score=weighted_score(dims), **dims,
@@ -178,11 +181,20 @@ class MatchAgent:
         )
 
 
+def _require_finite(out: "MatchAssessment") -> None:
+    """NaN/inf scores never reach the database or the audit log (canonical JSON refuses
+    them); the task fails with a clear reason instead."""
+    values = [out.total_score, out.confidence, *(getattr(out, k) for k in WEIGHTS)]
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
+        raise OutputRejected("non_finite_score")
+
+
 def make_match_handler(prefs: SearchPreferences | Provided) -> Handler:
     """``prefs`` may be a ``Provided`` so edits to the preferences file apply per task."""
     def match_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         if not isinstance(out, MatchAssessment) or out.job_id != task.entity_id:
             raise OutputRejected("match output does not match task job")
+        _require_finite(out)
         job = s.get(JobRow, out.job_id)
         if job is None:
             raise OutputRejected("job_not_found")

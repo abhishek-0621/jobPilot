@@ -135,7 +135,8 @@ _INSPECT_JS = "(sels) => {" + _HELPERS + r"""
       .map(o => norm(o.textContent));
     if (type === 'checkbox') options = [label];
     out.push({ name: el.getAttribute('name') || null, id: el.id || null, label,
-      field_type: type, required: isRequired(el, raw), options, help_text: helpFor(el) });
+      field_type: type, required: isRequired(el, raw), options, help_text: helpFor(el),
+      maxlength: el.maxLength > 0 ? el.maxLength : null });
   }
   return out;
 }"""
@@ -319,7 +320,8 @@ class PlaywrightFormAdapter:
             seen.add(fid)
             fields.append(FormField(field_id=fid, label=r["label"], field_type=r["field_type"],
                                     required=bool(r["required"]), options=r["options"],
-                                    help_text=r["help_text"]))
+                                    help_text=r["help_text"],
+                                    maxlength=r.get("maxlength")))
         self._fields = {f.field_id: f for f in fields}
         return FormSnapshot(url=self.page.url, fields=fields, warnings=warnings)
 

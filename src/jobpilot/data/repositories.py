@@ -1,4 +1,5 @@
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, literal_column, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from jobpilot.contracts.enums import ApplicationStatus, BatchStatus, JobStatus
@@ -8,6 +9,7 @@ from jobpilot.data.tables import (
     ApprovalBatchRow,
     AuditEventRow,
     BatchItemRow,
+    CandidateProfileRow,
     JobRow,
     MatchAssessmentRow,
 )
@@ -39,18 +41,24 @@ def counts_by_status(s: Session, table: type) -> dict[str, int]:
     return {k: v for k, v in rows}
 
 
+def _by_source_id(s: Session, listing: JobListing) -> JobRow | None:
+    if listing.source_job_id is None:
+        return None
+    return s.execute(select(JobRow).where(
+        JobRow.source == listing.source, JobRow.source_job_id == listing.source_job_id,
+    )).scalar_one_or_none()
+
+
+def _seen_again(s: Session, existing: JobRow, listing: JobListing) -> tuple[JobRow, bool]:
+    existing.last_seen_at = listing.last_seen_at
+    s.flush()
+    return existing, False
+
+
 def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
-    if listing.source_job_id is not None:
-        existing = s.execute(
-            select(JobRow).where(
-                JobRow.source == listing.source,
-                JobRow.source_job_id == listing.source_job_id,
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            existing.last_seen_at = listing.last_seen_at
-            s.flush()
-            return existing, False
+    existing = _by_source_id(s, listing)
+    if existing is not None:
+        return _seen_again(s, existing, listing)
     url = normalize_url(listing.canonical_url)
     key = dedupe_key(listing.company, listing.title, listing.location)
     canonical = _find_canonical(s, JobRow.canonical_url == url)
@@ -58,8 +66,9 @@ def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
     if canonical is None:
         canonical = _find_canonical(s, JobRow.dedupe_key == key)
         match = "dedupe_key"
-    row = JobRow(
-        job_id=new_id("job"),
+    job_id = new_id("job")
+    values = dict(
+        job_id=job_id,
         source=listing.source,
         source_job_id=listing.source_job_id,
         canonical_url=url,
@@ -76,8 +85,19 @@ def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
         first_seen_at=listing.first_seen_at,
         last_seen_at=listing.last_seen_at,
     )
-    s.add(row)
+    # Insert-or-ignore on (source, source_job_id): a concurrent writer that inserted the
+    # same posting between the check above and here wins, and we update its row instead.
     s.flush()
+    result = s.execute(sqlite_insert(JobRow).values(**values)
+                       .on_conflict_do_nothing(index_elements=["source", "source_job_id"]))
+    if result.rowcount == 0:
+        existing = s.execute(select(JobRow).where(
+            JobRow.source == listing.source,
+            JobRow.source_job_id == listing.source_job_id)
+            .execution_options(populate_existing=True)).scalar_one()
+        return _seen_again(s, existing, listing)
+    row = s.get(JobRow, job_id)
+    assert row is not None
     if canonical is not None:
         record_event(s, entity_type="job", entity_id=row.job_id, actor="discovery",
                      action="job_duplicate", outcome="ok",
@@ -93,16 +113,43 @@ def _find_canonical(s: Session, clause: ColumnElement[bool]) -> JobRow | None:
     ).scalar_one_or_none()
 
 
+def active_profile_version(s: Session) -> int | None:
+    return s.execute(select(func.max(CandidateProfileRow.version))).scalar()
+
+
+def assessments_for(s: Session, job_ids: list[str] | None = None,
+                    version: int | None = None) -> dict[str, MatchAssessmentRow]:
+    """One query: per job, the assessment for ``version`` (the active profile version)
+    when there is one, else its latest. ``job_ids`` None means every job."""
+    # profile_version is part of the key; rowid breaks any tie toward the newest row.
+    q = select(MatchAssessmentRow).order_by(MatchAssessmentRow.profile_version,
+                                            literal_column("match_assessment.rowid"))
+    if job_ids is not None:
+        q = q.where(MatchAssessmentRow.job_id.in_(job_ids))
+    out: dict[str, MatchAssessmentRow] = {}
+    for m in s.execute(q).scalars():
+        if out.get(m.job_id) is None or out[m.job_id].profile_version != version:
+            out[m.job_id] = m  # ascending: ends on the latest unless the active one won
+    return out
+
+
 def jobs_with_scores(
     s: Session, status: str | None = None, min_score: float | None = None
 ) -> list[tuple[JobRow, float | None]]:
-    q = select(JobRow, func.max(MatchAssessmentRow.total_score)).outerjoin(
-        MatchAssessmentRow, MatchAssessmentRow.job_id == JobRow.job_id
-    ).group_by(JobRow.job_id).order_by(JobRow.first_seen_at.desc(), JobRow.job_id)
+    """Jobs, newest first, with the same score the job page shows: the assessment for the
+    active profile version, else the latest one."""
+    q = select(JobRow).order_by(JobRow.first_seen_at.desc(), JobRow.job_id)
     if status is not None:
         q = q.where(JobRow.status == status)
-    return [(job, score) for job, score in s.execute(q).all()
-            if min_score is None or (score is not None and score >= min_score)]
+    jobs = list(s.execute(q).scalars())
+    scores = assessments_for(s, None, active_profile_version(s))
+    out = []
+    for job in jobs:
+        m = scores.get(job.job_id)
+        score = None if m is None else m.total_score
+        if min_score is None or (score is not None and score >= min_score):
+            out.append((job, score))
+    return out
 
 
 def latest_batch(s: Session, batch_id: str) -> ApprovalBatchRow | None:

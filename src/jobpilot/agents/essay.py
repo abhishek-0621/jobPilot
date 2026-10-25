@@ -374,7 +374,8 @@ async def draft_essay_answers(fields: list[FormField], answers: list[FieldAnswer
             continue
         d = await agent.draft(gateway, question=f.label + (
             f"\n{f.help_text}" if f.help_text else ""), key=key, bank=ectx.bank,
-            facts=ectx.facts, skills=ectx.skills, job=ectx.job, terms=terms)
+            facts=ectx.facts, skills=ectx.skills, job=ectx.job, maxlength=f.maxlength,
+            terms=terms)
         better[f.field_id] = to_field_answer(f, d)
     return [better.get(a.field_id, a) for a in answers]
 

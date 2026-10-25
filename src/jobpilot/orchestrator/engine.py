@@ -265,27 +265,21 @@ class Orchestrator:
                 or_(TaskRow.not_before.is_(None), TaskRow.not_before <= now))
             if kinds is not None:
                 query = query.where(TaskRow.kind.in_([k.value for k in kinds]))
-            for _ in range(5):  # compare-and-set: another process may win the row
-                task = s.execute(
-                    query
-                    .order_by(TaskRow.not_before.is_not(None), TaskRow.not_before,
-                              TaskRow.task_id)
-                    .limit(1)
-                ).scalar_one_or_none()
-                if task is None:
-                    return None
-                task_id = task.task_id
-                won = s.execute(
-                    update(TaskRow)
-                    .where(TaskRow.task_id == task_id,
-                           TaskRow.status == TaskStatus.QUEUED.value)
-                    .values(status=TaskStatus.RUNNING.value, attempts=TaskRow.attempts + 1,
-                            lease_until=now + self._lease))
-                s.commit()
-                if won.rowcount == 1:  # type: ignore[attr-defined]
-                    return task_id
-                s.expire_all()
-            return None
+            # One atomic compare-and-set: the subquery picks the next due task and the
+            # UPDATE only succeeds while it is still QUEUED. SQLite serialises writers, so
+            # concurrent workers each get a different task and nobody idles early.
+            nxt = (query.with_only_columns(TaskRow.task_id)
+                   .order_by(TaskRow.not_before.is_not(None), TaskRow.not_before,
+                             TaskRow.task_id)
+                   .limit(1).scalar_subquery())
+            won = s.execute(
+                update(TaskRow)
+                .where(TaskRow.task_id == nxt, TaskRow.status == TaskStatus.QUEUED.value)
+                .values(status=TaskStatus.RUNNING.value, attempts=TaskRow.attempts + 1,
+                        lease_until=now + self._lease)
+                .returning(TaskRow.task_id)).scalar_one_or_none()
+            s.commit()
+            return won
 
     # ---- execution -------------------------------------------------------
     async def run_once(self, kinds: set[TaskKind] | None = None) -> bool:

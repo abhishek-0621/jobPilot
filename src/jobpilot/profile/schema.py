@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 Scalar = str | int
 
@@ -91,6 +91,19 @@ class ProfileFile(_Strict):
     achievements: list[FactEntry] = []
     answer_library: dict[str, Any] = {}
     open_questions: list[str] = []
+
+    @model_validator(mode="after")
+    def _unique_fact_ids(self) -> "ProfileFile":
+        ids = [e.fact_id for e in self.education]
+        ids += [f.fact_id for r in self.experience for f in r.facts]
+        ids += [f.fact_id for p in self.projects for f in p.facts]
+        ids += [f.fact_id for f in self.achievements]
+        ids += [f"fact_skill_{g}" for g in self.skills]
+        seen: set[str] = set()
+        dups = sorted({i for i in ids if i in seen or seen.add(i)})
+        if dups:
+            raise ValueError(f"duplicate fact_id: {', '.join(dups)}")
+        return self
 
 
 def load_profile_file(path: Path) -> ProfileFile:

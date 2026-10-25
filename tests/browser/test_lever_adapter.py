@@ -30,6 +30,7 @@ async def test_inspect_lever_fields(lever: LeverAdapter) -> None:
     assert f["name"].label == "Full name" and f["name"].required
     assert f["urls[LinkedIn]"].label == "LinkedIn URL"
     assert f["cards[abc][field0]"].label == "Describe a system you scaled"
+    assert f["cards[abc][field0]"].maxlength == 500 and f["name"].maxlength is None
     assert f["resume"].field_type == "file" and f["resume"].required
     assert f["resume"].label == "Resume/CV"
 

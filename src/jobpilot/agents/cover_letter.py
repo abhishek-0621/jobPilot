@@ -78,7 +78,10 @@ def compose(paragraphs: list[str], full_name: str) -> str:
 
 
 def _mask(paragraph: str, company: str, role: str) -> str:
-    """Replace exact (case-insensitive) company/role occurrences, longest first."""
+    """Replace exact (case-insensitive) company/role occurrences, longest first.
+
+    Partial role mentions are deliberately NOT masked: masking sub-phrases of an untrusted
+    title would let numbers or proper nouns inside them pass as source (fails safe)."""
     for text, token in sorted(((company, "the employer"), (role, "the position")),
                               key=lambda t: -len(t[0])):
         paragraph = re.sub(re.escape(text), token, paragraph, flags=re.IGNORECASE)
@@ -187,7 +190,12 @@ class CoverLetterAgent:
         if await html_to_pdf(html, pdf_path) != 1:
             pdf_path.unlink(missing_ok=True)
             raise DocRenderError("cover letter over one page")
-        txt_path.write_text(text, encoding="utf-8")
+        try:
+            txt_path.write_text(text, encoding="utf-8")
+        except BaseException:
+            pdf_path.unlink(missing_ok=True)  # never leave an orphan PDF behind
+            txt_path.unlink(missing_ok=True)
+            raise
         return CoverLetter(
             task_id=ctx.task_id, created_at=datetime.now(UTC), application_id=inp.entity_id,
             profile_version=version, company=company, role=role, paragraphs=paragraphs,
@@ -203,6 +211,9 @@ def make_cover_letter_handler(storage_path: Path) -> Handler:
         app = get_application(s, out.application_id)
         if app.status != ApplicationStatus.DOCUMENTS_PENDING.value:
             raise OutputRejected("not_documents_pending")
+        job = s.get(JobRow, app.job_id)
+        if job is None or (out.company, out.role) != (job.company, job.title):
+            raise OutputRejected("company_role_mismatch")
         stale = stale_follow_up(
             s, task, app.application_id,
             [out.profile_version, current_artifact_version(s, app.resume_artifact_id)],
@@ -231,8 +242,7 @@ def make_cover_letter_handler(storage_path: Path) -> Handler:
                                actor=_ACTOR)
         transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=_ACTOR,
                    reason="documents_ready")
-        job = s.get(JobRow, app.job_id)
-        automated = job is not None and apply_mode(job) == "automated"
+        automated = apply_mode(job) == "automated"
         kind = TaskKind.PREPARE_FORM if automated else TaskKind.MANUAL_PACKAGE
         return [(kind, "application", app.application_id)]
     return cover_letter_handler

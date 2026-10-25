@@ -171,7 +171,7 @@ def test_companies_page_add_flow(page_client: TestClient, tmp_path: Path,
     monkeypatch.setattr(routes, "find_hits", fake)
     r = page_client.post("/ui/companies", data={"name": " Acme "})
     assert r.status_code == 200
-    assert "1 added" in r.text and "7 postings" in r.text
+    assert "1 added" in r.text and "acme" in r.text  # PRG: summary + configured table
     path = tmp_path / "storage" / "profiles" / "companies.yaml"
     assert yaml.safe_load(path.read_text())["companies"] == [
         {"name": "Acme", "source": "greenhouse", "token": "acme"}]

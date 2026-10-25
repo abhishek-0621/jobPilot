@@ -65,6 +65,14 @@ class JobRequirements(AgentOutput):
     extraction_confidence: Confidence
 
 
+def _truncate_words(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` characters, at a word boundary when possible."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit + 1].rsplit(None, 1)[0] if " " in text[:limit + 1] else ""
+    return (cut if cut and len(cut) <= limit else text[:limit]).rstrip()
+
+
 def _clean_skills(skills: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -126,7 +134,7 @@ class ExtractAgent:
             preferred_skills=_clean_skills(raw.preferred_skills),
             experience_min_years=lo, experience_max_years=hi, seniority=raw.seniority,
             work_mode=raw.work_mode, location=location, role_family=raw.role_family,
-            summary=raw.summary.strip()[:_MAX_SUMMARY],
+            summary=_truncate_words(raw.summary.strip(), _MAX_SUMMARY),
             extraction_confidence=raw.extraction_confidence,
         )
 
@@ -142,8 +150,13 @@ def extract_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
     try:
         data = json.loads(job.extracted_json or "{}")
     except ValueError:
-        data = {}
+        data = None
     if not isinstance(data, dict):
+        # Never replace silently: the stored listing is unreadable, so record it; the
+        # fresh extraction below becomes the job's requirements.
+        record_event(s, entity_type="job", entity_id=job.job_id, actor=_ACTOR,
+                     action="extracted_json_malformed", outcome="warning",
+                     details={"replaced_with": "fresh_extraction"})
         data = {}
     data["requirements"] = out.model_dump(mode="json")
     job.extracted_json = canonical_json(data)

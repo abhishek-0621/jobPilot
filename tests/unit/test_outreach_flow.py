@@ -73,7 +73,8 @@ def factory(cfg: AppConfig) -> Iterator[sessionmaker[Session]]:
 
 def _orch(factory: sessionmaker[Session], cfg: AppConfig,
           careers: list[FoundContact] | None = None) -> Orchestrator:
-    async def careers_inbox(url: str | None, domain: str | None) -> list[FoundContact]:
+    async def careers_inbox(url: str | None, domain: str | None,
+                            company: str | None = None) -> list[FoundContact]:
         return list(careers or [])
     tools: dict[str, Any] = {
         "outreach_context": make_outreach_loader(factory, cfg),

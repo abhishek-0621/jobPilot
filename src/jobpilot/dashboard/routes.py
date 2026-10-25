@@ -2,6 +2,7 @@
 profile.importer and data.mutations."""
 
 import json
+import logging
 import os
 import re
 import time
@@ -9,12 +10,12 @@ from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -65,6 +66,7 @@ from jobpilot.data.mutations import (
     set_library_answer,
 )
 from jobpilot.data.repositories import (
+    assessments_for,
     batch_items,
     counts_by_status,
     jobs_with_scores,
@@ -114,6 +116,7 @@ NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
 UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
 STALE_MESSAGE = "This batch changed since you viewed it — reload to review the latest version."
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent / "templates")
 
@@ -270,15 +273,16 @@ def _one_line(text: str, limit: int = 120) -> str:
 def jobs(request: Request, s: Db, status: str | None = None,
          show_duplicates: int = 0, deleted: str | None = None) -> HTMLResponse:
     version = _active_version(s)
-    selected = {a.job_id: a.application_id
-                for a in s.execute(select(ApplicationRow)).scalars()}
-    app_status = {a.job_id: a.status for a in s.execute(select(ApplicationRow)).scalars()}
+    apps = list(s.execute(select(ApplicationRow)).scalars())
+    selected = {a.job_id: a.application_id for a in apps}
+    app_status = {a.job_id: a.status for a in apps}
+    assessments = assessments_for(s, None, version)  # one query, same rule as job detail
     rows = []
     for job, _score in jobs_with_scores(s, status or None):
         if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
                 and status != JobStatus.DUPLICATE.value:
             continue
-        m = _assessment(s, job.job_id, version)
+        m = assessments.get(job.job_id)
         rows.append({"job": job, "label": MANUAL_APPLIED_LABEL if app_status.get(
                          job.job_id) == ApplicationStatus.SUBMITTED_BY_USER.value
                      else job.status, "score": None if m is None else m.total_score,
@@ -769,6 +773,7 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
     cfg: AppConfig = request.app.state.cfg
     live = set(cfg.effective_live_portals)
     submittable = submit_candidates(s, batch.batch_id)
+    hashes = svc.application_hashes(app_ids)
     rows = []
     for item in items:
         app = apps.get(item.application_id)
@@ -778,7 +783,7 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
         for a in mine:
             summary[a.decision] = summary.get(a.decision, 0) + 1
         changed = app is None or app.status not in CHANGED_STATUSES \
-            or svc.application_hash(item.application_id) != item.item_hash
+            or hashes.get(item.application_id) != item.item_hash
         rows.append({
             "item": item, "app": app, "job": job, "changed": changed,
             "live": app is not None and app.portal in live,
@@ -1001,24 +1006,33 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
 def _companies_page(request: Request, s: Session, ctx: dict[str, Any],
                     status: int = 200) -> HTMLResponse:
     cfg: AppConfig = request.app.state.cfg
+    error = None
     try:
         boards = load_companies(cfg)
-    except (AttributeError, TypeError, ValueError, yaml.YAMLError):
-        boards = []  # unusable companies.yaml: the add path reports it; keep the page up
+    except (AttributeError, TypeError, ValueError, yaml.YAMLError, UnicodeDecodeError) as e:
+        boards = []  # keep the page up, but say why the list is empty
+        error = (f"{cfg.storage_path / 'profiles' / 'companies.yaml'} could not be read "
+                 f"({type(e).__name__}); fix or remove it. Discovery cannot use it either.")
     resp = _page(request, s, "companies.html", {
-        "boards": boards, "error": None, "results": None, "added": 0, **ctx})
+        "boards": boards, "error": error, "summary": None,
+        **ctx})
     resp.status_code = status
     return resp
 
 
 @router.get("/ui/companies", response_class=HTMLResponse)
-def companies(request: Request, s: Db) -> HTMLResponse:
-    return _companies_page(request, s, {})
+def companies(request: Request, s: Db, searched: str = "", found: int | None = None,
+              added: int = 0) -> HTMLResponse:
+    summary = None
+    if found is not None and searched:
+        summary = {"searched": searched[:100], "found": max(found, 0),
+                   "added": min(max(added, 0), max(found, 0))}
+    return _companies_page(request, s, {"summary": summary})
 
 
 @router.post("/ui/companies", response_class=HTMLResponse)
 async def add_company(request: Request, s: Db,
-                      name: Annotated[str, Form()] = "") -> HTMLResponse:
+                      name: Annotated[str, Form()] = "") -> Response:
     """Probe the public boards for a company name and append the live ones to
     storage/profiles/companies.yaml. Only public, login-free endpoints are contacted."""
     name = name.strip()
@@ -1032,7 +1046,9 @@ async def add_company(request: Request, s: Db,
         added = append_companies(cfg, [h.board for h in hits])
     except CompaniesFileError as e:
         return _companies_page(request, s, {"error": str(e)}, 422)
-    return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})
+    # Post/Redirect/Get: a reload never re-probes the boards or re-appends.
+    query = urlencode({"searched": name, "found": len(hits), "added": len(added)})
+    return RedirectResponse(f"/ui/companies?{query}", status_code=303)
 
 
 def _human_size(n: int) -> str:
@@ -1073,6 +1089,7 @@ def _schedule_view(request: Request, cfg: AppConfig) -> dict[str, Any]:
         agents = sched.status(cfg, home=state.schedule_home, runner=state.schedule_runner,
                               uid=os.getuid())
     except Exception:  # a hung or missing launchctl must not break the page
+        log.warning("settings: schedule status unavailable", exc_info=True)
         return {"available": True, "agents": None}
     return {"available": True, "agents": agents}
 

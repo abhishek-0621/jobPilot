@@ -31,6 +31,11 @@ ARCHIVE_RE = re.compile(r"jobpilot-\d{8}-\d{6}(?:-(\d+))?\.tar\.gz")
 MARKER_NAME = "RESTORE_IN_PROGRESS"
 TREES = ("profiles", "artifacts")
 TOP_FILES = ("db.sqlite", "manifest.json")
+# Restore extraction caps, checked from the tar headers before anything is written.
+MAX_RESTORE_BYTES = 20 * 1024**3
+MAX_RESTORE_MEMBERS = 200_000
+MAX_RESTORE_RATIO = 20  # uncompressed bytes per archive byte
+MIN_RESTORE_CAP_BYTES = 1024**3  # the ratio cap never goes below 1 GB
 
 
 class RestoreError(RuntimeError):
@@ -49,7 +54,7 @@ def recovery_instructions(cfg: AppConfig) -> str:
     """Printed by doctor/start when a restore was interrupted (marker file present)."""
     marker = restore_marker(cfg)
     try:
-        detail = marker.read_text().strip()
+        detail = marker.read_text(encoding="utf-8").strip()
     except OSError:
         detail = ""
     return (f"A restore did not finish ({marker} exists{': ' + detail if detail else ''}). "
@@ -116,7 +121,7 @@ def server_running(cfg: AppConfig, *,
     """True when `jobpilot start`'s pid file names a live process, or the port answers."""
     pf = pid_file(cfg)
     try:
-        if pf.exists() and _pid_alive(int(pf.read_text().strip())):
+        if pf.exists() and _pid_alive(int(pf.read_text(encoding="utf-8").strip())):
             return True
     except (ValueError, OverflowError):
         pass
@@ -126,7 +131,7 @@ def server_running(cfg: AppConfig, *,
 def write_pid_file(cfg: AppConfig) -> Path:
     pf = pid_file(cfg)
     _private_dir(pf.parent)
-    pf.write_text(str(os.getpid()))
+    pf.write_text(str(os.getpid()), encoding="utf-8")
     return pf
 
 
@@ -213,7 +218,8 @@ def _backup(cfg: AppConfig, *, now: Callable[[], datetime], keep: int | None) ->
                  for p in sorted(stage.rglob("*")) if p.is_file()}
         manifest = {"format": FORMAT, "created_utc": now().isoformat(),
                     "alembic_revision": _alembic_revision(db_copy), "files": files}
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        (stage / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         (stage / "manifest.json").chmod(0o600)
         tmp_archive = work / "archive.tar.gz"
         with tarfile.open(tmp_archive, "w:gz") as tar:
@@ -253,12 +259,21 @@ def _extract_verified(archive: Path, dest: Path) -> None:
         bad = [m.name for m in members if not _safe_member(m)]
         if bad:
             raise RestoreError(f"archive contains unsafe members: {bad[:5]}")
+        if len(members) > MAX_RESTORE_MEMBERS:
+            raise RestoreError(f"archive has too many members ({len(members)} > "
+                               f"{MAX_RESTORE_MEMBERS})")
+        total = sum(m.size for m in members if m.isfile())
+        cap = min(MAX_RESTORE_BYTES, max(MAX_RESTORE_RATIO * archive.stat().st_size,
+                                         MIN_RESTORE_CAP_BYTES))
+        if total > cap:
+            raise RestoreError(f"archive is too large to restore ({total:,} bytes > "
+                               f"{cap:,})")
         tar.extractall(dest, members=members, filter="data")
     mpath = dest / "manifest.json"
     if not mpath.is_file() or not (dest / "db.sqlite").is_file():
         raise RestoreError("archive is missing manifest.json or db.sqlite")
     try:
-        manifest = json.loads(mpath.read_text())
+        manifest = json.loads(mpath.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
         raise RestoreError(f"manifest.json is not valid JSON: {e}") from e
     if not isinstance(manifest, dict):
@@ -292,13 +307,17 @@ def restore(cfg: AppConfig, archive: Path, *, confirm: str,
         raise RestoreError(f"type {CONFIRM_WORD} exactly to confirm a restore")
     from jobpilot.ops.lock import LockHeld, ops_lock
 
-    if server_running(cfg):
-        raise RestoreError(f"jobpilot start is running (pid file: {pid_file(cfg)}); "
-                           "stop it before restoring")
-    if restore_marker(cfg).exists():
-        raise RestoreError(recovery_instructions(cfg))
+    def check() -> None:
+        if server_running(cfg):
+            raise RestoreError(f"jobpilot start is running (pid file: {pid_file(cfg)}); "
+                               "stop it before restoring")
+        if restore_marker(cfg).exists():
+            raise RestoreError(recovery_instructions(cfg))
+
+    check()
     try:
         with ops_lock(cfg):
+            check()  # again under the lock: `start` writes its pid file while holding it
             return _restore(cfg, archive, now=now, integrity_check=integrity_check)
     except LockHeld as e:
         raise RestoreError(str(e)) from e
@@ -319,7 +338,7 @@ def _restore(cfg: AppConfig, archive: Path, *, now: Callable[[], datetime],
             raise RestoreError(f"{pre} already exists")
         _private_dir(pre)
         marker = restore_marker(cfg)
-        marker.write_text(f"started {now().isoformat()}; originals in {pre}\n")
+        marker.write_text(f"started {now().isoformat()}; originals in {pre}\n", encoding="utf-8")
         targets = [(cfg.db_path, work / "db.sqlite", pre / "jobpilot.db")]
         targets += [(storage / t, work / t, pre / t) for t in TREES]
         sidecars = [cfg.db_path.with_name(cfg.db_path.name + s) for s in ("-wal", "-shm")]

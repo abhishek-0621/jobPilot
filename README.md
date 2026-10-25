@@ -35,6 +35,26 @@ something is wrong.
 To see the dashboard with sample data: `uv run python scripts/seed_dry_run.py`, then
 `uv run jobpilot start`.
 
+## First real run
+
+`uv run jobpilot doctor` lists what is still missing, each with the command that fixes it.
+
+1. **Verify your facts.** Put your profile in `storage/profiles/` (see *Profile &
+   discovery*), run `uv run jobpilot profile import`, then tick every fact on
+   **Profile** (`/ui/profile`). Only verified facts are ever used.
+2. **Verify your stories** (optional, needed for essay questions): see *Story bank*, then
+   verify each one at `/ui/profile/stories`.
+3. **Add companies:** `uv run jobpilot boards find "Company A" "Company B" --write` (or
+   **Companies** in the dashboard). Workday tenants are added by hand.
+4. **Run discovery:** `uv run jobpilot discover --run-now` or *Discover* on the
+   **Jobs** page, then pick jobs there.
+5. **Review a batch:** open **Batches**, read every answer and document, approve.
+6. **Keep `dry_run: true` for this first supervised pass**: approved applications go to
+   the simulated portal only, so you can check the whole flow end to end.
+7. **Then go live with one portal:** set `dry_run: false` and a single portal in
+   `live_portals` (e.g. `live_portals: [greenhouse]`), restart, and submit one approved
+   application while watching it (see *Going live*).
+
 ## Profile & discovery
 
 Put your own files in `storage/profiles/` (git-ignored; never commit them):

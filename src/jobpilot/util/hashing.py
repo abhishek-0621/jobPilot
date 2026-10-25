@@ -27,7 +27,8 @@ def _default(obj: Any) -> Any:
 
 def canonical_json(obj: Any) -> str:
     return json.dumps(
-        obj, default=_default, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        obj, default=_default, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
     )
 
 
