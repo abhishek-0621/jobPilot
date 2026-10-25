@@ -23,7 +23,6 @@ from jobpilot.contracts.enums import (
     FieldDecision,
     JobStatus,
     OutreachStatus,
-    PortalCapability,
     Recovery,
     recovery_for,
 )
@@ -50,8 +49,14 @@ from jobpilot.observability.events import (
     submit_click_recorded,
 )
 from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
-from jobpilot.orchestrator.policies import PolicyConfig, may_send_outreach, may_submit
+from jobpilot.orchestrator.policies import (
+    OutreachSendDisabled,
+    PolicyConfig,
+    may_enqueue_outreach_send,
+    may_submit,
+)
 from jobpilot.orchestrator.state_machine import transition
+from jobpilot.outreach.state import research_blocker
 from jobpilot.portals.base import (
     ApprovedApplication,
     ManualHandoff,
@@ -156,7 +161,11 @@ def add_task(
     s: Session, kind: TaskKind, entity_type: str, entity_id: str,
     not_before: datetime | None = None,
 ) -> str:
-    """The single place a TaskRow is created (plus its task_enqueued event); no commit."""
+    """The single place a TaskRow is created (plus its task_enqueued event); no commit.
+
+    OUTREACH_SEND is refused by policy: JobPilot never sends outreach."""
+    if TaskKind(kind) is TaskKind.OUTREACH_SEND and not may_enqueue_outreach_send().allowed:
+        raise OutreachSendDisabled()
     task_id = new_id("task")
     s.add(TaskRow(task_id=task_id, kind=TaskKind(kind).value, entity_type=entity_type,
                   entity_id=entity_id, status=TaskStatus.QUEUED.value, attempts=0,
@@ -177,6 +186,14 @@ def _submit_action(s: Session, app: ApplicationRow) -> str:
         AuditEventRow.entity_id == app.application_id,
         AuditEventRow.action == USER_RESOLVED_NOT_SUBMITTED)).all())
     return "submit" if n == 0 else f"submit#{n + 1}"
+
+
+def queue_outreach_research(s: Session, app: ApplicationRow, cfg: AppConfig) -> str | None:
+    """After a real application: queue OUTREACH_RESEARCH when ``outreach.auto_draft`` is on
+    and nothing blocks it (simulated, duplicate company, already queued). No commit."""
+    if not cfg.outreach.auto_draft or research_blocker(s, app, cfg) is not None:
+        return None
+    return add_task(s, TaskKind.OUTREACH_RESEARCH, "application", app.application_id)
 
 
 class Orchestrator:
@@ -505,7 +522,7 @@ class Orchestrator:
             self._submit_error(s, task.task_id, app.application_id, exc, None)
             return
         try:
-            self._apply_submit_result(s, app, result)
+            self._apply_submit_result(s, app, result, simulated=simulated)
             self._finish(s, task, TaskStatus.SUCCEEDED)
             s.commit()
         except Exception as exc:
@@ -583,7 +600,8 @@ class Orchestrator:
         return store.write_artifact(s, app.application_id, "submit_confirmation", path, [],
                                     root=self._cfg.storage_path).artifact_id
 
-    def _apply_submit_result(self, s: Session, app: ApplicationRow, r: SubmitResult) -> None:
+    def _apply_submit_result(self, s: Session, app: ApplicationRow, r: SubmitResult,
+                             *, simulated: bool = True) -> None:
         evidence_id = self._store_evidence(s, app, r) or r.evidence_artifact_id
         details: dict[str, Any] = {"confirmation_reference": r.confirmation_reference,
                                    "evidence_artifact_id": evidence_id}
@@ -610,59 +628,14 @@ class Orchestrator:
         record_event(s, entity_type="application", entity_id=app.application_id,
                      actor=_ACTOR, action="submit_finished", outcome=str(r.status),
                      evidence_ref=r.evidence_url, details=details)
+        if r.status is ApplicationStatus.CONFIRMED and not simulated:
+            queue_outreach_research(s, app, self._cfg)
 
     async def _run_outreach_send(self, s: Session, task: TaskRow) -> None:
-        draft = s.get(OutreachDraftRow, task.entity_id)
-        if draft is None:
-            self._fail(s, task, "task_failed", {"reason": "unknown_outreach"})
-            s.commit()
-            return
-        svc = ApprovalService(s)
-        already_sent = s.execute(select(OutreachDraftRow.outreach_id).where(
-            OutreachDraftRow.company_key == draft.company_key,
-            OutreachDraftRow.outreach_id != draft.outreach_id,
-            OutreachDraftRow.status == OutreachStatus.SENT.value,
-        )).first() is not None
-        simulated = self._cfg.dry_run  # no real outreach adapter exists yet
-        caps = {draft.channel or "": frozenset({PortalCapability.SEND_OUTREACH})} \
-            if simulated else {}
-        gate = may_send_outreach(
-            draft, svc.active_outreach_approval_for(draft.outreach_id),
-            svc.outreach_hash(draft.outreach_id), already_sent,
-            PolicyConfig(dry_run=self._cfg.dry_run, portal_capabilities=caps),
-            simulated=simulated)
-        if not gate.allowed:
-            self._fail(s, task, "gate_denied", {"reasons": gate.reasons})
-            s.commit()
-            return
-        transition(s, draft, OutreachStatus.SEND_IN_PROGRESS, actor=_ACTOR,
-                   reason="send_started")
-        record_event(s, entity_type="outreach", entity_id=draft.outreach_id, actor=_ACTOR,
-                     action="send_started", outcome="ok",
-                     details={"task_id": task.task_id, "simulated": True})
-        s.commit()  # write-ahead
-        task_id, outreach_id = task.task_id, draft.outreach_id
-        try:
-            self._simulated_send(s, draft)
-            self._finish(s, task, TaskStatus.SUCCEEDED)
-            s.commit()
-        except Exception as exc:
-            log.exception("send for %s errored after write-ahead", outreach_id)
-            s.rollback()
-            d = s.get(OutreachDraftRow, outreach_id)
-            t = s.get(TaskRow, task_id)
-            assert d is not None and t is not None
-            if d.status == OutreachStatus.SEND_IN_PROGRESS:
-                transition(s, d, OutreachStatus.DELIVERY_UNKNOWN, actor=_ACTOR,
-                           reason="send_error")
-            self._fail(s, t, "send_error", {"error_type": type(exc).__name__},
-                       ErrorCode.OUTREACH_DELIVERY_UNKNOWN)
-            s.commit()
-
-    def _simulated_send(self, s: Session, draft: OutreachDraftRow) -> None:
-        draft.sent_at = self._clock()
-        draft.evidence_ref = "simulated"
-        transition(s, draft, OutreachStatus.SENT, actor=_ACTOR, reason="simulated_send")
+        """Refused by policy: never sends, never changes the draft. Only a row queued by
+        an older version can reach this."""
+        self._fail(s, task, "gate_denied", {"reasons": may_enqueue_outreach_send().reasons})
+        s.commit()
 
     # ---- recovery & control ---------------------------------------------
     def recover_on_startup(self) -> list[str]:

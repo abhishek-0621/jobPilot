@@ -5,18 +5,35 @@ never values. Content changes invalidate any approval covering the application.
 """
 
 import json
+import re
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.contracts.enums import FieldDecision
+from jobpilot.contracts.enums import FieldDecision, OutreachStatus
 from jobpilot.contracts.models import FieldAnswer, is_http_url
+from jobpilot.data.db import utcnow
 from jobpilot.data.repositories import get_application
-from jobpilot.data.tables import AnswerLibraryRow, DocumentArtifactRow, FormFieldAnswerRow, JobRow
+from jobpilot.data.tables import (
+    AnswerLibraryRow,
+    ContactCandidateRow,
+    DocumentArtifactRow,
+    FormFieldAnswerRow,
+    JobRow,
+    OutreachDraftRow,
+)
 from jobpilot.ids import new_id
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.orchestrator.state_machine import transition
+from jobpilot.outreach.contacts import (
+    USER_CONFIDENCE,
+    FoundContact,
+    email_domain_ok,
+    public_http_url,
+)
 from jobpilot.profile.importer import _DEFAULT_DECISION, _decision_defaults, active_profile
 from jobpilot.util.hashing import canonical_json
 
@@ -167,3 +184,169 @@ def clear_artifact_refs(s: Session, application_id: str) -> None:
     app.resume_artifact_id = None
     app.cover_letter_artifact_id = None
     s.flush()
+
+
+# ---- outreach --------------------------------------------------------------------
+def _contact_row(company: str, application_id: str | None, c: FoundContact,
+                 verified: bool = False) -> ContactCandidateRow:
+    return ContactCandidateRow(
+        contact_id=new_id("con"), company=company, name=c.name[:200],
+        professional_title=(c.professional_title or None) and c.professional_title[:200],
+        public_source_url=c.public_source_url, channel=c.channel, confidence=c.confidence,
+        address=c.address, kind=c.kind, application_id=application_id,
+        verified_at=utcnow() if verified else None, created_at=utcnow())
+
+
+def create_outreach_draft(s: Session, *, application_id: str, company: str, company_key: str,
+                          campaign_id: str, contacts: list[FoundContact], message_text: str,
+                          actor: str) -> OutreachDraftRow:
+    """Store the researched contacts (best first) and one NOT_ELIGIBLE draft bound to the
+    best one. The (company_key, campaign_id) constraint allows one draft per company."""
+    rows = [_contact_row(company, application_id, c) for c in contacts]
+    s.add_all(rows)
+    s.flush()
+    draft = OutreachDraftRow(
+        outreach_id=new_id("out"), application_id=application_id, company_key=company_key,
+        campaign_id=campaign_id, contact_id=rows[0].contact_id if rows else None,
+        channel=rows[0].channel if rows else None, message_text=message_text,
+        status=OutreachStatus.NOT_ELIGIBLE.value, created_at=utcnow())
+    s.add(draft)
+    s.flush()
+    record_event(s, entity_type="outreach", entity_id=draft.outreach_id, actor=actor,
+                 action="outreach_draft_created", outcome="ok",
+                 details={"application_id": application_id, "contacts_n": len(rows)})
+    return draft
+
+
+def detach_contacts(s: Session, contact_ids: list[str], *, reason: str) -> int:
+    """Unbind contacts (about to be removed) from any draft; approvals are revoked."""
+    if not contact_ids:
+        return 0
+    drafts = list(s.execute(select(OutreachDraftRow).where(
+        OutreachDraftRow.contact_id.in_(contact_ids))).scalars())
+    for d in drafts:
+        ApprovalService(s).invalidate_outreach(d.outreach_id, reason)
+        d.contact_id = None
+        d.channel = None
+        record_event(s, entity_type="outreach", entity_id=d.outreach_id, actor="system",
+                     action="outreach_contact_detached", outcome="ok",
+                     details={"reason": reason})
+    s.flush()
+    return len(drafts)
+
+
+def delete_outreach_for_application(s: Session, application_id: str) -> tuple[int, int]:
+    """Data deletion: remove the application's drafts and contacts (events stay).
+    Returns (contacts removed, drafts removed)."""
+    drafts = list(s.execute(select(OutreachDraftRow).where(
+        OutreachDraftRow.application_id == application_id)).scalars())
+    svc = ApprovalService(s)
+    for d in drafts:
+        svc.invalidate_outreach(d.outreach_id, "data_deleted")
+        s.delete(d)
+    s.flush()
+    contacts = list(s.execute(select(ContactCandidateRow).where(
+        ContactCandidateRow.application_id == application_id)).scalars())
+    detach_contacts(s, [c.contact_id for c in contacts], reason="data_deleted")
+    for c in contacts:
+        s.delete(c)
+    s.flush()
+    return len(contacts), len(drafts)
+
+
+MAX_MESSAGE_CHARS = 3000
+EDITABLE_OUTREACH = (OutreachStatus.DRAFT_READY.value, OutreachStatus.NEEDS_REVIEW.value,
+                     OutreachStatus.APPROVED.value)
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@([A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+)")
+_LINKEDIN_HOSTS = ("linkedin.com",)
+
+
+def _draft(s: Session, outreach_id: str) -> OutreachDraftRow:
+    d = s.get(OutreachDraftRow, outreach_id)
+    if d is None:
+        raise LookupError(f"unknown outreach draft {outreach_id}")
+    return d
+
+
+def _editable(d: OutreachDraftRow) -> None:
+    if d.status not in EDITABLE_OUTREACH:
+        raise PermissionError(f"outreach draft is {d.status}; it cannot be changed")
+
+
+def set_outreach_message(s: Session, outreach_id: str, text: str, *, actor: str) -> None:
+    """The user's edit of the message; any outreach approval is revoked."""
+    d = _draft(s, outreach_id)
+    _editable(d)
+    text = text.replace("\r\n", "\n").strip()
+    if not text or len(text) > MAX_MESSAGE_CHARS:
+        raise ValueError(f"message must be 1-{MAX_MESSAGE_CHARS} characters")
+    d.message_text = text
+    record_event(s, entity_type="outreach", entity_id=outreach_id, actor=actor,
+                 action="outreach_message_changed", outcome="ok", details={})
+    s.flush()
+    ApprovalService(s).invalidate_outreach(outreach_id, "message_changed")
+
+
+def choose_contact(s: Session, outreach_id: str, contact_id: str, *, actor: str) -> None:
+    """Switch to another contact of the same application; approval is revoked."""
+    d = _draft(s, outreach_id)
+    _editable(d)
+    c = s.get(ContactCandidateRow, contact_id)
+    if c is None or c.application_id is None or c.application_id != d.application_id:
+        raise PermissionError("that contact does not belong to this draft")
+    d.contact_id, d.channel = c.contact_id, c.channel
+    record_event(s, entity_type="outreach", entity_id=outreach_id, actor=actor,
+                 action="outreach_contact_changed", outcome="ok",
+                 details={"contact_id": contact_id})
+    s.flush()
+    ApprovalService(s).invalidate_outreach(outreach_id, "contact_changed")
+
+
+def add_contact(s: Session, outreach_id: str, *, name: str, title: str | None,
+                channel: str, address: str, source_url: str, company_domain: str | None,
+                company: str, actor: str = "user") -> str:
+    """A contact the user found themselves (e.g. a LinkedIn recruiter). Emails must be on
+    the company's domain; LinkedIn contacts must be linkedin.com profile URLs. The draft
+    switches to it (approval revoked); a draft skipped for no public contact returns to
+    review. Returns the contact id."""
+    d = _draft(s, outreach_id)
+    revive = d.status == OutreachStatus.SKIPPED.value and d.skip_reason == "no_public_contact"
+    if not revive:
+        _editable(d)
+    name, address = name.strip()[:200], address.strip()
+    if not name:
+        raise ValueError("name is required")
+    if public_http_url(source_url.strip()) is None:
+        raise ValueError("source URL must be a public http(s) URL")
+    if channel == "email":
+        m = _EMAIL.fullmatch(address)
+        if m is None:
+            raise ValueError("enter a valid email address")
+        if not email_domain_ok(m.group(1), company_domain, company):
+            raise ValueError("email must be on the company's own domain")
+        address = address.lower()
+    elif channel == "linkedin":
+        url = public_http_url(address)
+        host = "" if url is None else (urlsplit(url).hostname or "").lower()
+        if url is None or not any(host == h or host.endswith("." + h)
+                                  for h in _LINKEDIN_HOSTS):
+            raise ValueError("LinkedIn contacts need a linkedin.com profile URL")
+    else:
+        raise ValueError("channel must be email or linkedin")
+    row = _contact_row(company, d.application_id, FoundContact(
+        kind="user", name=name, professional_title=(title or "").strip() or None,
+        channel=channel, address=address,  # type: ignore[arg-type]
+        public_source_url=source_url.strip(), confidence=USER_CONFIDENCE), verified=True)
+    s.add(row)
+    s.flush()
+    record_event(s, entity_type="outreach", entity_id=outreach_id, actor=actor,
+                 action="outreach_contact_added", outcome="ok",
+                 details={"contact_id": row.contact_id, "channel": channel})
+    d.contact_id, d.channel = row.contact_id, row.channel
+    if revive:
+        d.skip_reason = None
+        transition(s, d, OutreachStatus.DRAFT_READY, actor=actor, reason="user_contact")
+        transition(s, d, OutreachStatus.NEEDS_REVIEW, actor=actor, reason="user_contact")
+    s.flush()
+    ApprovalService(s).invalidate_outreach(outreach_id, "contact_added")
+    return row.contact_id

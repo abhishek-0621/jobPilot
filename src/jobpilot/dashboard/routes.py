@@ -3,11 +3,13 @@ profile.importer and data.mutations."""
 
 import json
 import os
+import re
 import time
 from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import httpx
 import yaml
@@ -24,24 +26,37 @@ from jobpilot.api.actions import (
     ActionConflict,
     ConfirmationRequired,
     add_manual_job,
+    add_outreach_contact,
     approve_batch,
+    approve_outreach,
+    choose_outreach_contact,
+    edit_outreach_message,
     mark_applied,
+    mark_outreach_sent,
     not_applying,
     prepare_again,
     regenerate_documents,
+    request_outreach,
     request_submit,
     reread_form,
     resolve_uncertain,
     save_manual_answers,
     save_user_answers,
     select_job,
+    skip_outreach,
     start_discovery,
     start_tailor,
     submit_candidates,
     user_editable,
 )
 from jobpilot.config import AppConfig
-from jobpilot.contracts.enums import ApplicationStatus, BatchStatus, FieldDecision, JobStatus
+from jobpilot.contracts.enums import (
+    ApplicationStatus,
+    BatchStatus,
+    FieldDecision,
+    JobStatus,
+    OutreachStatus,
+)
 from jobpilot.contracts.models import is_http_url
 from jobpilot.data.mutations import set_library_answer
 from jobpilot.data.repositories import (
@@ -62,6 +77,7 @@ from jobpilot.data.tables import (
     BatchItemRow,
     CandidateFactRow,
     CandidateProfileRow,
+    ContactCandidateRow,
     DocumentArtifactRow,
     FormFieldAnswerRow,
     JobRow,
@@ -77,6 +93,7 @@ from jobpilot.ops.backup import ARCHIVE_RE, backups_dir
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
+from jobpilot.outreach.state import research_blocker
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
 from jobpilot.profile.preferences import (
     CompaniesFileError,
@@ -406,6 +423,10 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
             s, application_id, "resume_diff"))),
         "facts": facts, "letter": _artifact_text(request, letter_txt), "evidence": evidence,
         "submission": _submission(s, app),
+        "outreach": outreach_label(s, application_id),
+        "outreach_draft": s.execute(select(OutreachDraftRow).where(
+            OutreachDraftRow.application_id == application_id)).scalars().first(),
+        "can_draft_outreach": research_blocker(s, app, request.app.state.cfg) is None,
         "events": list(reversed(list_events(s, application_id)))})
 
 
@@ -585,11 +606,12 @@ async def save_manual_answers_ui(request: Request, application_id: str,
 
 
 @router.post("/ui/applications/{application_id}/mark-applied")
-def mark_applied_ui(application_id: str, s: Db, reference: Annotated[str, Form()] = "",
+def mark_applied_ui(request: Request, application_id: str, s: Db,
+                    reference: Annotated[str, Form()] = "",
                     applied_on: Annotated[str, Form()] = "") -> RedirectResponse:
     try:
         day = date.fromisoformat(applied_on.strip()) if applied_on.strip() else None
-        mark_applied(s, application_id, reference, day)
+        mark_applied(s, application_id, reference, day, cfg=request.app.state.cfg)
     except ValueError as e:
         s.rollback()
         raise HTTPException(422, str(e)) from e
@@ -803,12 +825,12 @@ def uncertain_page(request: Request, s: Db) -> HTMLResponse:
 
 
 @router.post("/ui/applications/{application_id}/resolve")
-def resolve_ui(application_id: str, s: Db,
+def resolve_ui(request: Request, application_id: str, s: Db,
                submitted: Annotated[str, Form()]) -> RedirectResponse:
     if submitted not in ("yes", "no"):
         raise HTTPException(422, "submitted must be yes or no")
     try:
-        resolve_uncertain(s, application_id, submitted == "yes")
+        resolve_uncertain(s, application_id, submitted == "yes", cfg=request.app.state.cfg)
     except LookupError as e:
         s.rollback()
         raise HTTPException(404, str(e)) from e
@@ -990,3 +1012,146 @@ def settings(request: Request, s: Db) -> HTMLResponse:
         "backup": _last_backup(cfg),
         "retention": cfg.retention_days.model_dump(),
     })
+
+
+# ---- outreach (drafts only: JobPilot never sends; the user sends and marks it sent) ----
+_MAILTO_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
+
+
+def _mailto(address: str | None, subject: str, body: str) -> str | None:
+    if not address or _MAILTO_EMAIL.fullmatch(address) is None:
+        return None
+    return (f"mailto:{address}?subject={quote(subject, safe='')}"
+            f"&body={quote(body, safe='')}")
+
+
+def _outreach_row(s: Session, d: OutreachDraftRow) -> dict[str, Any]:
+    app = s.get(ApplicationRow, d.application_id) if d.application_id else None
+    job = s.get(JobRow, app.job_id) if app is not None else None
+    contact = s.get(ContactCandidateRow, d.contact_id) if d.contact_id else None
+    return {"draft": d, "app": app, "job": job, "contact": contact}
+
+
+def outreach_label(s: Session, application_id: str) -> str:
+    """"Recruiter contacted": yes only when the user marked a draft as sent."""
+    d = s.execute(select(OutreachDraftRow).where(
+        OutreachDraftRow.application_id == application_id)).scalars().first()
+    if d is None:
+        return "none"
+    if d.status == OutreachStatus.SENT.value and d.sent_at is not None:
+        return f"yes (you marked sent on {_local(d.sent_at)})"
+    if d.status == OutreachStatus.SKIPPED.value:
+        return "none (skipped)"
+    return "draft only"
+
+
+@router.get("/ui/outreach", response_class=HTMLResponse)
+def outreach_queue(request: Request, s: Db) -> HTMLResponse:
+    drafts = s.execute(select(OutreachDraftRow).order_by(
+        OutreachDraftRow.created_at.desc())).scalars()
+    return _page(request, s, "outreach.html", {"rows": [_outreach_row(s, d) for d in drafts]})
+
+
+@router.get("/ui/outreach/{outreach_id}", response_class=HTMLResponse)
+def outreach_detail(request: Request, outreach_id: str, s: Db) -> HTMLResponse:
+    d = s.get(OutreachDraftRow, outreach_id)
+    if d is None:
+        raise HTTPException(404, "outreach draft not found")
+    row = _outreach_row(s, d)
+    contact, job = row["contact"], row["job"]
+    alternates = list(s.execute(select(ContactCandidateRow).where(
+        ContactCandidateRow.application_id == d.application_id)
+        .order_by(ContactCandidateRow.created_at)).scalars()) if d.application_id else []
+    subject = f"{job.title} application" if job is not None else "Application"
+    mailto = _mailto(contact.address, subject, d.message_text) \
+        if contact is not None and d.channel == "email" else None
+    profile = contact.address if contact is not None and d.channel == "linkedin" \
+        and contact.address and is_http_url(contact.address) else None
+    return _page(request, s, "outreach_detail.html", {
+        **row, "alternates": [c for c in alternates if c.contact_id != d.contact_id],
+        "mailto": mailto, "profile": profile,
+        "hash": ApprovalService(s).outreach_hash(outreach_id),
+        "approved": ApprovalService(s).active_outreach_approval_for(outreach_id) is not None,
+        "editable": d.status in ("DRAFT_READY", "NEEDS_REVIEW", "APPROVED")})
+
+
+def _outreach_action(s: Session, outreach_id: str, fn: Any) -> RedirectResponse:
+    try:
+        fn()
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except (ActionConflict, IllegalTransition) as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    except ValueError as e:
+        s.rollback()
+        raise HTTPException(422, str(e)) from e
+    return RedirectResponse(f"/ui/outreach/{outreach_id}", status_code=303)
+
+
+@router.post("/ui/outreach/{outreach_id}/message")
+def outreach_message_ui(outreach_id: str, s: Db,
+                        message: Annotated[str, Form()] = "") -> RedirectResponse:
+    return _outreach_action(s, outreach_id,
+                            lambda: edit_outreach_message(s, outreach_id, message))
+
+
+@router.post("/ui/outreach/{outreach_id}/contact")
+def outreach_contact_ui(outreach_id: str, s: Db,
+                        contact_id: Annotated[str, Form()]) -> RedirectResponse:
+    return _outreach_action(s, outreach_id,
+                            lambda: choose_outreach_contact(s, outreach_id, contact_id))
+
+
+@router.post("/ui/outreach/{outreach_id}/contacts")
+def outreach_add_contact_ui(
+    request: Request, outreach_id: str, s: Db, name: Annotated[str, Form()] = "",
+    title: Annotated[str, Form()] = "", channel: Annotated[str, Form()] = "",
+    address: Annotated[str, Form()] = "", source_url: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    from jobpilot.agents.outreach import careers_url_for
+
+    d = s.get(OutreachDraftRow, outreach_id)
+    app = s.get(ApplicationRow, d.application_id) if d and d.application_id else None
+    job = s.get(JobRow, app.job_id) if app is not None else None
+    try:
+        boards = load_companies(request.app.state.cfg)
+    except Exception:
+        boards = []
+    careers = careers_url_for(boards, job.company) if job is not None else None
+    return _outreach_action(s, outreach_id, lambda: add_outreach_contact(
+        s, outreach_id, name=name, title=title or None, channel=channel, address=address,
+        source_url=source_url, careers_url=careers))
+
+
+@router.post("/ui/outreach/{outreach_id}/approve")
+def outreach_approve_ui(outreach_id: str, s: Db,
+                        hash: Annotated[str, Form()] = "") -> RedirectResponse:
+    return _outreach_action(s, outreach_id, lambda: approve_outreach(s, outreach_id, hash))
+
+
+@router.post("/ui/outreach/{outreach_id}/mark-sent")
+def outreach_mark_sent_ui(outreach_id: str, s: Db,
+                          note: Annotated[str, Form()] = "") -> RedirectResponse:
+    return _outreach_action(s, outreach_id,
+                            lambda: mark_outreach_sent(s, outreach_id, note or None))
+
+
+@router.post("/ui/outreach/{outreach_id}/skip")
+def outreach_skip_ui(outreach_id: str, s: Db) -> RedirectResponse:
+    return _outreach_action(s, outreach_id, lambda: skip_outreach(s, outreach_id))
+
+
+@router.post("/ui/applications/{application_id}/outreach")
+def request_outreach_ui(request: Request, application_id: str, s: Db,
+                        orch: Orch) -> RedirectResponse:
+    try:
+        request_outreach(s, orch, application_id, request.app.state.cfg)
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}", status_code=303)

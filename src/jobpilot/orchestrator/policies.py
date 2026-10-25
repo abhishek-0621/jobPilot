@@ -12,6 +12,16 @@ from jobpilot.contracts.enums import (
 )
 from jobpilot.data.tables import ApplicationRow, ApprovalRow, OutreachDraftRow
 
+OUTREACH_SEND_DISABLED = "outreach_send_disabled"
+
+
+class OutreachSendDisabled(Exception):
+    """JobPilot never sends outreach: an OUTREACH_SEND task is refused (the user sends the
+    message themselves and marks it as sent)."""
+
+    def __init__(self) -> None:
+        super().__init__(OUTREACH_SEND_DISABLED)
+
 
 class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -29,6 +39,11 @@ class GateResult(BaseModel):
 
 def _result(reasons: list[str]) -> GateResult:
     return GateResult(allowed=not reasons, reasons=reasons)
+
+
+def may_enqueue_outreach_send() -> GateResult:
+    """Always refused; kept as a gate so the refusal is explicit and testable."""
+    return _result([OUTREACH_SEND_DISABLED])
 
 
 def revoked_items(approval: ApprovalRow) -> list[str] | None:

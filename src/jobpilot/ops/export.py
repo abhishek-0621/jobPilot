@@ -26,10 +26,12 @@ from jobpilot.data.tables import (
     ApprovalRow,
     AuditEventRow,
     BatchItemRow,
+    ContactCandidateRow,
     DocumentArtifactRow,
     FormFieldAnswerRow,
     JobRow,
     MatchAssessmentRow,
+    OutreachDraftRow,
 )
 from jobpilot.observability.events import EVENT_ORDER, SUBMIT_CLICKED, last_event
 from jobpilot.ops.backup import TREES, _copy_tree, _private_dir
@@ -99,6 +101,30 @@ class EventOut(BaseModel):
     error_code: str | None
 
 
+class ContactOut(BaseModel):
+    id: str
+    kind: str | None
+    name: str
+    professional_title: str | None
+    channel: str | None
+    address: str | None
+    public_source_url: str
+    confidence: float
+    verified_at: str | None
+
+
+class OutreachOut(BaseModel):
+    id: str
+    campaign_id: str
+    status: str
+    skip_reason: str | None
+    channel: str | None
+    message_text: str
+    contact: ContactOut | None
+    sent_at: str | None
+    sent_note: str | None
+
+
 class ApplicationBundle(BaseModel):
     schema_version: int = SCHEMA
     exported_utc: str
@@ -108,6 +134,8 @@ class ApplicationBundle(BaseModel):
     answers: list[AnswerOut]
     artifacts: list[ArtifactOut]
     approvals: list[ApprovalOut]
+    outreach: list[OutreachOut] = []
+    contacts: list[ContactOut] = []
     events: list[EventOut]
 
 
@@ -162,11 +190,37 @@ def _approvals(s: Session, app: ApplicationRow) -> list[ApprovalOut]:
         BatchItemRow.application_id == app.application_id)).scalars())
     if app.batch_id:
         batch_ids.add(app.batch_id)
+    batch_ids |= set(s.execute(select(OutreachDraftRow.outreach_id).where(
+        OutreachDraftRow.application_id == app.application_id)).scalars())  # OUTREACH scope
     rows = s.execute(select(ApprovalRow).where(ApprovalRow.batch_id.in_(batch_ids))
                      .order_by(EVENT_ORDER)).scalars() if batch_ids else []
     return [ApprovalOut(batch_id=a.batch_id, version=a.batch_version,
                         approved_at=a.approved_at.isoformat(), revoked_at=_iso(a.revoked_at),
                         kind=a.kind) for a in rows]
+
+
+def _contact(c: ContactCandidateRow) -> ContactOut:
+    return ContactOut(id=c.contact_id, kind=c.kind, name=c.name,
+                      professional_title=c.professional_title, channel=c.channel,
+                      address=c.address, public_source_url=c.public_source_url,
+                      confidence=c.confidence, verified_at=_iso(c.verified_at))
+
+
+def _outreach(s: Session, application_id: str) -> tuple[list[OutreachOut], list[ContactOut]]:
+    contacts = list(s.execute(select(ContactCandidateRow).where(
+        ContactCandidateRow.application_id == application_id)
+        .order_by(ContactCandidateRow.created_at, ContactCandidateRow.contact_id)).scalars())
+    drafts = []
+    for d in s.execute(select(OutreachDraftRow).where(
+            OutreachDraftRow.application_id == application_id)
+            .order_by(OutreachDraftRow.created_at)).scalars():
+        c = s.get(ContactCandidateRow, d.contact_id) if d.contact_id else None
+        drafts.append(OutreachOut(
+            id=d.outreach_id, campaign_id=d.campaign_id, status=d.status,
+            skip_reason=d.skip_reason, channel=d.channel, message_text=d.message_text,
+            contact=_contact(c) if c is not None else None, sent_at=_iso(d.sent_at),
+            sent_note=d.sent_note))
+    return drafts, [_contact(c) for c in contacts]
 
 
 def export_application(cfg: AppConfig, s: Session, application_id: str, *,
@@ -195,6 +249,7 @@ def export_application(cfg: AppConfig, s: Session, application_id: str, *,
         artifacts.append(ArtifactOut(id=a.artifact_id, type=a.type, version=a.version,
                                      content_hash=a.content_hash, path_in_zip=in_zip))
     click = last_event(s, "application", application_id, SUBMIT_CLICKED)
+    outreach, contacts = _outreach(s, application_id)
     bundle = ApplicationBundle(
         exported_utc=moment.isoformat(),
         job=JobOut(id=job.job_id, title=job.title, company=job.company,
@@ -215,6 +270,7 @@ def export_application(cfg: AppConfig, s: Session, application_id: str, *,
                      .order_by(FormFieldAnswerRow.field_id)).scalars()],
         artifacts=artifacts,
         approvals=_approvals(s, app),
+        outreach=outreach, contacts=contacts,
         events=[EventOut(timestamp_utc=e.timestamp_utc.isoformat(),
                          entity_type=e.entity_type, entity_id=e.entity_id, actor=e.actor,
                          action=e.action, outcome=e.outcome,

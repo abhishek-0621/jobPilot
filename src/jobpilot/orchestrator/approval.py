@@ -239,6 +239,22 @@ class ApprovalService:
                 return r
         return None
 
+    def invalidate_outreach(self, outreach_id: str, reason: str) -> None:
+        """Revoke every active outreach approval of the draft; an APPROVED draft goes back
+        to NEEDS_REVIEW. Application approvals are never touched (separate scope)."""
+        while (approval := self.active_outreach_approval_for(outreach_id)) is not None:
+            approval.revoked_at = utcnow()
+            record_event(self.session, entity_type="approval",
+                         entity_id=approval.approval_id, actor="system",
+                         action="approval_revoked", outcome="ok",
+                         details={"outreach_id": outreach_id, "reason": reason})
+            self.session.flush()
+        draft = self.session.get(OutreachDraftRow, outreach_id)
+        if draft is not None and draft.status == OutreachStatus.APPROVED:
+            transition(self.session, draft, OutreachStatus.NEEDS_REVIEW, actor="system",
+                       reason=reason)
+        self.session.flush()
+
     def current_item_hash(self, application_id: str) -> str | None:
         approvals = self._approvals_containing(application_id)
         if not approvals:
@@ -268,6 +284,10 @@ class ApprovalService:
         draft = self.session.get(OutreachDraftRow, outreach_id)
         if draft is None:
             raise ValueError(f"unknown outreach draft {outreach_id}")
+        if draft.contact_id is None or draft.channel is None:
+            raise ValueError("choose a contact before approving")
+        if draft.status != OutreachStatus.NEEDS_REVIEW:
+            raise ValueError(f"outreach draft is {draft.status}, not NEEDS_REVIEW")
         approval = ApprovalRow(
             approval_id=new_id("apr"), batch_id=outreach_id, batch_version=1,
             kind=ApprovalKind.OUTREACH.value, content_hash=current,

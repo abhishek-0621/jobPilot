@@ -15,7 +15,6 @@ from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
 from jobpilot.data.repositories import get_application, list_events
 from jobpilot.data.tables import (
     AgentRunRow,
-    ContactCandidateRow,
     JobRow,
     OutreachDraftRow,
     TaskRow,
@@ -293,7 +292,11 @@ async def test_restart_marks_inflight_send_delivery_unknown(factory) -> None:
                                message_text="hi", status="SEND_IN_PROGRESS"))
         s.commit()
     orch = make_orch(factory, clock)
-    tid = orch.enqueue(TaskKind.OUTREACH_SEND, "outreach", "o1")
+    tid = "task_legacy_send"
+    with factory() as s:
+        s.add(TaskRow(task_id=tid, kind="OUTREACH_SEND", entity_type="outreach",
+                      entity_id="o1", status="QUEUED", attempts=0))
+        s.commit()
     with factory() as s:
         t = s.get(TaskRow, tid)
         t.status, t.lease_until = TaskStatus.RUNNING.value, T0 - timedelta(seconds=1)  # type: ignore[union-attr]
@@ -370,28 +373,6 @@ async def test_submit_blocked_without_approval(factory) -> None:
     assert ev and "not_approved" in ev[0].redacted_details_json
     assert adapter.submit_calls == 0
     assert task(factory, tid).status == TaskStatus.FAILED
-
-
-async def test_outreach_send_simulated(factory) -> None:
-    clock = FakeClock()
-    with factory() as s:
-        s.add(ContactCandidateRow(contact_id="c1", company="Acme", name="Pat",
-                                  public_source_url="https://acme.example/team",
-                                  confidence=0.9))
-        s.add(OutreachDraftRow(outreach_id="o1", company_key="acme", campaign_id="c1",
-                               contact_id="c1", channel="email", message_text="hi",
-                               status="NEEDS_REVIEW"))
-        s.flush()
-        svc = ApprovalService(s)
-        svc.approve_outreach("o1", svc.outreach_hash("o1"))
-        s.commit()
-    orch = make_orch(factory, clock)
-    tid = orch.enqueue(TaskKind.OUTREACH_SEND, "outreach", "o1")
-    await orch.run_once()
-    with factory() as s:
-        d = s.get(OutreachDraftRow, "o1")
-        assert d is not None and d.status == "SENT" and d.evidence_ref == "simulated"
-    assert task(factory, tid).status == TaskStatus.SUCCEEDED
 
 
 async def test_pause_stops_new_work(factory) -> None:
@@ -473,30 +454,6 @@ async def test_recovery_sweeps_stranded_in_progress(factory) -> None:
     with factory() as s:
         assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
         assert s.get(OutreachDraftRow, "o2").status == "DELIVERY_UNKNOWN"  # type: ignore[union-attr]
-
-
-async def test_outreach_send_error_marks_delivery_unknown(factory, monkeypatch) -> None:
-    clock = FakeClock()
-    with factory() as s:
-        s.add(OutreachDraftRow(outreach_id="o1", company_key="acme", campaign_id="c1",
-                               channel="email", message_text="hi", status="NEEDS_REVIEW"))
-        s.flush()
-        svc = ApprovalService(s)
-        svc.approve_outreach("o1", svc.outreach_hash("o1"))
-        s.commit()
-    orch = make_orch(factory, clock)
-
-    def boom(s: Session, d: OutreachDraftRow) -> None:
-        raise RuntimeError("x")
-
-    monkeypatch.setattr(orch, "_simulated_send", boom)
-    tid = orch.enqueue(TaskKind.OUTREACH_SEND, "outreach", "o1")
-    await orch.run_once()
-    with factory() as s:
-        assert s.get(OutreachDraftRow, "o1").status == "DELIVERY_UNKNOWN"  # type: ignore[union-attr]
-        ev = [e for e in list_events(s, "o1") if e.action == "send_error"]
-    assert ev and ev[0].error_code == "OUTREACH_DELIVERY_UNKNOWN"
-    assert task(factory, tid).status == TaskStatus.FAILED
 
 
 async def test_dry_run_rejects_non_simulated_adapter(factory) -> None:
@@ -581,30 +538,6 @@ async def test_unexpected_submit_status_marks_uncertain(factory) -> None:
     await orch.run_until_idle()
     with factory() as s:
         assert get_application(s, app_id).status == "SUBMISSION_UNCERTAIN"
-    assert task(factory, tid).status == TaskStatus.FAILED
-
-
-async def test_outreach_send_live_mode_gate_denied(factory) -> None:
-    clock = FakeClock()
-    with factory() as s:
-        s.add(ContactCandidateRow(contact_id="c1", company="Acme", name="Pat",
-                                  public_source_url="https://acme.example/team",
-                                  confidence=0.9))
-        s.add(OutreachDraftRow(outreach_id="o1", company_key="acme", campaign_id="c1",
-                               contact_id="c1", channel="email", message_text="hi",
-                               status="NEEDS_REVIEW"))
-        s.flush()
-        svc = ApprovalService(s)
-        svc.approve_outreach("o1", svc.outreach_hash("o1"))
-        s.commit()
-    orch = Orchestrator(factory, cfg(dry_run=False), {}, {"simulated": SimulatedAdapter()},
-                        clock=clock)
-    tid = orch.enqueue(TaskKind.OUTREACH_SEND, "outreach", "o1")
-    await orch.run_once()
-    with factory() as s:
-        d = s.get(OutreachDraftRow, "o1")
-        assert d is not None and d.status == "APPROVED" and d.evidence_ref is None
-        assert "send_started" not in [e.action for e in list_events(s, "o1")]
     assert task(factory, tid).status == TaskStatus.FAILED
 
 

@@ -39,6 +39,22 @@ class RetentionDays(BaseModel):
     exports: int = Field(7, ge=1)
 
 
+class OutreachConfig(BaseModel):
+    """Recruiter outreach drafts. JobPilot only drafts; the user sends."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    auto_draft: bool = True
+    campaign: str = "default"
+
+    @field_validator("campaign")
+    @classmethod
+    def _campaign_safe(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", v):
+            raise ValueError("outreach.campaign must match [A-Za-z0-9_-]{1,64}")
+        return v
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -54,6 +70,7 @@ class AppConfig(BaseModel):
     schedule: ScheduleConfig = ScheduleConfig()
     backup_keep: int = 14
     retention_days: RetentionDays = RetentionDays()
+    outreach: OutreachConfig = OutreachConfig()
     model_routes: dict[str, ModelRoute]
 
     @field_validator("live_portals", mode="before")

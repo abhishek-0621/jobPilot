@@ -10,10 +10,16 @@ from sqlalchemy.orm import Session
 
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
 from jobpilot.config import AppConfig
-from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, JobStatus
+from jobpilot.contracts.enums import (
+    ApplicationStatus,
+    ApprovalKind,
+    FieldDecision,
+    JobStatus,
+    OutreachStatus,
+)
 from jobpilot.contracts.models import JobListing
 from jobpilot.data.db import utcnow
-from jobpilot.data.mutations import set_answer
+from jobpilot.data.mutations import add_contact, choose_contact, set_answer, set_outreach_message
 from jobpilot.data.repositories import create_application, upsert_job
 from jobpilot.data.tables import (
     ApplicationRow,
@@ -21,6 +27,7 @@ from jobpilot.data.tables import (
     BatchItemRow,
     DocumentArtifactRow,
     JobRow,
+    OutreachDraftRow,
     TaskRow,
 )
 from jobpilot.discovery.normalize import html_to_text, normalize_url, require_http
@@ -30,10 +37,21 @@ from jobpilot.observability.events import (
     prior_unresolved_click,
     record_event,
 )
-from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
+from jobpilot.orchestrator.approval import (
+    ApprovalService,
+    StaleApprovalError,
+    forget_live_intent,
+)
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
-from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
+from jobpilot.orchestrator.engine import (
+    Orchestrator,
+    TaskKind,
+    TaskStatus,
+    queue_outreach_research,
+)
 from jobpilot.orchestrator.state_machine import transition
+from jobpilot.outreach.contacts import company_domain
+from jobpilot.outreach.state import research_blocker
 from jobpilot.util.hashing import content_hash
 
 DISCOVERY_RUNNING = "A discovery run is already queued or running."
@@ -251,10 +269,13 @@ def _app(s: Session, application_id: str) -> ApplicationRow:
     return app
 
 
-def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
+def resolve_uncertain(s: Session, application_id: str, submitted: bool,
+                      cfg: AppConfig | None = None) -> None:
     """User action on a SUBMISSION_UNCERTAIN application: it was / was not submitted. A
     SUBMISSION_FAILED application with an unresolved click may also be marked "not
-    submitted" (no status change). Commits. Raises LookupError / ActionConflict."""
+    submitted" (no status change). With ``cfg``, a real confirmed submission queues
+    outreach research (``outreach.auto_draft``). Commits. Raises LookupError /
+    ActionConflict."""
     app = _app(s, application_id)
     if (app.status == ApplicationStatus.SUBMISSION_FAILED.value and not submitted
             and prior_unresolved_click(s, application_id)):
@@ -271,6 +292,8 @@ def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
     if submitted:
         transition(s, app, ApplicationStatus.CONFIRMED, actor="user",
                    reason="user_confirmed")
+        if cfg is not None:
+            queue_outreach_research(s, app, cfg)
     else:
         transition(s, app, ApplicationStatus.SUBMISSION_FAILED, actor="user",
                    reason="user_not_submitted")
@@ -389,13 +412,14 @@ def _manual_ready(s: Session, application_id: str, what: str) -> ApplicationRow:
 
 
 def mark_applied(s: Session, application_id: str, reference: str | None,
-                 applied_on: date | None) -> None:
+                 applied_on: date | None, *, cfg: AppConfig | None = None) -> None:
     """The user states they applied themselves: MANUAL_APPLY_READY -> SUBMITTED_BY_USER
     (actor "user", no evidence). The optional reference is stored; the event keeps ids,
     whether a reference was given and the date only. Commits.
 
     Raises LookupError / ActionConflict (wrong status or already marked) / ValueError
-    (reference over 100 chars, date in the future)."""
+    (reference over 100 chars, date in the future). With ``cfg``, outreach research is
+    queued in the same transaction when ``outreach.auto_draft`` is on."""
     ref = (reference or "").strip()
     if len(ref) > MAX_REFERENCE_CHARS:
         raise ValueError(f"Reference must be at most {MAX_REFERENCE_CHARS} characters")
@@ -411,7 +435,31 @@ def mark_applied(s: Session, application_id: str, reference: str | None,
                  details={"application_id": application_id, "job_id": app.job_id,
                           "has_reference": bool(ref),
                           "applied_on": applied_on.isoformat() if applied_on else None})
+    if cfg is not None:
+        queue_outreach_research(s, app, cfg)
     s.commit()
+
+
+_BLOCKER_MESSAGES = {
+    "not_applied": "Outreach can only be drafted after you have applied.",
+    "no_company": "This job has no company name.",
+    "duplicate_company": "An outreach draft already exists for this company in this "
+                         "campaign.",
+    "research_pending": "Outreach research is already queued for this application.",
+}
+
+
+def request_outreach(s: Session, orch: Orchestrator, application_id: str,
+                     cfg: AppConfig) -> str:
+    """User action ("Draft outreach"): queue OUTREACH_RESEARCH for an applied application.
+    Commits. Raises LookupError / ActionConflict (not applied, duplicate, queued)."""
+    app = _app(s, application_id)
+    blocker = research_blocker(s, app, cfg)
+    if blocker is not None:
+        raise ActionConflict(_BLOCKER_MESSAGES[blocker])
+    task_id = orch.enqueue_in(s, TaskKind.OUTREACH_RESEARCH, "application", application_id)
+    s.commit()
+    return task_id
 
 
 def not_applying(s: Session, application_id: str) -> None:
@@ -437,4 +485,107 @@ def save_manual_answers(s: Session, application_id: str, values: dict[str, str])
             s.rollback()
             raise ActionConflict(f"Field {fid} cannot be edited here.")
         set_answer(s, application_id, fid, value, actor="user", source_fact_id=USER_SOURCE)
+    s.commit()
+
+
+# ---- outreach review (JobPilot never sends: the user sends and marks it sent) -------
+MAX_SENT_NOTE_CHARS = 200
+USER_MARKED_OUTREACH_SENT = "user_marked_outreach_sent"
+
+
+def _outreach(s: Session, outreach_id: str) -> OutreachDraftRow:
+    d = s.get(OutreachDraftRow, outreach_id)
+    if d is None:
+        raise LookupError("outreach draft not found")
+    return d
+
+
+def _outreach_change(s: Session, fn: Any) -> Any:
+    try:
+        out = fn()
+    except PermissionError as e:
+        s.rollback()
+        raise ActionConflict(str(e)) from e
+    except (ValueError, LookupError):
+        s.rollback()
+        raise
+    s.commit()
+    return out
+
+
+def approve_outreach(s: Session, outreach_id: str, presented_hash: str) -> None:
+    """Approve exactly the presented draft (own OUTREACH scope, bound to its hash)."""
+    _outreach(s, outreach_id)
+    try:
+        ApprovalService(s).approve_outreach(outreach_id, presented_hash)
+    except (StaleApprovalError, ValueError) as e:
+        s.rollback()
+        raise ActionConflict(str(e)) from e
+    s.commit()
+
+
+def edit_outreach_message(s: Session, outreach_id: str, text: str) -> None:
+    _outreach_change(s, lambda: set_outreach_message(s, outreach_id, text, actor="user"))
+
+
+def choose_outreach_contact(s: Session, outreach_id: str, contact_id: str) -> None:
+    _outreach_change(s, lambda: choose_contact(s, outreach_id, contact_id, actor="user"))
+
+
+def add_outreach_contact(s: Session, outreach_id: str, *, name: str, title: str | None,
+                         channel: str, address: str, source_url: str,
+                         careers_url: str | None = None) -> str:
+    d = _outreach(s, outreach_id)
+    app = s.get(ApplicationRow, d.application_id) if d.application_id else None
+    job = s.get(JobRow, app.job_id) if app is not None else None
+    if job is None:
+        raise ActionConflict("this draft has no application")
+    domain = company_domain(job.canonical_url, job.application_url, careers_url)
+    out: str = _outreach_change(s, lambda: add_contact(
+        s, outreach_id, name=name, title=title, channel=channel, address=address,
+        source_url=source_url, company_domain=domain, company=job.company))
+    return out
+
+
+def mark_outreach_sent(s: Session, outreach_id: str, note: str | None) -> None:
+    """The user states they sent the approved message themselves: APPROVED ->
+    SEND_IN_PROGRESS -> SENT in one transaction (actor "user"). Needs a valid outreach
+    approval for the current content hash. The event keeps ids only. Commits.
+
+    Raises LookupError / ActionConflict / ValueError (note too long)."""
+    text = (note or "").strip()
+    if len(text) > MAX_SENT_NOTE_CHARS:
+        raise ValueError(f"Note must be at most {MAX_SENT_NOTE_CHARS} characters")
+    d = _outreach(s, outreach_id)
+    if d.status != OutreachStatus.APPROVED.value:
+        raise ActionConflict(f"Only an approved draft can be marked as sent "
+                             f"(status is {d.status}).")
+    svc = ApprovalService(s)
+    approval = svc.active_outreach_approval_for(outreach_id)
+    if approval is None or approval.kind != ApprovalKind.OUTREACH.value \
+            or approval.content_hash != svc.outreach_hash(outreach_id):
+        raise ActionConflict("The draft changed since it was approved; approve it again.")
+    transition(s, d, OutreachStatus.SEND_IN_PROGRESS, actor="user", reason="user_sending")
+    transition(s, d, OutreachStatus.SENT, actor="user", reason="user_marked_sent",
+               details={"approval_id": approval.approval_id})
+    d.sent_at = utcnow()
+    d.evidence_ref = "user_marked"
+    d.sent_note = text or None
+    record_event(s, entity_type="outreach", entity_id=outreach_id, actor="user",
+                 action=USER_MARKED_OUTREACH_SENT, outcome="ok",
+                 details={"outreach_id": outreach_id, "application_id": d.application_id,
+                          "contact_id": d.contact_id, "approval_id": approval.approval_id,
+                          "has_note": bool(text)})
+    s.commit()
+
+
+def skip_outreach(s: Session, outreach_id: str) -> None:
+    d = _outreach(s, outreach_id)
+    if d.status not in (OutreachStatus.NOT_ELIGIBLE.value, OutreachStatus.CONTACT_RESEARCH.value,
+                        OutreachStatus.DRAFT_READY.value, OutreachStatus.NEEDS_REVIEW.value,
+                        OutreachStatus.APPROVED.value):
+        raise ActionConflict(f"This draft cannot be skipped (status is {d.status}).")
+    ApprovalService(s).invalidate_outreach(outreach_id, "user_skipped")
+    d.skip_reason = "user_skipped"
+    transition(s, d, OutreachStatus.SKIPPED, actor="user", reason="user_skipped")
     s.commit()
