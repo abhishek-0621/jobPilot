@@ -258,7 +258,7 @@ def boards_find(
     import asyncio
 
     from jobpilot.discovery.board_finder import find_hits
-    from jobpilot.profile.preferences import append_companies
+    from jobpilot.profile.preferences import CompaniesFileError, append_companies
 
     cfg = load_config(config_dir)
 
@@ -274,7 +274,11 @@ def boards_find(
     for h in hits:
         typer.echo(f"{h.board.name:<28}{h.board.source:<18}{h.board.token:<28}{h.postings}")
     if write:
-        added = append_companies(cfg, [h.board for h in hits])
+        try:
+            added = append_companies(cfg, [h.board for h in hits])
+        except CompaniesFileError as e:
+            typer.echo(str(e))
+            raise typer.Exit(1) from e
         target = cfg.storage_path / "profiles" / "companies.yaml"
         typer.echo(f"Added {len(added)} board(s) to {target} "
                    f"({len(hits) - len(added)} already configured).")

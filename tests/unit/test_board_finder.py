@@ -192,3 +192,92 @@ def test_companies_page_none_found(page_client: TestClient,
     r = page_client.post("/ui/companies", data={"name": "<b>Ghost</b>"})
     assert r.status_code == 200 and "No live public boards found" in r.text
     assert "<b>Ghost" not in r.text
+
+
+# ---- atomic, validated companies.yaml writes ----
+
+def _boards() -> list[CompanyBoard]:
+    return [CompanyBoard(name="Acme", source="greenhouse", token="acme")]
+
+
+@pytest.mark.parametrize("content", [
+    "companies: [unclosed\n  - {",
+    "- name: Acme\n  source: lever\n",
+    "companies:\n  - just a string\n",
+    "companies: {name: x}\n",
+    "just text\n",
+])
+def test_append_companies_rejects_bad_file_untouched(tmp_path: Path, content: str) -> None:
+    from jobpilot.profile.preferences import CompaniesFileError, append_companies
+    cfg = AppConfig(storage_path=tmp_path / "storage", model_routes={})
+    path = tmp_path / "storage" / "profiles" / "companies.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(content)
+    with pytest.raises(CompaniesFileError):
+        append_companies(cfg, _boards())
+    assert path.read_text() == content
+    assert [p.name for p in path.parent.iterdir()] == ["companies.yaml"]
+
+
+def test_append_companies_atomic_keeps_entries_no_temp(tmp_path: Path) -> None:
+    from jobpilot.profile.preferences import append_companies
+    cfg = AppConfig(storage_path=tmp_path / "storage", model_routes={})
+    path = tmp_path / "storage" / "profiles" / "companies.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(yaml.safe_dump({"companies": [
+        {"name": "Mine", "source": "lever", "token": "mine"}]}))
+    assert len(append_companies(cfg, _boards())) == 1
+    assert [e["name"] for e in yaml.safe_load(path.read_text())["companies"]] == ["Mine", "Acme"]
+    assert [p.name for p in path.parent.iterdir()] == ["companies.yaml"]
+
+
+def test_append_companies_failed_write_leaves_file_and_no_temp(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from jobpilot.profile.preferences import append_companies
+    cfg = AppConfig(storage_path=tmp_path / "storage", model_routes={})
+    path = tmp_path / "storage" / "profiles" / "companies.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text("companies: []\n")
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        append_companies(cfg, _boards())
+    assert path.read_text() == "companies: []\n"
+    assert [p.name for p in path.parent.iterdir()] == ["companies.yaml"]
+
+
+def test_boards_find_write_bad_file_exits_1(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    d = _cfg_dir(tmp_path)
+    path = tmp_path / "storage" / "profiles" / "companies.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text("companies: [unclosed\n")
+    monkeypatch.setattr(cli, "_boards_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(_handler([]))))
+    import jobpilot.discovery.board_finder as bf
+
+    async def nosleep(_s: float) -> None: ...
+
+    monkeypatch.setattr(bf.asyncio, "sleep", nosleep)
+    r = runner.invoke(cli.app, ["boards", "find", "Acme", "--write", "--config-dir", str(d)])
+    assert r.exit_code == 1 and "companies.yaml" in r.output
+    assert path.read_text() == "companies: [unclosed\n"
+
+
+def test_companies_page_bad_file_is_422(page_client: TestClient, tmp_path: Path,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    async def one(names: list[str], client: Any, **kw: Any) -> list[BoardHit]:
+        return [BoardHit(CompanyBoard(name="Acme", source="greenhouse", token="acme"), 7)]
+
+    monkeypatch.setattr(routes, "find_hits", one)
+    path = tmp_path / "storage" / "profiles" / "companies.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text("- a\n- b\n")
+    r = page_client.post("/ui/companies", data={"name": "Acme"})
+    assert r.status_code == 422 and "companies.yaml" in r.text
+    assert path.read_text() == "- a\n- b\n"

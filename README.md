@@ -79,6 +79,8 @@ uv run jobpilot boards find "Company A" "Company B"            # just print what
 uv run jobpilot boards find "Company A" --write                # also append to companies.yaml
 ```
 
+Adding companies via the finder rewrites `companies.yaml` and drops any comments you added by hand.
+
 Or open **Companies** (`/ui/companies`) in the dashboard, type a name and press *Add company*.
 Both probe each source's public endpoint (at most one request per second per host) and keep
 only boards with at least one live posting. New boards are appended to

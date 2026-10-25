@@ -1,6 +1,8 @@
 """Search preferences and company boards; storage/ overrides committed examples."""
 
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -70,12 +72,51 @@ COMPANIES_HEADER = ("# Company boards to watch (layout: config/companies.example
                     "# Takes precedence over the committed example list.\n")
 
 
+class CompaniesFileError(Exception):
+    """storage/profiles/companies.yaml exists but is not a usable companies list."""
+
+
+def _read_entries(path: Path) -> list[dict[str, object]]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, UnicodeDecodeError) as e:
+        raise CompaniesFileError(
+            f"{path} is not valid YAML; fix or remove it, then retry ({type(e).__name__})") from e
+    if data is None:
+        return []
+    if not isinstance(data, dict):
+        raise CompaniesFileError(f"{path} must be a mapping with a 'companies' list")
+    entries = data.get("companies")
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise CompaniesFileError(f"{path} must be a mapping with a 'companies' list")
+    if not all(isinstance(e, dict) for e in entries):
+        raise CompaniesFileError(f"{path}: every entry under 'companies' must be a mapping")
+    return list(entries)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".companies-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def append_companies(cfg: AppConfig, boards: list[CompanyBoard]) -> list[CompanyBoard]:
     """Append boards to storage/profiles/companies.yaml (created if missing), keeping existing
-    entries and skipping any (source, token) already present. Returns the boards added."""
+    entries and skipping any (source, token) already present. Returns the boards added.
+    Raises CompaniesFileError, leaving the file untouched, if the existing file is unusable.
+    The file is rewritten atomically; hand-written comments are not preserved."""
     path = cfg.storage_path / "profiles" / "companies.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
-    entries: list[dict[str, object]] = list((data or {}).get("companies") or [])
+    entries = _read_entries(path) if path.exists() else []
     seen = {(str(e.get("source")), str(e.get("token"))) for e in entries}
     added: list[CompanyBoard] = []
     for b in boards:
@@ -88,7 +129,6 @@ def append_companies(cfg: AppConfig, boards: list[CompanyBoard]) -> list[Company
             entry["extra"] = dict(b.extra)
         entries.append(entry)
     if added or not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(COMPANIES_HEADER + yaml.safe_dump({"companies": entries}, sort_keys=False),
-                        encoding="utf-8")
+        _write_atomic(path, COMPANIES_HEADER + yaml.safe_dump({"companies": entries},
+                                                              sort_keys=False))
     return added

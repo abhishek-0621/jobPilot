@@ -225,3 +225,4 @@ def test_add_manual_job_matched_existing_event(db_session: Session) -> None:
     assert '"matched_existing":true' in events[0].redacted_details_json.replace(" ", "")
     assert '"existing_source":"greenhouse"' in events[0].redacted_details_json.replace(" ", "")
     assert "example.com" not in events[0].redacted_details_json
+

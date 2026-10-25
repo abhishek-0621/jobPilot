@@ -74,7 +74,11 @@ from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
-from jobpilot.profile.preferences import append_companies, load_companies
+from jobpilot.profile.preferences import (
+    CompaniesFileError,
+    append_companies,
+    load_companies,
+)
 
 MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
@@ -843,8 +847,12 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
 def _companies_page(request: Request, s: Session, ctx: dict[str, Any],
                     status: int = 200) -> HTMLResponse:
     cfg: AppConfig = request.app.state.cfg
+    try:
+        boards = load_companies(cfg)
+    except (AttributeError, TypeError, ValueError, yaml.YAMLError):
+        boards = []  # unusable companies.yaml: the add path reports it; keep the page up
     resp = _page(request, s, "companies.html", {
-        "boards": load_companies(cfg), "error": None, "results": None, "added": 0, **ctx})
+        "boards": boards, "error": None, "results": None, "added": 0, **ctx})
     resp.status_code = status
     return resp
 
@@ -866,5 +874,8 @@ async def add_company(request: Request, s: Db,
     async with httpx.AsyncClient() as client:
         hits = await find_hits([name], client)
     cfg: AppConfig = request.app.state.cfg
-    added = append_companies(cfg, [h.board for h in hits])
+    try:
+        added = append_companies(cfg, [h.board for h in hits])
+    except CompaniesFileError as e:
+        return _companies_page(request, s, {"error": str(e)}, 422)
     return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})
