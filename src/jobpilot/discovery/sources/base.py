@@ -18,10 +18,17 @@ HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 HTML_HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html"}
 MAX_TEXT_BYTES = 2_000_000
 TIMEOUT_S = 20.0
+# Public remote-job boards (one feed each, not per company); always the manual apply path.
+REMOTE_BOARDS = ("himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
+                 "workingnomads")
+RemoteBoardName = Literal["himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
+                          "workingnomads"]
 
 
 class RawPosting(Contract):
-    source: Literal["greenhouse", "lever", "ashby", "smartrecruiters", "workday"]
+    source: Literal["greenhouse", "lever", "ashby", "smartrecruiters", "workday",
+                    "himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
+                    "workingnomads"]
     source_job_id: str
     company: str
     title: str

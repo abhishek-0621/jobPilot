@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from sqlalchemy import ColumnElement, func, literal_column, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -13,7 +15,8 @@ from jobpilot.data.tables import (
     JobRow,
     MatchAssessmentRow,
 )
-from jobpilot.discovery.normalize import dedupe_key, normalize_url
+from jobpilot.discovery.normalize import company_key, dedupe_key, normalize_title, normalize_url
+from jobpilot.discovery.sources.base import REMOTE_BOARDS
 from jobpilot.ids import new_id
 from jobpilot.observability.events import record_event
 from jobpilot.util.hashing import canonical_json
@@ -66,6 +69,9 @@ def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
     if canonical is None:
         canonical = _find_canonical(s, JobRow.dedupe_key == key)
         match = "dedupe_key"
+    if canonical is None:
+        canonical = _cross_source_match(s, listing)
+        match = "company_title"
     job_id = new_id("job")
     values = dict(
         job_id=job_id,
@@ -101,9 +107,37 @@ def upsert_job(s: Session, listing: JobListing) -> tuple[JobRow, bool]:
     if canonical is not None:
         record_event(s, entity_type="job", entity_id=row.job_id, actor="discovery",
                      action="job_duplicate", outcome="ok",
-                     details={"canonical_job_id": canonical.job_id, "match": match})
+                     details={"canonical_job_id": canonical.job_id, "match": match,
+                              "source": listing.source})
         return row, False
     return row, True
+
+
+CROSS_SOURCE_WINDOW = timedelta(days=30)
+
+
+def _cross_source_match(s: Session, listing: JobListing) -> JobRow | None:
+    """The earliest non-duplicate job from another source with the same normalized
+    (company, title) first seen within 30 days, when either side is a remote board: the same
+    role on two boards appears once (the first source wins)."""
+    ck, tk = company_key(listing.company), normalize_title(listing.title)
+    if not ck or not tk:
+        return None
+    clause = JobRow.source != listing.source
+    if listing.source not in REMOTE_BOARDS:  # company boards and manual adds: unchanged
+        clause = clause & JobRow.source.in_(REMOTE_BOARDS)
+    rows = s.execute(
+        select(JobRow).where(
+            clause,
+            JobRow.status != JobStatus.DUPLICATE.value,
+            JobRow.first_seen_at >= listing.first_seen_at - CROSS_SOURCE_WINDOW,
+            JobRow.first_seen_at <= listing.first_seen_at + CROSS_SOURCE_WINDOW,
+        ).order_by(JobRow.first_seen_at, JobRow.job_id)
+    ).scalars()
+    for row in rows:
+        if normalize_title(row.title) == tk and company_key(row.company) == ck:
+            return row
+    return None
 
 
 def _find_canonical(s: Session, clause: ColumnElement[bool]) -> JobRow | None:
