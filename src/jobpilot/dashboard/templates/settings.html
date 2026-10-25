@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">Read-only. Change in config/app.yaml — not editable here.</p>
+
+<h2>Mode</h2>
+<div class="card">
+<div class="kv"><span>Dry run</span><strong>{% if cfg.dry_run %}on (nothing is submitted){% else %}<span class="live">off</span>{% endif %}</strong></div>
+<div class="kv"><span>Live portals (effective)</span><strong>{% if cfg.effective_live_portals %}<span class="live">{{ cfg.effective_live_portals | join(", ") }}</span>{% else %}none{% endif %}</strong></div>
+<p class="muted">Change in config/app.yaml — not editable here. Restart JobPilot after editing.</p>
+</div>
+
+<h2>Schedule</h2>
+<div class="card">
+{% if not schedule.available %}<p>Daily schedule: not available (macOS only).</p>
+{% elif schedule.agents is none %}<p>Daily schedule: unknown (could not query launchd).</p>
+{% else %}<div class="table-wrap"><table><thead><tr><th>Agent</th><th>State</th><th>Next run</th></tr></thead><tbody>
+{% for a in schedule.agents %}<tr><td class="mono">{{ a.label }}</td><td>{% if a.loaded %}loaded{% elif a.installed %}installed, not loaded{% else %}not installed{% endif %}</td><td>{{ a.next_run or "—" }}</td></tr>{% endfor %}
+</tbody></table></div>{% endif %}
+<p class="muted">Configured time: {{ cfg.schedule.discover_at }}. Manage with <code>uv run jobpilot schedule install|status|uninstall</code>.</p>
+</div>
+
+<h2>Last backup</h2>
+<div class="card">
+{% if backup %}<div class="kv"><span class="mono">{{ backup.name }}</span><span>{{ backup.size }} · {{ backup.age }}</span></div>
+{% else %}<p>No backup yet.</p>{% endif %}
+<p class="muted">Backups contain personal data. Keeping the newest {{ cfg.backup_keep }}.</p>
+</div>
+
+<h2>Retention</h2>
+<div class="card">
+<div class="kv"><span>Application documents (finished applications)</span><span>{{ retention.artifacts }} days</span></div>
+<div class="kv"><span>Contact candidates</span><span>{{ retention.contacts }} days</span></div>
+<div class="kv"><span>Exports</span><span>{{ retention.exports }} days</span></div>
+</div>
+
+<h2>Model routes</h2>
+<div class="table-wrap"><table><thead><tr><th>Route</th><th>Model</th><th>Fallback</th></tr></thead><tbody>
+{% for name, r in cfg.model_routes.items() %}<tr><td>{{ name }}</td><td class="mono">{{ r.model_tag }}</td><td class="mono">{{ r.fallback or "—" }}</td></tr>{% endfor %}
+</tbody></table></div>
+
+<h2>Your data (run in a terminal)</h2>
+<div class="card">
+<ul>
+<li><code>uv run jobpilot backup</code> — back up; <code>uv run jobpilot restore &lt;archive&gt; --confirm RESTORE</code></li>
+<li><code>uv run jobpilot export app &lt;application_id&gt;</code> · <code>uv run jobpilot export all</code></li>
+<li><code>uv run jobpilot delete app &lt;application_id&gt; --confirm &lt;application_id&gt;</code> · <code>uv run jobpilot delete all --confirm "DELETE ALL"</code></li>
+<li><code>uv run jobpilot maintenance</code> — apply retention and check the database</li>
+</ul>
+</div>
+{% endblock %}

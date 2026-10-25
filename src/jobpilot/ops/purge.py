@@ -94,12 +94,14 @@ def delete_application(cfg: AppConfig, s: Session, application_id: str, *,
         ApprovalService(s).invalidate_application(application_id, "data_deleted")
         clear_application_content(s, application_id)
         transition(s, app, ApplicationStatus.DELETED, actor="user", reason="data_deleted")
-        artifacts, _files = remove_artifacts(cfg, s, application_id)  # commits
+        artifacts = s.execute(select(func.count()).select_from(DocumentArtifactRow).where(
+            DocumentArtifactRow.application_id == application_id)).scalar_one()
+        # recorded before remove_artifacts commits, so deletion and its event are atomic
         record_event(s, entity_type="application", entity_id=application_id, actor="user",
                      action=DATA_DELETED, outcome="ok",
                      details={"app_id": application_id, "answers_n": answers,
                               "artifacts_n": artifacts})
-        s.commit()
+        remove_artifacts(cfg, s, application_id)  # commits
     return {"answers_n": answers, "artifacts_n": artifacts}
 
 

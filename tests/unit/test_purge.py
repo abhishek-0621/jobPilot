@@ -313,3 +313,44 @@ def test_delete_route_lookup_error_404(env: Env, monkeypatch: pytest.MonkeyPatch
     r = _client(cfg, factory).post(f"/ui/applications/{app_id}/delete",
                                    data={"confirm": app_id})
     assert r.status_code == 404
+
+
+def test_delete_event_recorded_even_if_file_removal_fails(
+        env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, factory = env
+    with factory() as s:
+        app_id = _seed(cfg, s, "CONFIRMED")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk error")
+
+    monkeypatch.setattr(purge.shutil, "rmtree", boom)
+    with factory() as s, pytest.raises(OSError):
+        purge.delete_application(cfg, s, app_id, confirm=app_id)
+    with factory() as s:
+        assert s.get(ApplicationRow, app_id).status == "DELETED"  # type: ignore[union-attr]
+        actions = [e.action for e in s.execute(select(AuditEventRow).where(
+            AuditEventRow.entity_id == app_id)).scalars()]
+        assert actions.count("data_deleted") == 1
+
+
+def test_maintenance_skips_symlinked_app_dir_and_continues(
+        env: Env, caplog: pytest.LogCaptureFixture) -> None:
+    cfg, factory = env
+    with factory() as s:
+        bad = _seed(cfg, s, "CONFIRMED", changed_days_ago=400)
+        good = _seed(cfg, s, "REJECTED_BY_USER", changed_days_ago=400)
+    victim = cfg.storage_path / "artifacts" / bad
+    outside = cfg.storage_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x")
+    for p in victim.iterdir():
+        p.unlink()
+    victim.rmdir()
+    victim.symlink_to(outside)
+    with caplog.at_level("WARNING"):
+        counts = run_maintenance(cfg)
+    assert counts["artifacts_pruned"] == 1
+    assert "symlink" in caplog.text and bad in caplog.text
+    assert (outside / "keep.txt").exists() and victim.is_symlink()
+    assert not (cfg.storage_path / "artifacts" / good).exists()

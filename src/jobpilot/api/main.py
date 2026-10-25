@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import shutil
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -70,6 +72,10 @@ ARTIFACT_MEDIA_TYPES = {
     ".txt": "text/plain",
     ".png": "image/png",
 }
+
+
+def _schedule_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, check=False, timeout=3)
 
 
 class LocalOriginMiddleware(BaseHTTPMiddleware):
@@ -182,6 +188,9 @@ def create_app(
     app.state.storage_path = cfg.storage_path
     app.state.cfg = cfg
     app.state.field_aliases_path = cfg.field_aliases_path
+    app.state.schedule_runner = _schedule_runner
+    app.state.schedule_home = Path.home()
+    app.state.platform = sys.platform
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(dashboard_router)
 

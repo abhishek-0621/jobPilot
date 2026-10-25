@@ -2,6 +2,8 @@
 profile.importer and data.mutations."""
 
 import json
+import os
+import time
 from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
@@ -70,6 +72,8 @@ from jobpilot.discovery.board_finder import find_hits
 from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.observability.events import SUBMIT_CLICKED, last_event, prior_unresolved_click
+from jobpilot.ops import schedule as sched
+from jobpilot.ops.backup import ARCHIVE_RE, backups_dir
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
@@ -934,3 +938,55 @@ async def add_company(request: Request, s: Db,
     except CompaniesFileError as e:
         return _companies_page(request, s, {"error": str(e)}, 422)
     return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})
+
+
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _human_age(seconds: float) -> str:
+    s = max(0, int(seconds))
+    for unit, span in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if s >= span:
+            n = s // span
+            return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    return "just now"
+
+
+def _last_backup(cfg: AppConfig) -> dict[str, str] | None:
+    try:
+        found = [p for p in backups_dir(cfg).iterdir()
+                 if ARCHIVE_RE.fullmatch(p.name) and p.is_file()]
+        newest = max(found, key=lambda p: p.stat().st_mtime)
+        st = newest.stat()
+    except (OSError, ValueError):
+        return None
+    return {"name": newest.name, "size": _human_size(st.st_size),
+            "age": _human_age(time.time() - st.st_mtime)}
+
+
+def _schedule_view(request: Request, cfg: AppConfig) -> dict[str, Any]:
+    state = request.app.state
+    if state.platform != "darwin":
+        return {"available": False, "agents": None}
+    try:
+        agents = sched.status(cfg, home=state.schedule_home, runner=state.schedule_runner,
+                              uid=os.getuid())
+    except Exception:  # a hung or missing launchctl must not break the page
+        return {"available": True, "agents": None}
+    return {"available": True, "agents": agents}
+
+
+@router.get("/ui/settings", response_class=HTMLResponse)
+def settings(request: Request, s: Db) -> HTMLResponse:
+    cfg: AppConfig = request.app.state.cfg
+    return _page(request, s, "settings.html", {
+        "cfg": cfg, "schedule": _schedule_view(request, cfg),
+        "backup": _last_backup(cfg),
+        "retention": cfg.retention_days.model_dump(),
+    })
