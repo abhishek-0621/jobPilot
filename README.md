@@ -211,9 +211,11 @@ uv run jobpilot schedule uninstall
 
 Installing again is safe (it replaces the previous agent). Logs go to `storage/logs/`.
 
-What runs: `jobpilot discover` (find jobs, extract and score them) followed by retention
-maintenance, and, with `--with-server`, the dashboard. Backups are not scheduled: run
-`uv run jobpilot backup` yourself. What never runs on a schedule: tailoring, preparing
+What runs: `jobpilot discover` (find jobs, extract and score them) followed by a daily
+backup (set `schedule.backup: false` in `config/app.yaml` to turn it off; rotation keeps
+the newest `backup_keep` archives), then retention maintenance, and, with `--with-server`,
+the dashboard. Running `discover --run-now` by hand does not back up; use
+`uv run jobpilot backup`. What never runs on a schedule: tailoring, preparing
 forms, approval, submission and outreach sending. Those only happen when you press the
 button in the dashboard. The *Settings* page shows the schedule, the last backup,
 retention and model routes (read-only).
@@ -228,7 +230,8 @@ uv run jobpilot restore <archive> --confirm RESTORE
 
 - A backup holds the database, `storage/profiles` and `storage/artifacts`. It does not
   hold browser sessions (`browser_state`), logs, exports or other backups.
-- Only the newest `backup_keep` archives are kept (default 14); older ones are rotated out.
+- Scheduled daily runs make a backup automatically (disable with `schedule.backup: false`).
+  Only the newest `backup_keep` archives are kept (default 14); older ones are rotated out.
 - Restore is CLI only and needs the typed word `RESTORE`. The archive is verified first,
   JobPilot must not be running, and your current data is saved aside (`storage/.pre-restore-<time>`) before it is replaced.
 - Backups contain personal data. Files are created private (mode `0600`) under the
@@ -243,8 +246,11 @@ uv run jobpilot delete app <application_id> --confirm <application_id>
 uv run jobpilot delete all --confirm "DELETE ALL" [--include-backups]
 ```
 
-- Exports contain personal data; they are written to `storage/exports/` and removed after
-  7 days by maintenance.
+- Exports contain personal data; they are written to `storage/exports/`. Files there older
+  than `retention_days.exports` (7 days) are deleted by maintenance.
+- `delete all` also removes the `storage/.pre-restore-*` copies a restore leaves behind;
+  maintenance prunes those after `retention_days.artifacts`, and `jobpilot doctor` lists
+  any that are present with their age.
 - Deleting an application is available in the dashboard (type the application id) and the
   CLI, and only for finished applications. Deleting everything is CLI only.
 - Retention (`retention_days` in `config/app.yaml`): finished applications lose their

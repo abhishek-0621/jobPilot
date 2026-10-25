@@ -21,6 +21,7 @@ class ScheduleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     discover_at: str = "08:30"
+    backup: bool = True
 
     @field_validator("discover_at")
     @classmethod

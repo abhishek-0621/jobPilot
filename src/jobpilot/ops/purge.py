@@ -16,7 +16,7 @@ from jobpilot.contracts.enums import ApplicationStatus
 from jobpilot.data.mutations import clear_application_content, clear_artifact_refs
 from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, FormFieldAnswerRow
 from jobpilot.observability.events import record_event
-from jobpilot.ops.backup import restore_marker, server_running
+from jobpilot.ops.backup import pre_restore_dirs, restore_marker, server_running
 from jobpilot.ops.lock import ops_lock
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.state_machine import TERMINAL_APPLICATION, transition
@@ -107,7 +107,8 @@ def delete_application(cfg: AppConfig, s: Session, application_id: str, *,
 
 def delete_all(cfg: AppConfig, *, confirm: str, include_backups: bool = False,
                server_running: Callable[[AppConfig], bool] = server_running) -> list[Path]:
-    """Remove the database and every data tree under storage (CLI only). Backups stay
+    """Remove the database and every data tree under storage, including
+    ``.pre-restore-*`` copies (CLI only). Backups stay
     unless ``include_backups``; the run/lock directory always stays. Returns what was
     removed."""
     if confirm != DELETE_ALL_WORD:
@@ -124,6 +125,10 @@ def delete_all(cfg: AppConfig, *, confirm: str, include_backups: bool = False,
             if p.exists():
                 p.unlink()
                 removed.append(p)
+        for pre in pre_restore_dirs(cfg):  # symlinks are skipped, never followed
+            if pre.resolve().parent == cfg.storage_path.resolve():
+                shutil.rmtree(pre)
+                removed.append(pre)
         trees = DELETE_ALL_TREES + (("backups",) if include_backups else ())
         for tree in trees:
             p = cfg.storage_path / tree

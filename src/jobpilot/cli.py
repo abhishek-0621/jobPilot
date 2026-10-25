@@ -107,6 +107,14 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
         checks.append(("restore", False, recovery_instructions(cfg)))
     for name, ok, detail in checks:
         typer.echo(f"[{'ok' if ok else 'FAIL'}] {name}: {detail}")
+    import time
+
+    from jobpilot.ops.backup import pre_restore_dirs
+
+    for pre in pre_restore_dirs(cfg):
+        days = int((time.time() - pre.stat().st_mtime) // 86400)
+        typer.echo(f"[info] {pre.name}: pre-restore copy of your data, {days} days old "
+                   "(removed by maintenance after retention_days.artifacts)")
     typer.echo(f"[info] dry_run: {cfg.dry_run}")
     if not all(ok for _, ok, _ in checks):
         raise typer.Exit(1)
@@ -264,6 +272,19 @@ def _run_maintenance_if_available(cfg: AppConfig, *, scheduled: bool = False) ->
     typer.echo("Maintenance: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
+def _scheduled_backup(cfg: AppConfig) -> None:
+    """Daily backup of a scheduled run; a failure is logged and never fails the run."""
+    from jobpilot.ops import backup as backup_ops
+
+    try:
+        archive = backup_ops.backup(cfg)
+    except Exception as e:
+        logging.getLogger("jobpilot.backup").exception("scheduled backup failed")
+        typer.echo(f"Scheduled backup failed: {e}")
+        return
+    typer.echo(f"Backup written: {archive}")
+
+
 @app.command()
 def discover(
     config_dir: ConfigDir = Path("config"),
@@ -290,6 +311,8 @@ def discover(
                 steps = asyncio.run(_discover_now(cfg))
                 typer.echo(f"Discovery cycle finished ({steps} tasks). "
                            "Other work stays queued for `jobpilot start`.")
+                if scheduled and cfg.schedule.backup:
+                    _scheduled_backup(cfg)
                 _run_maintenance_if_available(cfg, scheduled=scheduled)
         except LockHeld as e:
             if scheduled:

@@ -59,6 +59,14 @@ def recovery_instructions(cfg: AppConfig) -> str:
             "deleting the marker.")
 
 
+def pre_restore_dirs(cfg: AppConfig) -> list[Path]:
+    """storage/.pre-restore-* real directories (symlinks are never returned)."""
+    if not cfg.storage_path.is_dir():
+        return []
+    return sorted(p for p in cfg.storage_path.glob(".pre-restore-*")
+                  if p.is_dir() and not p.is_symlink())
+
+
 def _ts(now: Callable[[], datetime]) -> str:
     return now().strftime("%Y%m%d-%H%M%S")
 
@@ -301,6 +309,9 @@ def _restore(cfg: AppConfig, archive: Path, *, now: Callable[[], datetime],
     tmp_root = _private_dir(backups_dir(cfg) / ".tmp")
     work = Path(tempfile.mkdtemp(prefix="restore-", dir=tmp_root))
     try:
+        if os.stat(cfg.db_path.parent).st_dev != os.stat(work).st_dev:
+            raise RestoreError("database path is on a different volume than storage; "
+                               "move it under storage/ or restore manually")
         _extract_verified(archive, work)
         storage = cfg.storage_path
         pre = storage / f".pre-restore-{_ts(now)}"

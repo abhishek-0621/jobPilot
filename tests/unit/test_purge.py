@@ -354,3 +354,36 @@ def test_maintenance_skips_symlinked_app_dir_and_continues(
     assert "symlink" in caplog.text and bad in caplog.text
     assert (outside / "keep.txt").exists() and victim.is_symlink()
     assert not (cfg.storage_path / "artifacts" / good).exists()
+
+
+def test_delete_all_removes_pre_restore_dirs_but_not_symlinks(env: Env, tmp_path: Path) -> None:
+    cfg, _ = env
+    pre = cfg.storage_path / ".pre-restore-20260101-000000"
+    (pre / "profiles").mkdir(parents=True)
+    (pre / "profiles" / "p.yaml").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("k")
+    link = cfg.storage_path / ".pre-restore-link"
+    link.symlink_to(outside)
+    removed = purge.delete_all(cfg, confirm="DELETE ALL", server_running=lambda _c: False)
+    assert pre in removed and not pre.exists()
+    assert link.is_symlink() and link not in removed
+    assert (outside / "keep").exists()
+
+
+def test_maintenance_prunes_old_pre_restore_dirs(env: Env, tmp_path: Path) -> None:
+    cfg, _ = env
+    old = cfg.storage_path / ".pre-restore-old"
+    new = cfg.storage_path / ".pre-restore-new"
+    for d in (old, new):
+        (d / "profiles").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = cfg.storage_path / ".pre-restore-link"
+    link.symlink_to(outside)
+    past = (datetime.now(UTC) - timedelta(days=400)).timestamp()
+    os.utime(old, (past, past))
+    os.utime(link, (past, past), follow_symlinks=False)
+    run_maintenance(cfg)
+    assert not old.exists() and new.exists() and link.is_symlink() and outside.exists()

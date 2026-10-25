@@ -16,6 +16,7 @@ from jobpilot.config import AppConfig
 from jobpilot.data.db import make_engine, make_session_factory, utcnow
 from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow
 from jobpilot.observability.events import last_event, record_event
+from jobpilot.ops.backup import pre_restore_dirs, restore_marker
 from jobpilot.ops.lock import ops_lock
 from jobpilot.ops.purge import DeleteRefused, _app_artifact_dir, remove_artifacts
 from jobpilot.orchestrator.state_machine import TERMINAL_APPLICATION
@@ -75,6 +76,19 @@ def _prune_exports(cfg: AppConfig, cutoff: datetime) -> int:
     return n
 
 
+def _prune_pre_restore(cfg: AppConfig, cutoff: datetime) -> int:
+    """Remove old storage/.pre-restore-* copies; never while a restore is unfinished."""
+    if restore_marker(cfg).exists():
+        return 0
+    n = 0
+    for p in pre_restore_dirs(cfg):
+        if datetime.fromtimestamp(p.lstat().st_mtime, cutoff.tzinfo) >= cutoff:
+            continue
+        shutil.rmtree(p)
+        n += 1
+    return n
+
+
 def _prune_contacts(engine: Engine, s: Session, cutoff: datetime) -> int:
     """No-op until contact_candidate carries ``created_at`` and ``application_id``."""
     insp = inspect(engine)
@@ -110,6 +124,8 @@ def run_maintenance(cfg: AppConfig, *, now: Callable[[], datetime] = utcnow) -> 
                         engine, s, moment - timedelta(days=days.contacts)),
                     "exports_pruned": _prune_exports(
                         cfg, moment - timedelta(days=days.exports)),
+                    "pre_restore_pruned": _prune_pre_restore(
+                        cfg, moment - timedelta(days=days.artifacts)),
                 }
                 s.execute(text("PRAGMA optimize"))
                 result = str(s.execute(text("PRAGMA integrity_check")).scalar())

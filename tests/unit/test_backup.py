@@ -360,3 +360,124 @@ def test_discover_run_now_lock_held(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         assert ran == []
     finally:
         os.close(fd)
+
+
+def test_restore_refuses_db_on_other_volume(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    archive = bk.backup(cfg, now=lambda: _at(0))
+    real = bk.os.stat
+    db_dir = str(cfg.db_path.parent)
+
+    class _St:
+        def __init__(self, st: object, dev: int) -> None:
+            self._st, self.st_dev = st, dev
+
+        def __getattr__(self, n: str) -> object:
+            return getattr(self._st, n)
+
+    def fake_stat(p: object, *a: object, **k: object) -> object:
+        st = real(p, *a, **k)  # type: ignore[arg-type]
+        return _St(st, 999) if str(p) == db_dir else st
+
+    monkeypatch.setattr(bk.os, "stat", fake_stat)
+    with pytest.raises(bk.RestoreError, match="different volume"):
+        bk.restore(cfg, archive, confirm="RESTORE", server_running=_not_running)
+    assert not list(cfg.storage_path.glob(".pre-restore-*"))
+    assert not bk.restore_marker(cfg).exists()
+
+
+def _scheduled_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **app: object):  # type: ignore[no-untyped-def]
+    from jobpilot import cli
+    from tests.unit.test_cli import _config
+
+    d = _config(tmp_path, **app)
+    seen: list[str] = []
+
+    async def fake_now(_cfg: AppConfig) -> int:
+        seen.append("cycle")
+        return 1
+
+    monkeypatch.setattr(cli, "_discover_now", fake_now)
+    monkeypatch.setattr(cli, "_run_maintenance_if_available",
+                        lambda cfg, **_: seen.append("maint"))
+    return d, seen
+
+
+def test_scheduled_run_backs_up_before_maintenance(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+
+    d, seen = _scheduled_cli(tmp_path, monkeypatch)
+    cfg = AppConfig(storage_path=tmp_path / "storage", db_path=tmp_path / "storage" / "jobpilot.db",
+                    model_routes={})
+    (tmp_path / "storage").mkdir()
+    upgrade_to_head(cfg.db_path)
+    real = bk.backup
+    monkeypatch.setattr(bk, "backup", lambda c, **k: (seen.append("backup"), real(c, **k))[1])
+    r = CliRunner().invoke(cli.app, ["discover", "--run-now", "--scheduled",
+                                     "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    assert seen == ["cycle", "backup", "maint"]
+    assert len(list((tmp_path / "storage" / "backups").glob("jobpilot-*.tar.gz"))) == 1
+
+
+def test_interactive_run_now_does_not_back_up(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+
+    d, seen = _scheduled_cli(tmp_path, monkeypatch)
+    monkeypatch.setattr(bk, "backup", lambda c, **k: seen.append("backup"))
+    r = CliRunner().invoke(cli.app, ["discover", "--run-now", "--config-dir", str(d)])
+    assert r.exit_code == 0 and seen == ["cycle", "maint"]
+
+
+def test_scheduled_backup_disabled_by_flag(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+
+    d, seen = _scheduled_cli(tmp_path, monkeypatch, schedule={"backup": False})
+    monkeypatch.setattr(bk, "backup", lambda c, **k: seen.append("backup"))
+    r = CliRunner().invoke(cli.app, ["discover", "--run-now", "--scheduled",
+                                     "--config-dir", str(d)])
+    assert r.exit_code == 0 and seen == ["cycle", "maint"]
+
+
+def test_scheduled_backup_failure_logged_and_run_continues(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture) -> None:
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+
+    d, seen = _scheduled_cli(tmp_path, monkeypatch)
+
+    def boom(c: AppConfig, **k: object) -> Path:
+        raise bk.BackupError("disk full")
+
+    monkeypatch.setattr(bk, "backup", boom)
+    with caplog.at_level("ERROR"):
+        r = CliRunner().invoke(cli.app, ["discover", "--run-now", "--scheduled",
+                                         "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    assert seen == ["cycle", "maint"] and "disk full" in caplog.text
+
+
+def test_doctor_lists_pre_restore_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+    from tests.unit.test_cli import _config
+
+    d = _config(tmp_path)
+    (tmp_path / "storage" / ".pre-restore-20260101-000000").mkdir(parents=True)
+    monkeypatch.setattr(cli, "_ollama_tags", lambda cfg: None)
+    r = CliRunner().invoke(cli.app, ["doctor", "--config-dir", str(d)])
+    assert ".pre-restore-20260101-000000" in r.output and "old" in r.output
