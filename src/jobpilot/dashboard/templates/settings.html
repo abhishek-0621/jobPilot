@@ -35,6 +35,14 @@
 <div class="kv"><span>Exports</span><span>{{ retention.exports }} days</span></div>
 </div>
 
+<h2>Remote job boards</h2>
+<div class="card">
+{% if remote_boards is none %}<p class="muted">Search preferences could not be read.</p>
+{% elif remote_boards %}<p>Discovery reads: {{ remote_boards|join(", ") }}. Jobs from these boards always take the manual apply path.</p>
+{% else %}<p class="muted">No remote boards enabled.</p>{% endif %}
+<p class="muted">Change <code>search.remote_boards</code> in your search preferences. LinkedIn, Naukri, Indeed, foundit and Glassdoor are never automated: add those jobs with "Add a job".</p>
+</div>
+
 <h2>Model routes</h2>
 <div class="table-wrap"><table><thead><tr><th>Route</th><th>Model</th><th>Fallback</th></tr></thead><tbody>
 {% for name, r in cfg.model_routes.items() %}<tr><td>{{ name }}</td><td class="mono">{{ r.model_tag }}</td><td class="mono">{{ r.fallback or "—" }}</td></tr>{% endfor %}

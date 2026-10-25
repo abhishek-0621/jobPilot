@@ -62,6 +62,20 @@ class DiscoverAgent:
         status: dict[str, str] = {}
         listings: list[JobListing] = []
         fetched = skipped = 0
+
+        def keep(postings: list[RawPosting]) -> None:
+            nonlocal skipped
+            for p in postings:
+                if len(listings) >= prefs.max_jobs_per_run:
+                    break
+                ok, _reason = prefilter(p, prefs)
+                if not ok:
+                    continue
+                try:
+                    listings.append(_to_listing(p, ctx.task_id, clock()))
+                except (ValidationError, ValueError):
+                    skipped += 1
+
         for board in companies:
             if len(listings) >= prefs.max_jobs_per_run:
                 break
@@ -81,16 +95,24 @@ class DiscoverAgent:
                 continue
             status[key] = "ok"
             fetched += len(postings)
-            for p in postings:
-                if len(listings) >= prefs.max_jobs_per_run:
-                    break
-                keep, _reason = prefilter(p, prefs)
-                if not keep:
-                    continue
-                try:
-                    listings.append(_to_listing(p, ctx.task_id, clock()))
-                except (ValidationError, ValueError):
-                    skipped += 1
+            keep(postings)
+        for name in prefs.remote_boards:  # public remote boards: one feed, many companies
+            if len(listings) >= prefs.max_jobs_per_run:
+                break
+            key = f"board:{name}"
+            remote = sources.get(name)
+            if remote is None or getattr(remote, "kind", None) != "remote_board":
+                status[key] = "unsupported_source"
+                continue
+            try:
+                postings = await remote.list_board(  # type: ignore[attr-defined]
+                    max_postings=prefs.max_jobs_per_run)
+            except SourceError as e:
+                status[key] = e.code.value
+                continue
+            status[key] = "ok"
+            fetched += len(postings)
+            keep(postings)
         return DiscoverOutput(task_id=ctx.task_id, created_at=clock(), run_id=inp.entity_id,
                               listings=listings, source_status=status, fetched=fetched,
                               skipped=skipped)

@@ -23,7 +23,7 @@ from jobpilot.profile.preferences import CompanyBoard, SearchPreferences
 FIX = Path(__file__).parent.parent / "fixtures"
 T0 = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 PREFS = SearchPreferences(target_titles=["AI Engineer"], locations=["Bengaluru"],
-                          work_modes=["remote"])
+                          work_modes=["remote"], remote_boards=[])
 GH = CompanyBoard(name="Example AI", source="greenhouse", token="exampleai")
 LV = CompanyBoard(name="Sample Labs", source="lever", token="samplelabs")
 

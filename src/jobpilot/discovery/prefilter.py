@@ -1,12 +1,12 @@
 """Deterministic, model-free prefilter applied to raw postings before storage."""
 
+from jobpilot.discovery.location import location_eligible
 from jobpilot.discovery.normalize import html_to_text, normalize_title
-from jobpilot.discovery.sources.base import RawPosting
+from jobpilot.discovery.sources.base import REMOTE_BOARDS, RawPosting
 from jobpilot.profile.preferences import SearchPreferences
 from jobpilot.util.textmatch import has_phrase
 
 KEYWORDS = ("ai", "ml", "genai", "llm", "machine learning", "rag", "applied scientist")
-_ANYWHERE = ("remote", "anywhere")
 
 
 def _title_ok(title: str, prefs: SearchPreferences) -> bool:
@@ -19,16 +19,6 @@ def _title_ok(title: str, prefs: SearchPreferences) -> bool:
     return any(has_phrase(norm, k) for k in KEYWORDS)
 
 
-def _location_ok(location: str | None, prefs: SearchPreferences) -> bool:
-    if location is None:
-        return True
-    loc = location.casefold()
-    if any(has_phrase(loc, p.strip()) for p in prefs.locations if p.strip()):
-        return True
-    remote = "remote" in {m.casefold() for m in prefs.work_modes}
-    return remote and any(has_phrase(loc, w) for w in _ANYWHERE)
-
-
 def prefilter(p: RawPosting, prefs: SearchPreferences) -> tuple[bool, str]:
     if prefs.exclude_keywords:
         haystack = f"{p.title}\n{html_to_text(p.description_html)}".casefold()
@@ -37,6 +27,7 @@ def prefilter(p: RawPosting, prefs: SearchPreferences) -> tuple[bool, str]:
                 return False, f"excluded_keyword:{kw.strip()}"
     if not _title_ok(p.title, prefs):
         return False, "title_mismatch"
-    if not _location_ok(p.location, prefs):
-        return False, "location_mismatch"
+    ok, reason = location_eligible(p.location, prefs, remote_board=p.source in REMOTE_BOARDS)
+    if not ok:
+        return False, reason
     return True, "ok"

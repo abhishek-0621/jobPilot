@@ -43,9 +43,15 @@ from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.ashby import AshbySource
 from jobpilot.discovery.sources.base import RateLimitedFetcher, SourceAdapter
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
+from jobpilot.discovery.sources.himalayas import HimalayasSource
+from jobpilot.discovery.sources.jobicy import JobicySource
 from jobpilot.discovery.sources.lever import LeverSource
+from jobpilot.discovery.sources.remoteok import RemoteOKSource
+from jobpilot.discovery.sources.remotive import RemotiveSource
 from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
+from jobpilot.discovery.sources.weworkremotely import WeWorkRemotelySource
 from jobpilot.discovery.sources.workday import WorkdaySource
+from jobpilot.discovery.sources.workingnomads import WorkingNomadsSource
 from jobpilot.documents.model import split_skills
 from jobpilot.documents.validate import (
     BANNED_PATH,
@@ -399,6 +405,13 @@ def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
         "ashby": AshbySource(client),
         "smartrecruiters": SmartRecruitersSource(client),
         "workday": WorkdaySource(client),
+        # public remote-job boards (prefs.remote_boards); always the manual apply path
+        "himalayas": HimalayasSource(client),
+        "remotive": RemotiveSource(client),
+        "weworkremotely": WeWorkRemotelySource(client),
+        "remoteok": RemoteOKSource(client),
+        "jobicy": JobicySource(client),
+        "workingnomads": WorkingNomadsSource(client),
     }
 
 

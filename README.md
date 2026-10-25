@@ -157,7 +157,23 @@ companies:
     extra: {wd_host: wd5, site: Careers}
 ```
 
-**LinkedIn, Naukri and other login sites** are never automated. Found a job there? Use
+**Remote job boards.** Discovery also reads public remote-job feeds (no login, one request
+per second per host, capped by `max_jobs_per_run`): Himalayas, Remotive, We Work Remotely,
+RemoteOK, Jobicy and Working Nomads. Pick them with `search.remote_boards` in your search
+preferences (default: all). Jobs from these boards always take the manual apply path, and the
+job page credits the board with a "via <board>" link back, as Remotive and RemoteOK ask.
+The same role found on two boards within 30 days is shown once (the first source wins).
+
+**India or remote.** With `locations: [India, Remote]`, a job is kept when it is in India
+(any city or state in `config/india_locations.yaml`) or remote and open to India
+(worldwide, anywhere, APAC/Asia, IST/UTC+5:30, or India named). Remote jobs restricted to
+other regions ("USA only", EU, UK, Americas, LATAM, Canada, ...) are dropped.
+
+**Filtering the jobs list.** The **Jobs** page filters by search text, company, source,
+location (quick *India* / *Remote*), work mode, status, apply mode, minimum score and
+posting age, all combined; the URL keeps the filters, so you can bookmark or share a view.
+
+**LinkedIn, Naukri, Indeed, foundit, Glassdoor and other login sites** are never automated. Found a job there? Use
 **Add a job** (`/ui/jobs/new`) and paste its URL, title, company and description. JobPilot
 prepares your resume, cover letter and drafted answers, then you apply yourself on the
 site and press *Mark as applied*.

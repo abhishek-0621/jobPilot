@@ -45,6 +45,19 @@ def normalize_title(title: str) -> str:
     return " ".join(t.split())
 
 
+_COMPANY_SUFFIX = re.compile(
+    r"\b(?:inc|incorporated|llc|ltd|limited|pvt|private|corp|corporation|co|gmbh|plc|"
+    r"technologies|technology|labs|hq)\b")
+
+
+def company_key(company: str) -> str:
+    """Company name for cross-source matching: case, punctuation and legal suffixes dropped
+    (falls back to the plain folded name if only suffix words remain)."""
+    plain = " ".join(re.sub(r"[^\w\s]", " ", company.casefold()).split())
+    stripped = " ".join(_COMPANY_SUFFIX.sub(" ", plain).split())
+    return stripped or plain
+
+
 def dedupe_key(company: str, title: str, location: str | None) -> str:
     return content_hash([
         company.casefold().strip(),
