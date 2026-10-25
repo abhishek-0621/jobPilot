@@ -1,0 +1,63 @@
+# Places that count as "India" for location filtering (case-insensitive whole phrases).
+india_locations:
+  - India
+  - Bharat
+  - Bengaluru
+  - Bangalore
+  - Pune
+  - Hyderabad
+  - Secunderabad
+  - Mumbai
+  - Bombay
+  - Navi Mumbai
+  - Thane
+  - Delhi
+  - New Delhi
+  - NCR
+  - Delhi NCR
+  - Gurugram
+  - Gurgaon
+  - Noida
+  - Greater Noida
+  - Faridabad
+  - Ghaziabad
+  - Chennai
+  - Madras
+  - Kolkata
+  - Calcutta
+  - Ahmedabad
+  - Gandhinagar
+  - Kochi
+  - Cochin
+  - Coimbatore
+  - Jaipur
+  - Indore
+  - Chandigarh
+  - Mohali
+  - Trivandrum
+  - Thiruvananthapuram
+  - Mysuru
+  - Mysore
+  - Mangaluru
+  - Mangalore
+  - Nagpur
+  - Lucknow
+  - Bhubaneswar
+  - Visakhapatnam
+  - Vadodara
+  - Surat
+  - Goa
+  - Karnataka
+  - Maharashtra
+  - Telangana
+  - Tamil Nadu
+  - Kerala
+  - Gujarat
+  - Haryana
+  - Uttar Pradesh
+  - West Bengal
+  - Rajasthan
+  - Andhra Pradesh
+  - Madhya Pradesh
+  - Punjab
+  - Odisha

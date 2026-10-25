@@ -4,10 +4,11 @@ search:
     - Applied AI Engineer
     - AI Engineer
     - Search / RAG Engineer
+  # "India" matches Indian cities/states (config/india_locations.yaml); "Remote" keeps only
+  # remote jobs open to India (worldwide, APAC/Asia, IST); "Remote - USA only" is dropped.
   locations:
-    - Bengaluru
-    - Hyderabad
-    - Remote India
+    - India
+    - Remote
   work_modes: [remote, hybrid, onsite]
   sources:
     - company_careers
@@ -20,3 +21,5 @@ search:
   exclude_keywords:
     - unpaid
   require_user_review_for_new_sources: true
+  # Public remote-job boards to read (all manual-apply). Remove any you don't want.
+  remote_boards: [himalayas, remotive, weworkremotely, remoteok, jobicy, workingnomads]

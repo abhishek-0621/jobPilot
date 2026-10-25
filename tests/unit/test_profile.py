@@ -127,7 +127,7 @@ def _cfg(tmp_path: Path) -> AppConfig:
 def test_preferences_defaults_and_storage_override(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     prefs = load_search_preferences(cfg)
-    assert prefs.min_match_score == 70 and "Remote India" in prefs.locations
+    assert prefs.min_match_score == 70 and prefs.locations == ["India", "Remote"]
     assert [c.token for c in load_companies(cfg)] == ["exampleai", "samplelabs"]
 
     prof = tmp_path / "storage" / "profiles"

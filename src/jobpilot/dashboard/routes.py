@@ -59,6 +59,20 @@ from jobpilot.contracts.enums import (
     OutreachStatus,
 )
 from jobpilot.contracts.models import is_http_url
+from jobpilot.dashboard.job_filters import (
+    PAGE_SIZE,
+    POSTED_WITHIN,
+    SORTS,
+    WORK_MODES,
+    board_label,
+    chips,
+    job_query,
+    parse_filters,
+    posted_at,
+    posted_cutoff,
+    query_string,
+)
+from jobpilot.data.db import utcnow
 from jobpilot.data.mutations import (
     essay_story_ids,
     is_essay_source,
@@ -69,7 +83,6 @@ from jobpilot.data.repositories import (
     assessments_for,
     batch_items,
     counts_by_status,
-    jobs_with_scores,
     latest_batch,
     list_events,
     pending_batches,
@@ -102,11 +115,13 @@ from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
 from jobpilot.outreach.state import research_blocker
+from jobpilot.portals.registry import apply_mode
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
 from jobpilot.profile.preferences import (
     CompaniesFileError,
     append_companies,
     load_companies,
+    load_search_preferences,
 )
 from jobpilot.profile.stories import stored_bank, verify_story
 
@@ -270,31 +285,61 @@ def _one_line(text: str, limit: int = 120) -> str:
 
 
 @router.get("/ui/jobs", response_class=HTMLResponse)
-def jobs(request: Request, s: Db, status: str | None = None,
-         show_duplicates: int = 0, deleted: str | None = None) -> HTMLResponse:
+def jobs(request: Request, s: Db, deleted: str | None = None) -> HTMLResponse:
+    f = parse_filters(request.query_params)
     version = _active_version(s)
     apps = list(s.execute(select(ApplicationRow)).scalars())
     selected = {a.job_id: a.application_id for a in apps}
     app_status = {a.job_id: a.status for a in apps}
     assessments = assessments_for(s, None, version)  # one query, same rule as job detail
+    cutoff = posted_cutoff(f, utcnow())
     rows = []
-    for job, _score in jobs_with_scores(s, status or None):
-        if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
-                and status != JobStatus.DUPLICATE.value:
-            continue
+    for job in s.execute(job_query(f)).scalars():
         m = assessments.get(job.job_id)
+        score = None if m is None else m.total_score
+        if f.min_score is not None and (score is None or score < f.min_score):
+            continue
+        mode = apply_mode(job)
+        if f.apply_mode and mode != f.apply_mode:
+            continue
+        posted = posted_at(job)
+        if cutoff is not None and posted < cutoff:
+            continue
         rows.append({"job": job, "label": MANUAL_APPLIED_LABEL if app_status.get(
                          job.job_id) == ApplicationStatus.SUBMITTED_BY_USER.value
-                     else job.status, "score": None if m is None else m.total_score,
+                     else job.status, "score": score, "apply_mode": mode,
+                     "posted": posted, "board": board_label(job.source),
                      "application_id": selected.get(job.job_id),
                      "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
                      "selectable": job.status == JobStatus.MATCHED.value
                      and job.job_id not in selected})
-    return _page(request, s, "jobs.html", {
-        "rows": rows, "status": status or "", "show_duplicates": bool(show_duplicates),
+    if f.sort == "score":
+        rows.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0)))
+    elif f.sort == "company":
+        rows.sort(key=lambda r: (r["job"].company.casefold(), r["job"].title.casefold()))
+    else:
+        rows.sort(key=lambda r: r["posted"], reverse=True)
+    total = len(rows)
+    pages = max(1, -(-total // PAGE_SIZE))
+    page = min(f.page, pages)
+    ctx = {
+        "rows": rows[(page - 1) * PAGE_SIZE: page * PAGE_SIZE], "total": total,
+        "page": page, "pages": pages, "f": f, "chips": chips(f),
+        "prev_href": "/ui/jobs?" + query_string(f, page=page - 1) if page > 1 else None,
+        "next_href": "/ui/jobs?" + query_string(f, page=page + 1) if page < pages else None,
+        "any_jobs": s.execute(select(JobRow.job_id).limit(1)).first() is not None,
+        "companies": list(s.execute(select(JobRow.company).distinct()
+                                    .order_by(JobRow.company).limit(500)).scalars()),
+        "sources": list(s.execute(select(JobRow.source).distinct()
+                                  .order_by(JobRow.source)).scalars()),
+        "board_label": board_label, "work_modes": WORK_MODES, "sorts": SORTS,
+        "posted_options": POSTED_WITHIN,
         "flash": f"Deleted the data of application {deleted}. Its audit history is kept."
         if deleted else None,
-        "statuses": [st.value for st in JobStatus]})
+        "statuses": [st.value for st in JobStatus]}
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(request, "_jobs_results.html", ctx)
+    return _page(request, s, "jobs.html", ctx)
 
 
 @router.post("/ui/runs/discovery", response_class=HTMLResponse)
@@ -351,7 +396,7 @@ def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
     app_id = s.execute(select(ApplicationRow.application_id)
                        .where(ApplicationRow.job_id == job_id)).scalar()
     return _page(request, s, "job_detail.html", {
-        "job": job, "m": m, "evidence": facts,
+        "job": job, "m": m, "evidence": facts, "board": board_label(job.source),
         "requirements": extracted.get("requirements") if isinstance(extracted, dict)
         else None,
         "missing": ev.get("missing_requirements") or [], "concerns": ev.get("concerns") or [],
@@ -1101,7 +1146,17 @@ def settings(request: Request, s: Db) -> HTMLResponse:
         "cfg": cfg, "schedule": _schedule_view(request, cfg),
         "backup": _last_backup(cfg),
         "retention": cfg.retention_days.model_dump(),
+        "remote_boards": _remote_boards(cfg),
     })
+
+
+def _remote_boards(cfg: AppConfig) -> list[str] | None:
+    """Display names of the enabled remote boards; None if the preferences can't be read."""
+    try:
+        prefs = load_search_preferences(cfg)
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    return [board_label(b) or b for b in prefs.remote_boards]
 
 
 # ---- outreach (drafts only: JobPilot never sends; the user sends and marks it sent) ----

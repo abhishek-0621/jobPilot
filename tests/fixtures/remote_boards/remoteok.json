@@ -1,0 +1,12 @@
+[{"last_updated": 1792944000, "legal": "API Terms of Service: link back to Remote OK (fixture)."},
+ {"slug": "example-corp-ai-engineer-2001", "id": "2001", "epoch": 1792944000,
+  "date": "2026-10-24T16:00:04+00:00", "company": "Example Corp", "company_logo": "",
+  "position": "AI Engineer", "tags": ["ai", "python"], "description": "<p>Agents &amp; tools.</p>",
+  "location": "Remote", "apply_url": "https://remoteok.com/remote-jobs/2001/apply",
+  "salary_min": 0, "salary_max": 0, "logo": "",
+  "url": "https://remoteok.com/remote-jobs/example-corp-ai-engineer-2001"},
+ {"slug": "sample-labs-ml-2002", "id": "2002", "epoch": 1792900000,
+  "date": "2026-10-23T10:00:00+00:00", "company": "Sample Labs", "company_logo": "",
+  "position": "ML Engineer", "tags": [], "description": "<p>x</p>", "location": "",
+  "apply_url": "", "salary_min": 0, "salary_max": 0, "logo": "",
+  "url": "https://remoteok.com/remote-jobs/sample-labs-ml-2002"}]
