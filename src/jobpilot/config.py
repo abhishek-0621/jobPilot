@@ -26,8 +26,9 @@ class ScheduleConfig(BaseModel):
     @field_validator("discover_at")
     @classmethod
     def _hhmm(cls, v: str) -> str:
-        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
-            raise ValueError("discover_at must be HH:MM (24h)")
+        hhmm = r"([01]\d|2[0-3]):[0-5]\d"
+        if not re.fullmatch(rf"{hhmm}(\s*,\s*{hhmm})*", v):
+            raise ValueError("discover_at must be HH:MM (24h), or several separated by commas")
         return v
 
 
