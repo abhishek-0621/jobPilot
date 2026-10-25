@@ -9,12 +9,12 @@ from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -1001,24 +1001,33 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
 def _companies_page(request: Request, s: Session, ctx: dict[str, Any],
                     status: int = 200) -> HTMLResponse:
     cfg: AppConfig = request.app.state.cfg
+    error = None
     try:
         boards = load_companies(cfg)
-    except (AttributeError, TypeError, ValueError, yaml.YAMLError):
-        boards = []  # unusable companies.yaml: the add path reports it; keep the page up
+    except (AttributeError, TypeError, ValueError, yaml.YAMLError, UnicodeDecodeError) as e:
+        boards = []  # keep the page up, but say why the list is empty
+        error = (f"{cfg.storage_path / 'profiles' / 'companies.yaml'} could not be read "
+                 f"({type(e).__name__}); fix or remove it. Discovery cannot use it either.")
     resp = _page(request, s, "companies.html", {
-        "boards": boards, "error": None, "results": None, "added": 0, **ctx})
+        "boards": boards, "error": error, "summary": None,
+        **ctx})
     resp.status_code = status
     return resp
 
 
 @router.get("/ui/companies", response_class=HTMLResponse)
-def companies(request: Request, s: Db) -> HTMLResponse:
-    return _companies_page(request, s, {})
+def companies(request: Request, s: Db, searched: str = "", found: int | None = None,
+              added: int = 0) -> HTMLResponse:
+    summary = None
+    if found is not None and searched:
+        summary = {"searched": searched[:100], "found": max(found, 0),
+                   "added": min(max(added, 0), max(found, 0))}
+    return _companies_page(request, s, {"summary": summary})
 
 
 @router.post("/ui/companies", response_class=HTMLResponse)
 async def add_company(request: Request, s: Db,
-                      name: Annotated[str, Form()] = "") -> HTMLResponse:
+                      name: Annotated[str, Form()] = "") -> Response:
     """Probe the public boards for a company name and append the live ones to
     storage/profiles/companies.yaml. Only public, login-free endpoints are contacted."""
     name = name.strip()
@@ -1032,7 +1041,9 @@ async def add_company(request: Request, s: Db,
         added = append_companies(cfg, [h.board for h in hits])
     except CompaniesFileError as e:
         return _companies_page(request, s, {"error": str(e)}, 422)
-    return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})
+    # Post/Redirect/Get: a reload never re-probes the boards or re-appends.
+    query = urlencode({"searched": name, "found": len(hits), "added": len(added)})
+    return RedirectResponse(f"/ui/companies?{query}", status_code=303)
 
 
 def _human_size(n: int) -> str:

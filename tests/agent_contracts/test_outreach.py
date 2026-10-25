@@ -65,7 +65,8 @@ def _context(**over: Any) -> dict[str, Any]:
 
 
 def _ctx(gateway: Any, context: dict[str, Any]) -> AgentContext:
-    async def careers(url: str | None, domain: str | None) -> list[FoundContact]:
+    async def careers(url: str | None, domain: str | None,
+                      company: str | None = None) -> list[FoundContact]:
         return []
     return AgentContext(task_id="task_1", gateway=gateway, tools={
         "outreach_context": lambda app_id: context,

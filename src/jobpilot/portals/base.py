@@ -31,6 +31,8 @@ class FormField(Contract):
     required: bool
     options: list[str] = []
     help_text: str = ""
+    # The DOM ``maxlength`` attribute when the control declares one (essay drafting limit).
+    maxlength: int | None = None
 
 
 class FormSnapshot(Contract):

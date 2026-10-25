@@ -44,9 +44,10 @@ def test_no_guessed_or_offdomain_emails() -> None:
 
 
 def test_posting_email_without_known_domain_uses_slug() -> None:
-    text = "Write to careers@acmerobotics.example or hr@other.example."
+    # slug fallback only on common TLDs (.example is not one)
+    text = "Write to careers@acmerobotics.dev or hr@other.dev or jobs@acmerobotics.example."
     found = extract_from_posting(text, None, company="Acme Robotics")
-    assert [c.address for c in found] == ["careers@acmerobotics.example"]
+    assert [c.address for c in found] == ["careers@acmerobotics.dev"]
     assert extract_from_posting(text, None, company="Initech") == []
 
 

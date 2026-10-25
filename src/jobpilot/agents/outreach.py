@@ -170,7 +170,7 @@ def violations(raw: _OutreachLLM, verified: dict[str, str], company: str, role: 
     return list(dict.fromkeys(codes))
 
 
-CareersInbox = Callable[[str | None, str | None], Awaitable[list[FoundContact]]]
+CareersInbox = Callable[[str | None, str | None, str | None], Awaitable[list[FoundContact]]]
 
 
 class OutreachAgent:
@@ -205,7 +205,7 @@ class OutreachAgent:
                                 app.get("careers_url"))
         found = extract_from_posting(posting, domain, company=company,
                                      source_url=app.get("canonical_url") or "")
-        found += await careers(app.get("careers_url"), domain)
+        found += await careers(app.get("careers_url"), domain, company)
         contacts = rank(found)
 
         version, facts, _years = ctx.tools["profile_loader"]()

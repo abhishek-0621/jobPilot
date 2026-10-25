@@ -40,6 +40,8 @@ class SourceError(Exception):
 
 class SourceAdapter(Protocol):
     source: str
+    # True when list_postings accepts ``max_postings`` (the finder passes the run cap).
+    supports_max_postings: bool
 
     async def list_postings(self, board: CompanyBoard) -> list[RawPosting]: ...
 

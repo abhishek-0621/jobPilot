@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -69,19 +70,21 @@ class WorkdaySource:
         for item in items:
             detail = await self._fetch.get_json(f"{api}{item['externalPath']}")
             try:
-                posting = _parse(item, detail, board, host, site)
+                out.append(_parse(item, detail, board, host, site))
             except (KeyError, TypeError, ValueError, AttributeError) as e:
                 raise SourceError(ErrorCode.SOURCE_CHANGED, type(e).__name__) from e
-            if posting is not None:
-                out.append(posting)
         return out
 
 
 def _parse(item: dict[str, Any], detail: dict[str, Any], board: CompanyBoard, host: str,
-           site: str) -> RawPosting | None:
+           site: str) -> RawPosting:
     info = detail["jobPostingInfo"]
-    url = normalize_url(
-        require_http(info.get("externalUrl")) or f"{host}/{site}{item['externalPath']}")
+    fallback = normalize_url(f"{host}/{site}{item['externalPath']}")
+    external = require_http(info.get("externalUrl"))
+    url = normalize_url(external) if external else fallback
+    # The posting's own URL must stay on the tenant host; anything else is untrusted.
+    if urlsplit(url).netloc != urlsplit(fallback).netloc:
+        url = fallback
     location = info.get("location") or item.get("locationsText") or None
     if location and "Remote" in str(info.get("remoteType") or ""):
         location = f"{location} (Remote)"

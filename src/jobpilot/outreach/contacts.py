@@ -6,8 +6,11 @@ Posting text and careers pages are untrusted: only regex-extracted, domain-check
 addresses and a deterministic name/title pattern leave this module.
 """
 
+import asyncio
 import ipaddress
 import re
+import socket
+from collections.abc import Awaitable, Callable
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
@@ -85,10 +88,17 @@ def company_slug(company: str) -> str:
     return re.sub(r"[^a-z0-9]", "", company.casefold())
 
 
+# Slug fallback (no known company domain) only on common TLDs: a lookalike on an exotic
+# TLD (acme.zip, acme.xyz) is never taken for the company's own domain.
+SLUG_TLDS = frozenset({"com", "io", "ai", "co", "in", "co.in", "net", "org", "dev", "tech",
+                       "app"})
+
+
 def _slug_matches(domain: str, company: str) -> bool:
     labels = base_domain(domain).split(".")
     slug = company_slug(company)
-    return bool(slug) and len(labels) >= 2 and re.sub(r"[^a-z0-9]", "", labels[0]) == slug
+    return bool(slug) and len(labels) >= 2 and ".".join(labels[1:]) in SLUG_TLDS \
+        and re.sub(r"[^a-z0-9]", "", labels[0]) == slug
 
 
 def company_domain(canonical_url: str | None, application_url: str | None,
@@ -177,13 +187,46 @@ def public_http_url(url: str | None) -> str | None:
     return url
 
 
+Resolver = Callable[[str], Awaitable[list[str]]]
+
+
+async def resolve_host(host: str) -> list[str]:
+    """Every address ``host`` resolves to (A and AAAA)."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return [str(i[4][0]) for i in infos]
+
+
+def _public_ip(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+                or ip.is_reserved or ip.is_unspecified)
+
+
+async def resolves_public(host: str, resolve: Resolver) -> bool:
+    """True only when ``host`` resolves and every address is public (no private, loopback,
+    link-local, reserved or unspecified address). Resolution errors are refusals."""
+    try:
+        addrs = await resolve(host)
+    except (OSError, UnicodeError):
+        return False
+    return bool(addrs) and all(_public_ip(a) for a in addrs)
+
+
 async def fetch_careers_inbox(url: str | None, fetcher: RateLimitedFetcher,
-                              company_dom: str | None, company: str | None = None
-                              ) -> list[FoundContact]:
+                              company_dom: str | None, company: str | None = None, *,
+                              resolve: Resolver | None = None) -> list[FoundContact]:
     """One GET of the careers page; ``mailto:`` links with an allowlisted local part on the
-    company domain. Any fetch error yields no contacts."""
+    company domain. Any fetch error yields no contacts. A host that resolves to a private,
+    loopback or link-local address is never fetched."""
     url = public_http_url(url)
     if url is None or (company_dom is None and company is None):
+        return []
+    if not await resolves_public(urlsplit(url).hostname or "", resolve or resolve_host):
         return []
     try:
         html = await fetcher.get_text(url)

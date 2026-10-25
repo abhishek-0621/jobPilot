@@ -31,6 +31,9 @@ ARCHIVE_RE = re.compile(r"jobpilot-\d{8}-\d{6}(?:-(\d+))?\.tar\.gz")
 MARKER_NAME = "RESTORE_IN_PROGRESS"
 TREES = ("profiles", "artifacts")
 TOP_FILES = ("db.sqlite", "manifest.json")
+# Restore extraction caps, checked from the tar headers before anything is written.
+MAX_RESTORE_BYTES = 20 * 1024**3
+MAX_RESTORE_MEMBERS = 200_000
 
 
 class RestoreError(RuntimeError):
@@ -254,6 +257,13 @@ def _extract_verified(archive: Path, dest: Path) -> None:
         bad = [m.name for m in members if not _safe_member(m)]
         if bad:
             raise RestoreError(f"archive contains unsafe members: {bad[:5]}")
+        if len(members) > MAX_RESTORE_MEMBERS:
+            raise RestoreError(f"archive has too many members ({len(members)} > "
+                               f"{MAX_RESTORE_MEMBERS})")
+        total = sum(m.size for m in members if m.isfile())
+        if total > MAX_RESTORE_BYTES:
+            raise RestoreError(f"archive is too large to restore ({total:,} bytes > "
+                               f"{MAX_RESTORE_BYTES:,})")
         tar.extractall(dest, members=members, filter="data")
     mpath = dest / "manifest.json"
     if not mpath.is_file() or not (dest / "db.sqlite").is_file():

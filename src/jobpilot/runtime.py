@@ -401,12 +401,14 @@ def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
 
 def make_careers_inbox(
     client: httpx.AsyncClient,
-) -> Callable[[str | None, str | None], Any]:
-    """One rate-limited GET of a configured careers page (same User-Agent as sources)."""
+) -> Callable[[str | None, str | None, str | None], Any]:
+    """One rate-limited GET of a configured careers page (same User-Agent as sources).
+    The company name enables the slug fallback when the company domain is unknown."""
     fetcher = RateLimitedFetcher(client)
 
-    async def careers_inbox(url: str | None, domain: str | None) -> list[FoundContact]:
-        return await fetch_careers_inbox(url, fetcher, domain)
+    async def careers_inbox(url: str | None, domain: str | None,
+                            company: str | None = None) -> list[FoundContact]:
+        return await fetch_careers_inbox(url, fetcher, domain, company)
     return careers_inbox
 
 

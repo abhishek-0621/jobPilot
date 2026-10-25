@@ -18,6 +18,7 @@ BASE = "https://api.lever.co/v0/postings"
 
 class LeverSource:
     source = "lever"
+    supports_max_postings = False
 
     def __init__(
         self,
