@@ -268,14 +268,18 @@ async def test_blocker_at_submit_handoff(factory: sessionmaker[Session], tmp_pat
     assert reasons[-1] == "manual_handoff:BLOCKED:captcha"
 
 
-async def test_validation_error_page_failed(factory: sessionmaker[Session], tmp_path: Path,
-                                            form_server: str, form_posts: list[str]) -> None:
+async def test_validation_error_page_uncertain_with_evidence(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str]) -> None:
     cfg = live_cfg(tmp_path)
     app_id = await seed_approved(factory, cfg, f"{form_server}/greenhouse_submit_error.html")
-    await run_submit(factory, cfg, app_id)
+    await run_submit(factory, cfg, app_id, _quick(cfg, factory))
     assert form_posts == ["/submit_error"]
     app, _task, events = _state(factory, app_id)
-    assert app.status == "SUBMISSION_FAILED"
+    assert app.status == "SUBMISSION_UNCERTAIN"  # never auto-failed: a retry could duplicate
+    finished = [json.loads(e.redacted_details_json) for e in events
+                if e.action == "submit_finished"]
+    assert finished and finished[-1]["error_codes"] == ["PAGE_ERRORS:2"]
     assert app.confirmation_reference is None
     assert _clicks(events) == 1
 
@@ -344,6 +348,8 @@ async def test_preexisting_error_box_is_not_failure(
     ("greenhouse_submit_listing.html", "/submit_listing"),
     # a pre-existing live error region shows "Saving..." then clears; the page stays
     ("greenhouse_submit_live.html", "/submit_noop"),
+    # the no-op POST reloads the form, which then shows a static error text
+    ("greenhouse_submit_reload_error.html", "/submit_noop"),
 ])
 async def test_weak_evidence_is_uncertain(
         factory: sessionmaker[Session], tmp_path: Path, form_server: str,

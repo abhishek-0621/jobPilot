@@ -530,8 +530,10 @@ class Orchestrator:
 
     def _apply_submit_result(self, s: Session, app: ApplicationRow, r: SubmitResult) -> None:
         evidence_id = self._store_evidence(s, app, r) or r.evidence_artifact_id
-        details = {"confirmation_reference": r.confirmation_reference,
-                   "evidence_artifact_id": evidence_id}
+        details: dict[str, Any] = {"confirmation_reference": r.confirmation_reference,
+                                   "evidence_artifact_id": evidence_id}
+        if r.error_codes:
+            details["error_codes"] = r.error_codes
         if r.status in (ApplicationStatus.SUBMITTED, ApplicationStatus.CONFIRMED):
             transition(s, app, ApplicationStatus.SUBMITTED, actor=_ACTOR,
                        reason="submitted", details=details)

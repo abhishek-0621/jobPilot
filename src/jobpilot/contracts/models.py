@@ -115,6 +115,7 @@ class SubmitResult(AgentOutput):
     evidence_artifact_id: str | None = None
     evidence_path: str | None = None  # local screenshot, stored as an artifact by the engine
     error_code: str | None = None
+    error_codes: list[str] = []  # page evidence (codes/counts only)
     retry_allowed: bool
     next_action: str
 

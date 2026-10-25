@@ -201,6 +201,7 @@ CONFIRMATION_REF = re.compile(
     r"\b(?i:application|reference|confirmation)\s*(?i:id|number|#|no\.?)?\s*[:#]?\s*"
     r"((?=[A-Z-]*[0-9])[A-Z0-9-]{4,})\b")
 _POLL_S = 0.5
+_GONE_POLLS = 6  # the form must stay absent for 3 s of consecutive polls
 
 _ERROR_SEL = '.error, [aria-invalid="true"]'
 _MARK = "data-jp-baseline"
@@ -218,7 +219,8 @@ _PAGE_STATE_JS = "(sels) => {" + _HELPERS + r"""
     .filter(e => visible(e) && !e.hasAttribute('data-jp-baseline')
       && (norm(e.textContent) || e.matches('input, select, textarea'))).length : 0;
   const success = [...document.querySelectorAll(
-    '[class*=success], [class*=confirmation], h1, h2')].filter(visible)
+    'h1, h2, h3, [role=alert], [role=status], [class*=confirm], [class*=success], '
+    + '[class*=thank]')].filter(visible)
     .map(e => norm(e.textContent)).filter(Boolean);
   return { text: document.body ? document.body.innerText : '', form: !!root,
            errors, success };
@@ -239,8 +241,9 @@ def _no_fragment(url: str) -> str:
 
 @dataclass(frozen=True)
 class Confirmation:
-    status: ApplicationStatus  # CONFIRMED, SUBMISSION_FAILED or SUBMISSION_UNCERTAIN
+    status: ApplicationStatus  # CONFIRMED or SUBMISSION_UNCERTAIN, never FAILED
     reference: str | None = None
+    error_codes: tuple[str, ...] = ()  # evidence only, e.g. ("PAGE_ERRORS:2",)
 
 
 def parse_reference(text: str) -> str | None:
@@ -487,16 +490,17 @@ class PlaywrightFormAdapter:
     async def detect_confirmation(self, baseline: PageBaseline,
                                   timeout_s: float = 30) -> Confirmation:
         """Poll every 500 ms for evidence that is new since ``baseline``:
-        * the URL changed to one whose path has a confirmation segment;
-        * a confirmation phrase absent before the click, with the URL changed or the form
-          absent on two consecutive polls;
-        * the form absent on two consecutive polls and a success element (not there
-          before) whose text is such a new confirmation phrase.
-        Error elements created after the click, with text, while the form is present,
-        mean FAILED. Anything else until the timeout is UNCERTAIN."""
+        * the URL changed to one whose path has a confirmation segment; or
+        * a confirmation phrase absent before the click inside a heading, alert/status
+          or confirm/success/thank element that was not there before, with the URL
+          changed or the form gone for >= 3 s (a failed poll restarts that clock).
+        Never returns FAILED: a resubmit could duplicate the application, so visible new
+        error elements are only recorded (``error_codes``) and the outcome is UNCERTAIN
+        for the user to resolve."""
         deadline = time.monotonic() + timeout_s
         before = baseline.text.casefold()
         absent = 0
+        errors = 0
 
         def new_phrase(text: str) -> bool:
             return any(m.group(0).casefold() not in before
@@ -506,21 +510,22 @@ class PlaywrightFormAdapter:
             try:
                 state: dict[str, Any] | None = await self._page_state()
             except PlaywrightError:  # navigating: the old document is gone
-                state = None
+                state, absent = None, 0
             if state is not None:
-                url, text, form = state["url"], state["text"] or "", state["form"]
+                url, form = state["url"], state["form"]
                 absent = 0 if form else absent + 1
-                gone = absent >= 2
+                gone = absent >= _GONE_POLLS
                 moved = _no_fragment(url) != _no_fragment(baseline.url)
                 success = [s for s in state["success"] if s not in baseline.success]
                 if ((moved and CONFIRM_PATH.search(urlsplit(url).path))
-                        or (new_phrase(text) and (moved or gone))
-                        or (gone and any(new_phrase(s) for s in success))):
-                    return Confirmation(ApplicationStatus.CONFIRMED, parse_reference(text))
-                if form and state["errors"]:
-                    return Confirmation(ApplicationStatus.SUBMISSION_FAILED)
+                        or ((moved or gone) and any(new_phrase(s) for s in success))):
+                    return Confirmation(ApplicationStatus.CONFIRMED,
+                                        parse_reference(state["text"] or ""))
+                if form:
+                    errors = max(errors, state["errors"])
             if time.monotonic() >= deadline:
-                return Confirmation(ApplicationStatus.SUBMISSION_UNCERTAIN)
+                return Confirmation(ApplicationStatus.SUBMISSION_UNCERTAIN, None,
+                                    (f"PAGE_ERRORS:{errors}",) if errors else ())
             await asyncio.sleep(_POLL_S)
 
     async def submit(self, approved_application: ApprovedApplication) -> SubmitResult:

@@ -156,9 +156,9 @@ class LiveSubmitter:
             application_id=app_id, status=status,  # type: ignore[arg-type]
             submitted_at=now, confirmation_reference=confirmation.reference,
             evidence_path=None if shot is None else str(shot),
-            error_code=None if status is _A.CONFIRMED else (
-                ErrorCode.SUBMIT_NO_CONFIRMATION.value if status is _A.SUBMISSION_UNCERTAIN
-                else ErrorCode.SUBMIT_REJECTED.value),
+            error_code=None if status is _A.CONFIRMED
+            else ErrorCode.SUBMIT_NO_CONFIRMATION.value,
+            error_codes=list(confirmation.error_codes),
             retry_allowed=False,
             next_action="none" if status is _A.CONFIRMED else "check_application_history")
 
