@@ -16,6 +16,11 @@ CONFIG_DIR = Path("config")
 _SAFE = r"^[A-Za-z0-9_-]{1,64}$"
 _SAFE_RE = re.compile(_SAFE)
 CAREERS_URL_KEY = "careers_url"  # optional public careers page (outreach inbox lookup)
+# Public remote-job boards (one feed each, not per company); always the manual apply path.
+RemoteBoardName = Literal["himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
+                          "workingnomads"]
+REMOTE_BOARDS: tuple[str, ...] = ("himalayas", "remotive", "weworkremotely", "remoteok",
+                                  "jobicy", "workingnomads")
 
 
 class SearchPreferences(BaseModel):
@@ -27,6 +32,8 @@ class SearchPreferences(BaseModel):
     max_jobs_per_run: int = 100
     exclude_keywords: list[str] = []
     require_user_review_for_new_sources: bool = True
+    # Which public remote boards discovery reads (default: all of them).
+    remote_boards: list[RemoteBoardName] = list(REMOTE_BOARDS)  # type: ignore[arg-type]
 
 
 class CompanyBoard(BaseModel):

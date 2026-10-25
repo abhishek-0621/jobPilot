@@ -1,0 +1,12 @@
+{"0-legal-notice": "fixture", "job-count": 2, "jobs": [
+  {"id": 1001, "url": "https://remotive.com/remote-jobs/software-dev/ai-engineer-1001",
+   "title": "AI Engineer", "company_name": "Example Corp", "company_logo": "", "category": "Software Development",
+   "tags": ["python"], "job_type": "full_time", "publication_date": "2026-10-22T18:40:19",
+   "candidate_required_location": "Worldwide", "salary": "", "description": "<p>RAG systems.</p>",
+   "company_logo_url": ""},
+  {"id": 1002, "url": "https://remotive.com/remote-jobs/software-dev/llm-engineer-1002",
+   "title": "LLM Engineer", "company_name": "Sample Labs", "company_logo": "", "category": "Software Development",
+   "tags": [], "job_type": "full_time", "publication_date": "2026-10-21T10:00:00",
+   "candidate_required_location": "USA Only", "salary": "", "description": "<p>x</p>",
+   "company_logo_url": ""}
+ ]}

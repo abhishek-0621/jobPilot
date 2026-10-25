@@ -11,18 +11,16 @@ import httpx
 
 from jobpilot.contracts.enums import ErrorCode
 from jobpilot.contracts.models import Contract
-from jobpilot.profile.preferences import CompanyBoard
+from jobpilot.profile.preferences import REMOTE_BOARDS, CompanyBoard
+
+__all__ = ["REMOTE_BOARDS", "RawPosting", "RateLimitedFetcher", "RemoteBoardSource",
+           "SourceAdapter", "SourceError"]
 
 USER_AGENT = "JobPilot/0.1 (+personal job search; contact via repo)"
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 HTML_HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html"}
 MAX_TEXT_BYTES = 2_000_000
 TIMEOUT_S = 20.0
-# Public remote-job boards (one feed each, not per company); always the manual apply path.
-REMOTE_BOARDS = ("himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
-                 "workingnomads")
-RemoteBoardName = Literal["himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
-                          "workingnomads"]
 
 
 class RawPosting(Contract):
@@ -51,6 +49,15 @@ class SourceAdapter(Protocol):
     supports_max_postings: bool
 
     async def list_postings(self, board: CompanyBoard) -> list[RawPosting]: ...
+
+
+class RemoteBoardSource(Protocol):
+    """A public remote-job board: one feed for many companies (not a per-company board)."""
+    source: str
+    kind: str  # "remote_board"
+    supports_max_postings: bool
+
+    async def list_board(self, max_postings: int) -> list[RawPosting]: ...
 
 
 class RateLimitedFetcher:

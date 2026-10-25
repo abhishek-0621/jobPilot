@@ -1,0 +1,5 @@
+[{"url": "https://www.workingnomads.com/jobs/ai-engineer-example-corp", "title": "AI Engineer",
+  "description": "<p>Agents.</p>", "company_name": "Example Corp", "category_name": "Development",
+  "tags": "python,ai", "location": "Europe, LATAM, APAC, Canada", "pub_date": "2026-10-21T14:06:17-04:00"},
+ {"url": "ftp://example.com/bad", "title": "ML Engineer", "description": "", "company_name": "Sample Labs",
+  "category_name": "Development", "tags": "", "location": "Anywhere", "pub_date": "2026-10-21T14:06:17-04:00"}]

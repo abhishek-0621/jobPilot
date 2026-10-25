@@ -1,0 +1,18 @@
+{"comments": "fixture", "updatedAt": 1792944000, "offset": 0, "limit": 20, "totalCount": 2,
+ "nextCursor": "", "jobs": [
+  {"title": "Senior AI Engineer", "excerpt": "Build agents.", "companyName": "Example Corp",
+   "companySlug": "example-corp", "companyLogo": "https://example.com/logo.png",
+   "employmentType": "Full Time", "minSalary": 1, "maxSalary": 2, "salaryPeriod": "year",
+   "seniority": ["Senior"], "currency": "USD", "locationRestrictions": ["India", "Singapore"],
+   "timezoneRestrictions": [5.5], "categories": ["AI"], "parentCategories": ["Engineering"],
+   "description": "<p>Build <b>LLM</b> agents at Example Corp.</p>", "pubDate": 1792944497,
+   "expiryDate": 1797944497, "applicationLink": "https://himalayas.app/companies/example-corp/jobs/senior-ai-engineer/apply",
+   "guid": "https://himalayas.app/companies/example-corp/jobs/senior-ai-engineer"},
+  {"title": "ML Engineer", "excerpt": "", "companyName": "Sample Labs", "companySlug": "sample-labs",
+   "companyLogo": "", "employmentType": "Full Time", "minSalary": 0, "maxSalary": 0,
+   "salaryPeriod": "year", "seniority": [], "currency": "USD", "locationRestrictions": [],
+   "timezoneRestrictions": [], "categories": [], "parentCategories": [],
+   "description": "<p>Train models.</p>", "pubDate": 1792900000, "expiryDate": 0,
+   "applicationLink": "javascript:alert(1)",
+   "guid": "https://himalayas.app/companies/sample-labs/jobs/ml-engineer"}
+ ]}

@@ -1,0 +1,13 @@
+{"apiVersion": "2", "documentationUrl": "https://jobicy.com/jobs-rss-feed", "friendlyNotice": "fixture",
+ "jobCount": 2, "lastUpdate": "2026-10-25 11:15:20", "nextCursor": "", "hasMore": false,
+ "appliedFilters": {"tag": "python"}, "statusCode": 200, "success": true, "jobs": [
+  {"id": 3001, "url": "https://jobicy.com/jobs/3001-ai-engineer", "jobSlug": "3001-ai-engineer",
+   "jobTitle": "AI Engineer", "companyName": "Example Corp", "companyLogo": "",
+   "jobIndustry": ["Engineering"], "jobType": ["full-time"], "jobGeo": "Anywhere",
+   "jobLevel": "Senior", "jobExcerpt": "x", "jobDescription": "<p>Python &amp; LLMs.</p>",
+   "pubDate": "2026-10-25T11:15:20+00:00"},
+  {"id": 3002, "url": "https://jobicy.com/jobs/3002-ml-engineer", "jobSlug": "3002-ml-engineer",
+   "jobTitle": "ML Engineer", "companyName": "Sample Labs", "companyLogo": "",
+   "jobIndustry": [], "jobType": [], "jobGeo": "APAC", "jobLevel": "Any",
+   "jobExcerpt": "", "jobDescription": "<p>y</p>", "pubDate": "2026-10-24 09:00:00"}
+ ]}
