@@ -9,7 +9,10 @@ from pydantic import ValidationError
 from jobpilot.contracts.enums import ErrorCode
 from jobpilot.discovery.sources.ashby import AshbySource
 from jobpilot.discovery.sources.base import SourceError
+from jobpilot.discovery.sources.greenhouse import GreenhouseSource
+from jobpilot.discovery.sources.lever import LeverSource
 from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
+from jobpilot.discovery.sources.workday import WorkdaySource
 from jobpilot.profile.preferences import CompanyBoard
 
 FIX = Path(__file__).parent.parent / "fixtures"
@@ -188,9 +191,228 @@ async def test_ashby_rate_limit_spacing() -> None:
 
 
 def test_company_board_extra_validation() -> None:
-    b = CompanyBoard(name="X", source="workday", token="x", extra={"site": "Ext_1", "wd": "wd5"})
-    assert b.extra == {"site": "Ext_1", "wd": "wd5"}
+    b = CompanyBoard(name="X", source="workday", token="x",
+                     extra={"site": "Ext_1", "wd_host": "wd5"})
+    assert b.extra == {"site": "Ext_1", "wd_host": "wd5"}
     assert CompanyBoard(name="X", source="ashby", token="x").extra == {}
     for bad in ({"a b": "x"}, {"site": "x/y"}, {"site": ""}, {"k" * 65: "v"}):
         with pytest.raises(ValidationError):
             CompanyBoard(name="X", source="workday", token="x", extra=bad)
+
+
+# ---- Workday ----
+
+WD = CompanyBoard(name="Sample Corp", source="workday", token="sample",
+                  extra={"wd_host": "wd3", "site": "External"})
+WD_BASE = "https://sample.wd3.myworkdayjobs.com"
+
+
+def _wd_handler(seen: list[httpx.Request], total: int = 2, detail: dict | None = None):  # type: ignore[no-untyped-def]
+    listing = json.loads((FIX / "workday_jobs.json").read_text())
+    det = detail or json.loads((FIX / "workday_detail.json").read_text())
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.method == "POST":
+            body = json.loads(req.content)
+            off = body["offset"]
+            if total == 2:
+                return httpx.Response(200, json=listing)
+            n = max(0, min(20, total - off))
+            return httpx.Response(200, json={"total": total, "jobPostings": [
+                {**listing["jobPostings"][0], "externalPath": f"/job/X/Job_{off + i}"}
+                for i in range(n)]})
+        return httpx.Response(200, json=det)
+
+    return handler
+
+
+async def test_workday_parses_fixture() -> None:
+    seen: list[httpx.Request] = []
+    async with client(_wd_handler(seen)) as c:
+        posts = await WorkdaySource(c, min_interval_s=0).list_postings(WD)
+    assert seen[0].method == "POST"
+    assert str(seen[0].url) == f"{WD_BASE}/wday/cxs/sample/External/jobs"
+    assert json.loads(seen[0].content) == {
+        "appliedFacets": {}, "limit": 20, "offset": 0, "searchText": ""}
+    assert seen[0].headers["User-Agent"] == UA
+    assert seen[1].method == "GET"
+    assert str(seen[1].url) == (
+        f"{WD_BASE}/wday/cxs/sample/External/job/Bengaluru/Machine-Learning-Engineer_R-1001")
+    p = posts[0]
+    assert p.source == "workday" and p.source_job_id == "R-1001"
+    assert p.company == "Sample Corp" and p.title == "Machine Learning Engineer"
+    assert p.location == "Bengaluru, India"
+    assert p.description_html == "<p>Train and ship <strong>models</strong>.</p>"
+    assert p.canonical_url == (
+        f"{WD_BASE}/External/job/Bengaluru/Machine-Learning-Engineer_R-1001")
+    assert p.application_url == p.canonical_url
+    assert p.posted_at == datetime(2026, 10, 8, tzinfo=UTC)
+
+
+async def test_workday_remote_and_public_url_fallback() -> None:
+    det = json.loads((FIX / "workday_detail.json").read_text())
+    det["jobPostingInfo"].update(externalUrl="javascript:alert(1)", remoteType="Remote",
+                                 startDate=None)
+    async with client(_wd_handler([], detail=det)) as c:
+        p = (await WorkdaySource(c, min_interval_s=0).list_postings(WD))[0]
+    assert p.location == "Bengaluru, India (Remote)" and p.posted_at is None
+    assert p.canonical_url == (
+        f"{WD_BASE}/External/job/Bengaluru/Machine-Learning-Engineer_R-1001")
+
+
+async def test_workday_pagination_caps() -> None:
+    seen: list[httpx.Request] = []
+    async with client(_wd_handler(seen, total=500)) as c:
+        posts = await WorkdaySource(c, min_interval_s=0).list_postings(WD, max_postings=500)
+    lists = [r for r in seen if r.method == "POST"]
+    assert [json.loads(r.content)["offset"] for r in lists] == [0, 20, 40, 60, 80]
+    assert len(posts) == 100  # 5 pages x 20
+    seen.clear()
+    async with client(_wd_handler(seen, total=500)) as c:
+        posts = await WorkdaySource(c, min_interval_s=0).list_postings(WD, max_postings=25)
+    assert len([r for r in seen if r.method == "POST"]) == 2
+    assert len([r for r in seen if r.method == "GET"]) == 25 and len(posts) == 25
+
+
+async def test_workday_stops_on_short_page() -> None:
+    seen: list[httpx.Request] = []
+    async with client(_wd_handler(seen, total=30)) as c:
+        posts = await WorkdaySource(c, min_interval_s=0).list_postings(WD, max_postings=100)
+    assert len([r for r in seen if r.method == "POST"]) == 2 and len(posts) == 30
+
+
+@pytest.mark.parametrize("handler,code", [
+    (lambda r: httpx.Response(404), ErrorCode.SOURCE_UNAVAILABLE),
+    (lambda r: httpx.Response(429), ErrorCode.SOURCE_RATE_LIMIT),
+    (_raise_timeout, ErrorCode.SOURCE_TIMEOUT),
+    (lambda r: httpx.Response(200, text="not json"), ErrorCode.SOURCE_CHANGED),
+    (lambda r: httpx.Response(200, json={"unexpected": True}), ErrorCode.SOURCE_CHANGED),
+])
+async def test_workday_post_error_codes(handler, code) -> None:  # type: ignore[no-untyped-def]
+    async with client(handler) as c:
+        with pytest.raises(SourceError) as ei:
+            await WorkdaySource(c, min_interval_s=0).list_postings(WD)
+    assert ei.value.code is code
+
+
+async def test_workday_detail_shape_change() -> None:
+    async with client(_wd_handler([], detail={"jobPostingInfo": {}})) as c:
+        with pytest.raises(SourceError) as ei:
+            await WorkdaySource(c, min_interval_s=0).list_postings(WD)
+    assert ei.value.code is ErrorCode.SOURCE_CHANGED
+
+
+async def test_workday_rejects_bad_external_path() -> None:
+    bad = ["/job/../admin", "/other/x", "job/x", "/job/a b", "https://evil.test/job/x",
+           "/job/%2e%2e/x/..", ""]
+    listing = {"total": 8, "jobPostings": [
+        {"title": "T", "externalPath": p, "locationsText": ""} for p in bad] + [
+        {"title": "Good", "externalPath": "/job/Bengaluru/Machine-Learning-Engineer_R-1001"}]}
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.method == "POST":
+            return httpx.Response(200, json=listing)
+        return httpx.Response(200, text=(FIX / "workday_detail.json").read_text())
+
+    async with client(handler) as c:
+        posts = await WorkdaySource(c, min_interval_s=0).list_postings(WD)
+    assert len(posts) == 1
+    assert [r.url.path for r in seen if r.method == "GET"] == [
+        "/wday/cxs/sample/External/job/Bengaluru/Machine-Learning-Engineer_R-1001"]
+
+
+@pytest.mark.parametrize("extra", [
+    {}, {"site": "External"}, {"wd_host": "wd3"}, {"wd_host": "evil", "site": "External"},
+    {"wd_host": "wd123", "site": "External"}, {"wd_host": "wd3.evil", "site": "External"},
+    {"wd_host": "wd3", "site": "a/b"},
+])
+def test_workday_board_requires_valid_extra(extra) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ValidationError):
+        CompanyBoard(name="X", source="workday", token="x", extra=extra)
+
+
+async def test_workday_rate_limit_spacing_post_and_get() -> None:
+    ft = FakeTime()
+    inner = _wd_handler([])
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        ft.request_times.append(ft.t)
+        return inner(req)
+
+    async with client(handler) as c:
+        await WorkdaySource(c, sleep=ft.sleep, clock=ft.clock).list_postings(WD)
+    gaps = [b - a for a, b in zip(ft.request_times, ft.request_times[1:], strict=False)]
+    assert len(gaps) == 2 and all(g >= 1.0 for g in gaps)
+
+
+# ---- Task 1 carry-overs ----
+
+def test_require_http() -> None:
+    from jobpilot.discovery.normalize import require_http
+
+    assert require_http("https://a.test/x") == "https://a.test/x"
+    assert require_http("HTTP://a.test") == "HTTP://a.test"
+    for bad in ("javascript:alert(1)", "ftp://a.test", "//a.test/x", "/x", "", None,
+                "https://"):
+        assert require_http(bad) is None
+
+
+async def test_ashby_skips_non_http_canonical_and_drops_bad_apply_url() -> None:
+    data = json.loads((FIX / "ashby_board.json").read_text())
+    data["jobs"][0]["jobUrl"] = "javascript:alert(1)"
+    data["jobs"][1]["applyUrl"] = "data:text/html,x"
+    async with client(lambda r: httpx.Response(200, json=data)) as c:
+        posts = await AshbySource(c, min_interval_s=0).list_postings(AB)
+    assert len(posts) == 1 and posts[0].application_url is None
+
+
+async def test_greenhouse_lever_skip_non_http() -> None:
+    gh = json.loads((FIX / "greenhouse_jobs.json").read_text())
+    n = len(gh["jobs"])
+    gh["jobs"][0]["absolute_url"] = "javascript:x"
+    lv = json.loads((FIX / "lever_postings.json").read_text())
+    lv.append({**lv[0], "id": "00000000-0000-4000-8000-000000000002"})
+    m = len(lv)
+    lv[0]["hostedUrl"] = "ftp://x.test/a"
+    lv[1]["applyUrl"] = "javascript:x"
+    async with client(lambda r: httpx.Response(200, json=gh)) as c:
+        g = await GreenhouseSource(c, min_interval_s=0).list_postings(
+            CompanyBoard(name="E", source="greenhouse", token="e"))
+    async with client(lambda r: httpx.Response(200, json=lv)) as c:
+        lp = await LeverSource(c, min_interval_s=0).list_postings(
+            CompanyBoard(name="E", source="lever", token="e"))
+    assert len(g) == n - 1 and len(lp) == m - 1
+    assert lp[0].application_url is None
+
+
+async def test_smartrecruiters_invalid_id_empty_page_and_escaped_titles(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    listing = json.loads((FIX / "smartrecruiters_postings.json").read_text())
+    listing["content"][1]["id"] = "../../evil"
+    listing["totalFound"] = 5000  # lying total; empty page must end pagination
+    detail = json.loads((FIX / "smartrecruiters_detail.json").read_text())
+    detail["jobAd"]["sections"]["jobDescription"]["title"] = "<script>x</script>"
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.url.path.endswith("/postings"):
+            if int(req.url.params["offset"]) == 0:
+                return httpx.Response(200, json=listing)
+            return httpx.Response(200, json={**listing, "content": []})
+        return httpx.Response(200, json=detail)
+
+    with caplog.at_level("WARNING"):
+        async with client(handler) as c:
+            posts = await SmartRecruitersSource(c, min_interval_s=0).list_postings(
+                SR, max_postings=500)
+    assert len(posts) == 1
+    assert len([r for r in seen if r.url.path.endswith("/postings")]) == 2
+    assert not any("evil" in str(r.url) for r in seen)
+    assert "&lt;script&gt;x&lt;/script&gt;" in posts[0].description_html
+    assert "<script>" not in posts[0].description_html
+    assert "skipped 1" in caplog.text

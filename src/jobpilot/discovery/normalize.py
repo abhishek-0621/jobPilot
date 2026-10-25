@@ -24,6 +24,14 @@ def normalize_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), host, path, urlencode(query), ""))
 
 
+def require_http(url: str | None) -> str | None:
+    """The URL if it is an absolute http(s) URL, else None (never trust a source's scheme)."""
+    if not url:
+        return None
+    parts = urlsplit(url.strip())
+    return url if parts.scheme.lower() in ("http", "https") and parts.netloc else None
+
+
 def normalize_title(title: str) -> str:
     t = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", title.lower())
     t = re.sub(r"\bsr\b\.?", "senior", t)

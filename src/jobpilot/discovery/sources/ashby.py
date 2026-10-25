@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from jobpilot.contracts.enums import ErrorCode
-from jobpilot.discovery.normalize import normalize_url
+from jobpilot.discovery.normalize import normalize_url, require_http
 from jobpilot.discovery.sources.base import RateLimitedFetcher, RawPosting, SourceError
 from jobpilot.profile.preferences import CompanyBoard
 
@@ -31,7 +31,8 @@ class AshbySource:
     async def list_postings(self, board: CompanyBoard) -> list[RawPosting]:
         data = await self._fetch.get_json(f"{BASE}/{board.token}?includeCompensation=true")
         try:
-            return [_parse(j, board) for j in data["jobs"] if j.get("isListed") is not False]
+            parsed = [_parse(j, board) for j in data["jobs"] if j.get("isListed") is not False]
+            return [p for p in parsed if p is not None]
         except (KeyError, TypeError, ValueError, AttributeError) as e:
             raise SourceError(ErrorCode.SOURCE_CHANGED, type(e).__name__) from e
 
@@ -45,9 +46,12 @@ def _location(j: dict[str, Any]) -> str | None:
     return text or None
 
 
-def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting:
+def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting | None:
     published = j.get("publishedAt")
-    apply_url = j.get("applyUrl")
+    job_url = require_http(j["jobUrl"])
+    if job_url is None:
+        return None
+    apply_url = require_http(j.get("applyUrl"))
     return RawPosting(
         source="ashby",
         source_job_id=str(j["id"]),
@@ -55,7 +59,7 @@ def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting:
         title=j["title"],
         location=_location(j),
         description_html=j.get("descriptionHtml") or "",
-        canonical_url=normalize_url(j["jobUrl"]),
+        canonical_url=normalize_url(job_url),
         application_url=normalize_url(apply_url) if apply_url else None,
         posted_at=datetime.fromisoformat(published).astimezone(UTC) if published else None,
     )

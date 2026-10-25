@@ -1,6 +1,9 @@
 """SmartRecruiters public postings API adapter (list pages plus one detail call each)."""
 
 import asyncio
+import html
+import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -14,11 +17,14 @@ from jobpilot.profile.preferences import CompanyBoard
 
 BASE = "https://api.smartrecruiters.com/v1/companies"
 PAGE = 100
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+log = logging.getLogger(__name__)
 SECTIONS = ("companyDescription", "jobDescription", "qualifications", "additionalInformation")
 
 
 class SmartRecruitersSource:
     source = "smartrecruiters"
+    supports_max_postings = True
 
     def __init__(
         self,
@@ -33,19 +39,27 @@ class SmartRecruitersSource:
         base = f"{BASE}/{board.token}/postings"
         items: list[dict[str, Any]] = []
         offset = 0
+        invalid = 0
         try:
             while True:
                 data = await self._fetch.get_json(f"{base}?limit={PAGE}&offset={offset}")
                 total = int(data["totalFound"])
-                for item in data["content"]:
-                    item["id"], item["name"]  # shape check before any detail call
+                page = data["content"]
+                for item in page:
+                    item["name"]  # shape check before any detail call
+                    if not _ID.fullmatch(str(item["id"])):
+                        invalid += 1
+                        continue
                     items.append(item)
                 offset += PAGE
-                if offset >= total or len(items) >= max_postings:
+                if not page or offset >= total or len(items) >= max_postings:
                     break
             items = items[:max_postings]
         except (KeyError, TypeError, ValueError) as e:
             raise SourceError(ErrorCode.SOURCE_CHANGED, type(e).__name__) from e
+        if invalid:
+            log.warning("smartrecruiters %s: skipped %d postings with invalid id",
+                        board.token, invalid)
         out: list[RawPosting] = []
         for item in items:
             detail = await self._fetch.get_json(f"{base}/{item['id']}")
@@ -69,7 +83,7 @@ def _description(detail: dict[str, Any]) -> str:
     for key in SECTIONS:
         sec = sections.get(key)
         if sec and sec.get("text"):
-            parts.append(f"<h3>{sec.get('title', '')}</h3>{sec['text']}")
+            parts.append(f"<h3>{html.escape(str(sec.get('title', '')))}</h3>{sec['text']}")
     return "".join(parts)
 
 

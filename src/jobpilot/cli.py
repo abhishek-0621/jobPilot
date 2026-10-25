@@ -203,13 +203,11 @@ app.add_typer(sources_app, name="sources")
 
 
 async def _check_sources(cfg: AppConfig, client: httpx.AsyncClient) -> list[str]:
-    from jobpilot.discovery.sources.base import SourceAdapter, SourceError
-    from jobpilot.discovery.sources.greenhouse import GreenhouseSource
-    from jobpilot.discovery.sources.lever import LeverSource
+    from jobpilot.discovery.sources.base import SourceError
     from jobpilot.profile.preferences import load_companies
+    from jobpilot.runtime import build_sources
 
-    adapters: dict[str, SourceAdapter] = {"greenhouse": GreenhouseSource(client),
-                                          "lever": LeverSource(client)}
+    adapters = build_sources(client)
     lines: list[str] = []
     for board in load_companies(cfg):
         label = f"{board.name} ({board.source}:{board.token})"

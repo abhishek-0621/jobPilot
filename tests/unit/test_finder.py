@@ -171,3 +171,65 @@ def test_company_board_token_validated(token: str) -> None:
 
 def test_extract_task_kind() -> None:
     assert TaskKind.EXTRACT.value == "EXTRACT"
+
+
+async def test_finder_passes_max_jobs_cap_to_capable_adapters() -> None:
+    calls: list[dict] = []
+
+    class Capped:
+        source = "smartrecruiters"
+        supports_max_postings = True
+
+        async def list_postings(self, board: CompanyBoard, max_postings: int = 100):  # type: ignore[no-untyped-def]
+            calls.append({"max_postings": max_postings})
+            return []
+
+    class Plain:
+        source = "greenhouse"
+
+        async def list_postings(self, board: CompanyBoard):  # type: ignore[no-untyped-def]
+            calls.append({})
+            return []
+
+    boards = [CompanyBoard(name="S", source="smartrecruiters", token="s"), GH]
+    prefs = PREFS.model_copy(update={"max_jobs_per_run": 7})
+    await DiscoverAgent().run(_inp(), _ctx({"smartrecruiters": Capped(), "greenhouse": Plain()},
+                                           boards, prefs))
+    assert calls == [{"max_postings": 7}, {}]
+
+
+async def test_finder_caps_real_sr_and_workday_detail_calls() -> None:
+    from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
+    from jobpilot.discovery.sources.workday import WorkdaySource
+
+    sr_listing = json.loads((FIX / "smartrecruiters_postings.json").read_text())
+    sr_detail = (FIX / "smartrecruiters_detail.json").read_text()
+    wd_detail = (FIX / "workday_detail.json").read_text()
+    details: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "api.smartrecruiters.com":
+            if req.url.path.endswith("/postings"):
+                content = [{**sr_listing["content"][0], "id": str(i)} for i in range(40)]
+                return httpx.Response(200, json={**sr_listing, "totalFound": 40,
+                                                 "content": content})
+            details.append(req.url.path)
+            return httpx.Response(200, text=sr_detail)
+        if req.method == "POST":
+            return httpx.Response(200, json={"total": 99, "jobPostings": [
+                {"title": "ML Engineer", "externalPath": f"/job/X/J_{i}"} for i in range(20)]})
+        details.append(req.url.path)
+        return httpx.Response(200, text=wd_detail)
+
+    boards = [
+        CompanyBoard(name="S", source="smartrecruiters", token="s"),
+        CompanyBoard(name="W", source="workday", token="w",
+                     extra={"wd_host": "wd3", "site": "External"})]
+    prefs = PREFS.model_copy(update={"max_jobs_per_run": 5})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        sources = {"smartrecruiters": SmartRecruitersSource(c, min_interval_s=0),
+                   "workday": WorkdaySource(c, min_interval_s=0)}
+        for board in boards:  # one run per board so the run-level stop cannot hide a cap
+            await DiscoverAgent().run(_inp(), _ctx(sources, [board], prefs))
+    assert len([d for d in details if "/v1/companies/" in d]) == 5
+    assert len([d for d in details if "/wday/" in d]) == 5

@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from jobpilot.contracts.enums import ErrorCode
-from jobpilot.discovery.normalize import normalize_url
+from jobpilot.discovery.normalize import normalize_url, require_http
 from jobpilot.discovery.sources.base import RateLimitedFetcher, RawPosting, SourceError
 from jobpilot.profile.preferences import CompanyBoard
 
@@ -33,17 +33,21 @@ class LeverSource:
         try:
             if not isinstance(data, list):
                 raise TypeError("expected list")
-            return [_parse(p, board) for p in data]
+            parsed = [_parse(p, board) for p in data]
+            return [p for p in parsed if p is not None]
         except (KeyError, TypeError, ValueError) as e:
             raise SourceError(ErrorCode.SOURCE_CHANGED, type(e).__name__) from e
 
 
-def _parse(p: dict[str, Any], board: CompanyBoard) -> RawPosting:
+def _parse(p: dict[str, Any], board: CompanyBoard) -> RawPosting | None:
     parts = [p.get("description") or ""]
     for item in p.get("lists") or []:
         parts.append(f"<h3>{item.get('text', '')}</h3><ul>{item.get('content', '')}</ul>")
     parts.append(p.get("additional") or "")
-    apply_url = p.get("applyUrl")
+    hosted = require_http(p["hostedUrl"])
+    if hosted is None:
+        return None
+    apply_url = require_http(p.get("applyUrl"))
     created = p.get("createdAt")
     return RawPosting(
         source="lever",
@@ -52,7 +56,7 @@ def _parse(p: dict[str, Any], board: CompanyBoard) -> RawPosting:
         title=p["text"],
         location=(p.get("categories") or {}).get("location") or None,
         description_html="".join(parts),
-        canonical_url=normalize_url(p["hostedUrl"]),
+        canonical_url=normalize_url(hosted),
         application_url=normalize_url(apply_url) if apply_url else None,
         posted_at=datetime.fromtimestamp(created / 1000, tz=UTC) if created else None,
     )

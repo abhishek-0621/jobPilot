@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, StringConstraints, field_validator
+from pydantic import BaseModel, StringConstraints, field_validator, model_validator
 
 from jobpilot.config import AppConfig
 
@@ -38,6 +38,15 @@ class CompanyBoard(BaseModel):
             if not _SAFE_RE.fullmatch(k) or not _SAFE_RE.fullmatch(val):
                 raise ValueError("extra keys and values must match [A-Za-z0-9_-]{1,64}")
         return v
+
+    @model_validator(mode="after")
+    def _source_extra(self) -> "CompanyBoard":
+        if self.source == "workday":
+            if not re.fullmatch(r"wd\d{1,2}", self.extra.get("wd_host", "")):
+                raise ValueError("workday boards need extra.wd_host matching wd<digits>")
+            if "site" not in self.extra:
+                raise ValueError("workday boards need extra.site")
+        return self
 
 
 def _pick(cfg: AppConfig, override: str, default: str) -> Path:

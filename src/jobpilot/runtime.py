@@ -37,9 +37,11 @@ from jobpilot.data.tables import (
 )
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.ashby import AshbySource
+from jobpilot.discovery.sources.base import SourceAdapter
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
 from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
+from jobpilot.discovery.sources.workday import WorkdaySource
 from jobpilot.documents.validate import (
     BANNED_PATH,
     TECH_TERMS_PATH,
@@ -339,6 +341,17 @@ def make_submitter_factory(
     return submitter_factory
 
 
+def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
+    """The one registry of discovery source adapters (runtime and `sources check`)."""
+    return {
+        "greenhouse": GreenhouseSource(client),
+        "lever": LeverSource(client),
+        "ashby": AshbySource(client),
+        "smartrecruiters": SmartRecruitersSource(client),
+        "workday": WorkdaySource(client),
+    }
+
+
 def build_runtime(
     cfg: AppConfig,
     session_factory: sessionmaker[Session],
@@ -350,12 +363,7 @@ def build_runtime(
     http = client if client is not None else httpx.AsyncClient()
     prefs = Provided(lambda: load_search_preferences(cfg))
     tools: dict[str, Any] = {
-        "sources": {
-            "greenhouse": GreenhouseSource(http),
-            "lever": LeverSource(http),
-            "ashby": AshbySource(http),
-            "smartrecruiters": SmartRecruitersSource(http),
-        },
+        "sources": build_sources(http),
         "prefs": prefs,
         "companies": Provided(lambda: load_companies(cfg)),
         "clock": clock,

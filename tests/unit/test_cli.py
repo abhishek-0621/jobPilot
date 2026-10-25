@@ -175,6 +175,29 @@ def test_sources_check_reports_per_board(
     assert "Sample Labs (lever:samplelabs): SOURCE_UNAVAILABLE" in r.output
 
 
+def test_sources_check_covers_all_registered_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _config(tmp_path)
+    prof = tmp_path / "storage" / "profiles"
+    prof.mkdir(parents=True)
+    boards = [
+        {"name": "G", "source": "greenhouse", "token": "g"},
+        {"name": "L", "source": "lever", "token": "l"},
+        {"name": "A", "source": "ashby", "token": "a"},
+        {"name": "S", "source": "smartrecruiters", "token": "s"},
+        {"name": "W", "source": "workday", "token": "w",
+         "extra": {"wd_host": "wd3", "site": "External"}}]
+    (prof / "companies.yaml").write_text(yaml.safe_dump({"companies": boards}))
+    monkeypatch.setattr(cli, "_sources_client", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(503))))
+    r = runner.invoke(cli.app, ["sources", "check", "--config-dir", str(d)])
+    assert r.exit_code == 0, r.output
+    for label in ("G (greenhouse:g)", "L (lever:l)", "A (ashby:a)", "S (smartrecruiters:s)",
+                  "W (workday:w)"):
+        assert f"{label}: SOURCE_UNAVAILABLE" in r.output
+
+
 def test_bench_exits_when_ollama_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.httpx, "get", _down)
     r = runner.invoke(cli.app, ["bench", "--route", "a", "--config-dir", str(_config(tmp_path))])
