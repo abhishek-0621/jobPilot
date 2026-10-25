@@ -35,10 +35,13 @@ def _error_summary(err: ValidationError) -> str:
 class ModelGateway:
     def __init__(self, cfg: AppConfig, client: httpx.AsyncClient | None = None) -> None:
         self._cfg = cfg
+        self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=cfg.ollama_url)
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        """Close the client this gateway created; an injected client is the caller's."""
+        if self._owns_client:
+            await self._client.aclose()
 
     def _url(self, path: str) -> str:
         # Works for caller-supplied clients without a base_url.
@@ -53,7 +56,12 @@ class ModelGateway:
             raise ModelError(ErrorCode.MODEL_UNAVAILABLE, f"ollama unreachable: {e}") from e
         if resp.status_code != 200:
             raise ModelError(ErrorCode.MODEL_UNAVAILABLE, f"ollama returned {resp.status_code}")
-        return {m["name"] for m in resp.json().get("models", [])}
+        try:
+            models = resp.json()["models"]
+            return {m["name"] for m in models if isinstance(m["name"], str)}
+        except (ValueError, KeyError, TypeError) as e:
+            raise ModelError(ErrorCode.MODEL_UNAVAILABLE,
+                             "ollama /api/tags returned a malformed body") from e
 
     async def _chat(
         self,
@@ -79,6 +87,10 @@ class ModelGateway:
             raise ModelError(
                 ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} unreachable: {e}"
             ) from e
+        if resp.status_code == 429:
+            raise ModelError(ErrorCode.MODEL_RATE_LIMITED, f"model {model_tag} rate limited")
+        if resp.status_code == 408:
+            raise ModelError(ErrorCode.MODEL_TIMEOUT, f"model {model_tag} timed out (HTTP 408)")
         if resp.status_code >= 500 or resp.status_code == 404:
             raise ModelError(
                 ErrorCode.MODEL_UNAVAILABLE, f"model {model_tag} returned HTTP {resp.status_code}"

@@ -128,18 +128,30 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
 @app.command()
 def start(config_dir: ConfigDir = Path("config")) -> None:
     """Recover interrupted work, start the worker and serve the dashboard."""
-    from jobpilot.ops.backup import recovery_instructions, restore_marker
+    from jobpilot.ops.backup import (
+        recovery_instructions,
+        remove_pid_file,
+        restore_marker,
+        write_pid_file,
+    )
+    from jobpilot.ops.lock import LockHeld, ops_lock
 
     cfg = load_config(config_dir)
-    if restore_marker(cfg).exists():
-        typer.echo(recovery_instructions(cfg))
-        raise typer.Exit(1)
-    _migrate(cfg)
-    api = app_from_config(config_dir)  # lifespan runs recover_on_startup + worker loop
-    from jobpilot.ops.backup import remove_pid_file, write_pid_file
+    # Startup holds the ops lock until the pid file exists: a restore (which takes the
+    # lock, then refuses while the pid file says a server runs) cannot interleave.
+    try:
+        with ops_lock(cfg):
+            if restore_marker(cfg).exists():
+                typer.echo(recovery_instructions(cfg))
+                raise typer.Exit(1)
+            _migrate(cfg)
+            api = app_from_config(config_dir)  # lifespan: recover_on_startup + worker
+            write_pid_file(cfg)
+    except LockHeld as e:
+        typer.echo(f"Cannot start: {e}")
+        raise typer.Exit(1) from e
 
     typer.echo(f"JobPilot running at http://{cfg.bind_host}:{cfg.port}  (Ctrl+C to stop)")
-    write_pid_file(cfg)
     try:
         uvicorn.run(api, host=cfg.bind_host, port=cfg.port)
     finally:

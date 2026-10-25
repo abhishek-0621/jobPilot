@@ -9,6 +9,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -232,7 +233,12 @@ class AgentRunRow(Base):
 
 class TaskRow(Base):
     __tablename__ = "task"
-    __table_args__ = (Index("ix_task_status_not_before", "status", "not_before"),)
+    __table_args__ = (
+        Index("ix_task_status_not_before", "status", "not_before"),
+        # At most one DISCOVER task QUEUED or RUNNING at a time (one per discovery run).
+        Index("uq_task_active_discover", "kind", unique=True,
+              sqlite_where=text("kind = 'DISCOVER' AND status IN ('QUEUED', 'RUNNING')")),
+    )
     task_id: Mapped[str] = mapped_column(String, primary_key=True)
     kind: Mapped[str] = mapped_column(String)
     entity_type: Mapped[str] = mapped_column(String)

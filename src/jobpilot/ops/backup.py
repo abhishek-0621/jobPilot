@@ -293,13 +293,17 @@ def restore(cfg: AppConfig, archive: Path, *, confirm: str,
         raise RestoreError(f"type {CONFIRM_WORD} exactly to confirm a restore")
     from jobpilot.ops.lock import LockHeld, ops_lock
 
-    if server_running(cfg):
-        raise RestoreError(f"jobpilot start is running (pid file: {pid_file(cfg)}); "
-                           "stop it before restoring")
-    if restore_marker(cfg).exists():
-        raise RestoreError(recovery_instructions(cfg))
+    def check() -> None:
+        if server_running(cfg):
+            raise RestoreError(f"jobpilot start is running (pid file: {pid_file(cfg)}); "
+                               "stop it before restoring")
+        if restore_marker(cfg).exists():
+            raise RestoreError(recovery_instructions(cfg))
+
+    check()
     try:
         with ops_lock(cfg):
+            check()  # again under the lock: `start` writes its pid file while holding it
             return _restore(cfg, archive, now=now, integrity_check=integrity_check)
     except LockHeld as e:
         raise RestoreError(str(e)) from e
