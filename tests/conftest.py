@@ -92,6 +92,17 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _FORMS = Path(__file__).resolve().parent / "fixtures" / "forms"
 
 
+_POST_PAGES = {
+    "/submit_noconfirm": "<!doctype html><html><body><p>Processing.</p></body></html>",
+    "/submit_error": (
+        '<!doctype html><html><body><form id="application_form" method="post" '
+        'action="submit_error"><div class="field"><label for="email">Email *</label>'
+        '<input type="email" id="email" name="email" aria-invalid="true">'
+        '<p class="error">Email is invalid</p></div>'
+        '<button type="submit">Submit Application</button></form></body></html>'),
+}
+
+
 class _QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         pass
@@ -106,11 +117,29 @@ def form_posts() -> list[str]:
 @pytest.fixture
 def form_server(form_posts: list[str]) -> Iterator[str]:
     """Serve tests/fixtures/forms on 127.0.0.1 (ephemeral port); yields the base URL.
-    Any POST is recorded in ``form_posts`` and answered 405."""
+    Every POST is recorded in ``form_posts``. POST /submit_ok redirects (303) to
+    /confirmation.html, /submit_noconfirm answers a neutral page, /submit_error answers
+    the form again with a visible error; anything else is 405."""
     class Recording(_QuietHandler):
         def do_POST(self) -> None:
             form_posts.append(self.path)
-            self.send_error(405)
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            route = urlsplit(self.path).path
+            if route == "/submit_ok":
+                self.send_response(303)
+                self.send_header("Location", "/confirmation.html")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif route in _POST_PAGES:
+                body = _POST_PAGES[route].encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(405)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0),
                                  partial(Recording, directory=str(_FORMS)))

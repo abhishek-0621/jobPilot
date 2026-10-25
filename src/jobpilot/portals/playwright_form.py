@@ -1,13 +1,23 @@
-"""Shared Playwright form reading/filling for ATS adapters. Never submits."""
+"""Shared Playwright form reading/filling for ATS adapters. The only submit path is
+``click_submit_once`` on the single control ``locate_submit_control`` found."""
 
+import asyncio
 import hashlib
+import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 
-from jobpilot.contracts.enums import ErrorCode, FieldDecision, PortalCapability
+from jobpilot.contracts.enums import (
+    ApplicationStatus,
+    ErrorCode,
+    FieldDecision,
+    PortalCapability,
+)
 from jobpilot.contracts.models import FieldAnswer, SubmitResult
 from jobpilot.forms.browser import detect_blockers
 from jobpilot.forms.classify import classify_sensitive
@@ -16,6 +26,7 @@ from jobpilot.portals.base import (
     FillReport,
     FormField,
     FormSnapshot,
+    ManualHandoff,
     PortalCapabilities,
     SubmissionEvidence,
     ValidationReport,
@@ -173,6 +184,45 @@ _ERRORS_JS = "(sels) => {" + _HELPERS + r"""
   }
   return out;
 }"""
+
+
+_SUBMIT_CSS = "button[type=submit], input[type=submit]"
+_SUBMIT_NAME = re.compile(r"^(submit|submit application|apply|apply now|send application)$",
+                          re.I)
+CONFIRM_URL = re.compile(r"confirmation|thank|submitted|success", re.I)
+CONFIRM_TEXT = re.compile(r"thank you for applying|application (has been )?(received|submitted)"
+                          r"|we('ve| have) received your application", re.I)
+_SUCCESS_WORDS = re.compile(r"thank|received|submitted", re.I)
+# Keywords are case-insensitive; the id itself is upper-case and carries a digit, so
+# "Application received" never yields "received" as a reference.
+CONFIRMATION_REF = re.compile(
+    r"\b(?i:application|reference|confirmation)\s*(?i:id|number|#|no\.?)?\s*[:#]?\s*"
+    r"((?=[A-Z-]*[0-9])[A-Z0-9-]{4,})\b")
+_POLL_S = 0.5
+
+_PAGE_STATE_JS = "(sels) => {" + _HELPERS + r"""
+  let root = null;
+  for (const s of sels) { root = document.querySelector(s); if (root) break; }
+  const visible = el => !!(el.offsetParent || el.getClientRects().length);
+  const errors = root ? [...root.querySelectorAll('.error, [aria-invalid="true"]')]
+    .some(visible) : false;
+  const success = [...document.querySelectorAll(
+    '[class*=success], [class*=confirmation], h1, h2')].filter(visible)
+    .map(e => norm(e.textContent)).join(' \n ');
+  return { text: document.body ? document.body.innerText : '', form: !!root,
+           errors, success };
+}"""
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    status: ApplicationStatus  # CONFIRMED, SUBMISSION_FAILED or SUBMISSION_UNCERTAIN
+    reference: str | None = None
+
+
+def parse_reference(text: str) -> str | None:
+    m = CONFIRMATION_REF.search(text)
+    return m.group(1) if m else None
 
 
 def _norm(v: Any) -> str:
@@ -373,8 +423,59 @@ class PlaywrightFormAdapter:
         """Full-page PNG evidence of the filled (never submitted) form."""
         await self.page.screenshot(path=str(path), full_page=True)
 
+    async def locate_submit_control(self) -> Locator:
+        """The single visible, enabled submit control inside the form root; anything else
+        (none, or several distinct controls) is a manual handoff."""
+        root = await self._root()
+        found: list[Locator] = []
+        handles: list[Any] = []
+        for group in (root.locator(_SUBMIT_CSS), root.get_by_role("button", name=_SUBMIT_NAME)):
+            for i in range(await group.count()):
+                loc = group.nth(i)
+                if not (await loc.is_visible() and await loc.is_enabled()):
+                    continue
+                handle = await loc.element_handle()
+                if handle is None:
+                    continue
+                same = [await self.page.evaluate("([a, b]) => a === b", [handle, h])
+                        for h in handles]
+                if any(same):
+                    continue
+                handles.append(handle)
+                found.append(loc)
+        if len(found) != 1:
+            raise ManualHandoff("SUBMIT_CONTROL_AMBIGUOUS")
+        return found[0]
+
+    async def click_submit_once(self, control: Locator) -> None:
+        """Exactly one click. Never Enter, never ``form.submit()``, never retried."""
+        await control.click(timeout=_ACTION_TIMEOUT_MS, no_wait_after=False)
+
+    async def detect_confirmation(self, timeout_s: float = 30) -> Confirmation:
+        """Poll every 500 ms for evidence of success (URL, page text, or the form gone with
+        a success element) or visible validation errors with the form still present."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                state = await self.page.evaluate(_PAGE_STATE_JS, list(self.form_roots)
+                                                 + ["form"])
+                url = self.page.url
+            except PlaywrightError:  # navigating: the old document is gone
+                state, url = None, ""
+            if state is not None:
+                path = url.split("://", 1)[-1].partition("/")[2]
+                text = state["text"] or ""
+                if (CONFIRM_URL.search(path) or CONFIRM_TEXT.search(text)
+                        or (not state["form"] and _SUCCESS_WORDS.search(state["success"]))):
+                    return Confirmation(ApplicationStatus.CONFIRMED, parse_reference(text))
+                if state["form"] and state["errors"]:
+                    return Confirmation(ApplicationStatus.SUBMISSION_FAILED)
+            if time.monotonic() >= deadline:
+                return Confirmation(ApplicationStatus.SUBMISSION_UNCERTAIN)
+            await asyncio.sleep(_POLL_S)
+
     async def submit(self, approved_application: ApprovedApplication) -> SubmitResult:
-        raise NotImplementedError("Plan 5")
+        raise NotImplementedError("LiveSubmitter submits; this adapter only fills")
 
     async def verify_submission(self) -> SubmissionEvidence:
         raise NotImplementedError("Plan 5")

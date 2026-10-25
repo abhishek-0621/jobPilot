@@ -10,7 +10,7 @@ from jobpilot.contracts.enums import (
     JobStatus,
     OutreachStatus,
 )
-from jobpilot.observability.events import record_event
+from jobpilot.observability.events import record_event, submit_click_recorded
 
 J, A, B, O, R = JobStatus, ApplicationStatus, BatchStatus, OutreachStatus, AgentRunStatus  # noqa: E741 - short aliases keep the transition table readable
 
@@ -40,7 +40,10 @@ _APPLICATION: dict[StrEnum, set[StrEnum]] = {
     A.VALIDATION_FAILED: {A.FORM_IN_PROGRESS, A.DOCUMENTS_PENDING},
     A.READY_FOR_REVIEW: {A.APPROVED, A.FORM_IN_PROGRESS, A.DOCUMENTS_PENDING},
     A.APPROVED: {A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW},
-    A.SUBMISSION_IN_PROGRESS: {A.SUBMITTED, A.SUBMISSION_UNCERTAIN, A.SUBMISSION_FAILED},
+    # -> READY_FOR_REVIEW / NEEDS_USER_INPUT: pre-submit checks failed before any click
+    # (actor "presubmit" only, and never once a submit_clicked event exists).
+    A.SUBMISSION_IN_PROGRESS: {A.SUBMITTED, A.SUBMISSION_UNCERTAIN, A.SUBMISSION_FAILED,
+                               A.READY_FOR_REVIEW, A.NEEDS_USER_INPUT},
     A.SUBMITTED: {A.CONFIRMED, A.SUBMISSION_UNCERTAIN},
     A.SUBMISSION_UNCERTAIN: {A.CONFIRMED, A.SUBMISSION_FAILED},
 }
@@ -88,7 +91,12 @@ TRANSITIONS: dict[type[StrEnum], dict[StrEnum, frozenset[StrEnum]]] = {
 RESTRICTED_EDGES: dict[tuple[StrEnum, StrEnum], frozenset[str]] = {
     (A.SUBMISSION_UNCERTAIN, A.CONFIRMED): frozenset({"user", "verification"}),
     (A.SUBMISSION_UNCERTAIN, A.SUBMISSION_FAILED): frozenset({"user", "verification"}),
+    (A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW): frozenset({"presubmit"}),
+    (A.SUBMISSION_IN_PROGRESS, A.NEEDS_USER_INPUT): frozenset({"presubmit"}),
 }
+# Edges that are illegal once the submit control may have been clicked.
+_NO_CLICK_EDGES = frozenset({(A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW),
+                             (A.SUBMISSION_IN_PROGRESS, A.NEEDS_USER_INPUT)})
 
 _ENTITY: dict[type[StrEnum], tuple[str, str]] = {
     JobStatus: ("job", "job_id"),
@@ -120,6 +128,9 @@ def transition(
         raise IllegalTransition(
             f"{current} -> {new_status} requires actor in {sorted(allowed_actors)}, got {actor!r}"
         )
+    if (current, new_status) in _NO_CLICK_EDGES and submit_click_recorded(
+            session, getattr(row, "idempotency_key", None)):
+        raise IllegalTransition(f"{current} -> {new_status}: the submit control was clicked")
     row.status = new_status.value
     entity_type, id_attr = _ENTITY[enum]
     record_event(

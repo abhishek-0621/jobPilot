@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -38,13 +39,20 @@ from jobpilot.data.tables import (
     OutreachDraftRow,
     TaskRow,
 )
+from jobpilot.documents import store
 from jobpilot.ids import new_id
 from jobpilot.llm.ollama_client import ModelError, ModelGateway
-from jobpilot.observability.events import record_event
+from jobpilot.observability.events import record_event, submit_click_recorded
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.policies import PolicyConfig, may_send_outreach, may_submit
 from jobpilot.orchestrator.state_machine import transition
-from jobpilot.portals.base import ApprovedApplication, PortalAdapter, idempotency_key
+from jobpilot.portals.base import (
+    ApprovedApplication,
+    ManualHandoff,
+    PortalAdapter,
+    PreSubmitMismatch,
+    idempotency_key,
+)
 from jobpilot.portals.simulated import SimulatedAdapter
 
 log = logging.getLogger(__name__)
@@ -370,7 +378,8 @@ class Orchestrator:
     # ---- side effects ----------------------------------------------------
     def _adapter_for(self, app: ApplicationRow) -> tuple[PortalAdapter | None, bool]:
         # Two independent switches: dry_run off AND the portal listed in live_portals.
-        if (not self._cfg.dry_run and app.portal in self._cfg.live_portals
+        if (not self._cfg.dry_run and app.portal is not None
+                and app.portal in self._cfg.live_portals
                 and self._submitter_factory is not None):
             return self._submitter_factory(app.portal), False
         return self._adapters.get("simulated") or SimulatedAdapter(), True
@@ -428,6 +437,9 @@ class Orchestrator:
                        ErrorCode.SUBMIT_TIMEOUT)
             s.commit()
             return
+        except (PreSubmitMismatch, ManualHandoff) as exc:
+            self._presubmit_abort(s, task.task_id, app.application_id, key, exc)
+            return
         except Exception as exc:
             self._submit_error(s, task.task_id, app.application_id, exc, None)
             return
@@ -456,8 +468,49 @@ class Orchestrator:
         self._fail(s, task, "submit_error", details, ErrorCode.SUBMIT_NO_CONFIRMATION)
         s.commit()
 
+    def _presubmit_abort(self, s: Session, task_id: str, application_id: str, key: str,
+                         exc: PreSubmitMismatch | ManualHandoff) -> None:
+        """Pre-submit check failed: nothing was clicked, so back to review (approval
+        revoked) or to the user. Never re-enqueued. If a click was recorded after all,
+        the outcome is unknown instead."""
+        s.rollback()
+        if submit_click_recorded(s, key):
+            self._submit_error(s, task_id, application_id, exc, None)
+            return
+        app = get_application(s, application_id)
+        task = s.get(TaskRow, task_id)
+        assert task is not None
+        svc = ApprovalService(s)
+        svc.invalidate_application(application_id, reason=exc.code)
+        if isinstance(exc, PreSubmitMismatch):
+            if exc.code == ErrorCode.FORM_LAYOUT_CHANGED.value:
+                app.form_snapshot_hash = None
+            transition(s, app, ApplicationStatus.READY_FOR_REVIEW, actor="presubmit",
+                       reason=exc.code)
+            app.content_hash = svc.application_hash(application_id)
+        else:
+            if exc.code.startswith("BLOCKED:"):
+                app.form_snapshot_hash = None
+            transition(s, app, ApplicationStatus.NEEDS_USER_INPUT, actor="presubmit",
+                       reason="manual_handoff:" + exc.code)
+        self._fail(s, task, "presubmit_failed", {"code": exc.code, "idempotency_key": key})
+        s.commit()
+
+    def _store_evidence(self, s: Session, app: ApplicationRow, r: SubmitResult) -> str | None:
+        if not r.evidence_path:
+            return None
+        root = (self._cfg.storage_path / "artifacts" / app.application_id).resolve()
+        path = Path(r.evidence_path)
+        if not path.resolve().is_relative_to(root) or not path.is_file():
+            log.warning("submit evidence for %s outside its artifact dir", app.application_id)
+            return None
+        return store.write_artifact(s, app.application_id, "submit_confirmation", path, [],
+                                    root=self._cfg.storage_path).artifact_id
+
     def _apply_submit_result(self, s: Session, app: ApplicationRow, r: SubmitResult) -> None:
-        details = {"confirmation_reference": r.confirmation_reference}
+        evidence_id = self._store_evidence(s, app, r) or r.evidence_artifact_id
+        details = {"confirmation_reference": r.confirmation_reference,
+                   "evidence_artifact_id": evidence_id}
         if r.status in (ApplicationStatus.SUBMITTED, ApplicationStatus.CONFIRMED):
             transition(s, app, ApplicationStatus.SUBMITTED, actor=_ACTOR,
                        reason="submitted", details=details)

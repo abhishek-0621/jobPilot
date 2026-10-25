@@ -23,6 +23,7 @@ from jobpilot.documents import store
 from jobpilot.forms.browser import portal_page
 from jobpilot.forms.mapping import apply_suggestions, map_fields, suggest_keys
 from jobpilot.forms.model import MappingContext
+from jobpilot.forms.verify import verify_against_stored, with_bound_files
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import current_artifact_version, stale_follow_up
@@ -294,20 +295,6 @@ def _next_shot(directory: Path) -> int:
     return max(found, default=0) + 1
 
 
-def _with_bound_files(answers: list[FieldAnswer], app: dict[str, Any]) -> list[FieldAnswer]:
-    """File answers upload only the currently bound artifacts; anything else is dropped."""
-    bound = {"artifact:resume": app.get("resume_path"),
-             "artifact:cover_letter": app.get("cover_letter_path")}
-    out: list[FieldAnswer] = []
-    for a in answers:
-        if a.field_type != "file":
-            out.append(a)
-        elif bound.get(a.source_fact_id or ""):
-            out.append(a.model_copy(update={"proposed_value": str(bound[a.source_fact_id
-                                                                          or ""])}))
-    return out
-
-
 class ValidateAgent:
     name = "form_validate"
     prompt_version = PROMPT_VERSION
@@ -337,27 +324,21 @@ class ValidateAgent:
         docs = [app.get("resume_profile_version"), app.get("cover_letter_profile_version")]
         if version is None or any(v != version for v in docs):
             return result(ok=False, errors={"_documents": "DOCUMENTS_STALE"})
-        answers = _with_bound_files(stored(inp.entity_id), app)
+        answers = with_bound_files(stored(inp.entity_id), app)
         url = form_url(app)
         out_dir = artifact_dir(inp.entity_id)
+        shot = out_dir / f"form_v{_next_shot(out_dir)}.png"
         async with open_form(app.get("source") or "", url, inp.entity_id) as adapter:
-            await adapter.open_job(url)
-            shot = out_dir / f"form_v{_next_shot(out_dir)}.png"
-            blockers = await adapter.blockers()
-            if blockers:
-                await adapter.screenshot(shot)
-                return result(ok=False, screenshot_path=str(shot),
-                              errors={_FORM_KEY: "BLOCKED:" + ",".join(sorted(blockers))})
-            snap = await adapter.inspect_form()
-            if adapter.snapshot_hash(snap) != app.get("form_snapshot_hash"):
-                await adapter.screenshot(shot)
-                return result(ok=False, screenshot_path=str(shot), errors={_FORM_KEY: _LAYOUT})
-            report = await adapter.fill_fields(answers)
-            expected = {a.field_id: a.proposed_value for a in answers
-                        if a.field_id in report.filled}
-            checked = await adapter.validate_form(expected)
+            outcome = await verify_against_stored(adapter, url, app.get("form_snapshot_hash"),
+                                                  answers)
             await adapter.screenshot(shot)
-        errors = {k: safe_code(v) for k, v in {**checked.errors, **report.failed}.items()}
+        if outcome.blockers:
+            return result(ok=False, screenshot_path=str(shot),
+                          errors={_FORM_KEY: "BLOCKED:" + ",".join(outcome.blockers)})
+        if outcome.layout_changed or outcome.report is None:
+            return result(ok=False, screenshot_path=str(shot), errors={_FORM_KEY: _LAYOUT})
+        report = outcome.report
+        errors = {k: safe_code(v) for k, v in outcome.errors.items()}
         return result(ok=not errors, errors=errors, screenshot_path=str(shot),
                       filled=report.filled,
                       failed={k: safe_code(v) for k, v in report.failed.items()})

@@ -113,6 +113,7 @@ class SubmitResult(AgentOutput):
     confirmation_reference: str | None = None
     evidence_url: str | None = None
     evidence_artifact_id: str | None = None
+    evidence_path: str | None = None  # local screenshot, stored as an artifact by the engine
     error_code: str | None = None
     retry_allowed: bool
     next_action: str

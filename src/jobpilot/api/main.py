@@ -361,5 +361,6 @@ def app_from_config(config_dir: Path = Path("config")) -> FastAPI:
     gateway = ModelGateway(cfg)
     rt = build_runtime(cfg, factory)
     orch = Orchestrator(factory, cfg, rt.agents, rt.adapters, handlers=rt.handlers,
-                        gateway=gateway, tools=rt.tools)
+                        gateway=gateway, tools=rt.tools,
+                        submitter_factory=rt.submitter_factory)
     return create_app(cfg, factory, orch, gateway, runtime=rt)

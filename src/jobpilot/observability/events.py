@@ -1,3 +1,4 @@
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from jobpilot.contracts.enums import ErrorCode
@@ -37,3 +38,16 @@ def record_event(
     session.add(row)
     session.flush()
     return row
+
+
+SUBMIT_CLICKED = "submit_clicked"
+
+
+def submit_click_recorded(session: Session, idempotency_key: str | None) -> bool:
+    """True when a ``submit_clicked`` event was written for ``idempotency_key``."""
+    if not idempotency_key:
+        return False
+    needle = canonical_json({"idempotency_key": idempotency_key})[1:-1]
+    return session.execute(select(AuditEventRow.event_id).where(
+        AuditEventRow.action == SUBMIT_CLICKED,
+        AuditEventRow.redacted_details_json.contains(needle)).limit(1)).first() is not None

@@ -101,3 +101,20 @@ def test_health_reports_live_portals(factory: sessionmaker[Session], tmp_path: P
     assert on["live_portals"] == ["lever"]
     off = _client(factory, make_cfg(tmp_path, True, ["lever"])).get("/health").json()
     assert off["live_portals"] == []
+
+
+def test_live_portals_none_and_duplicates(tmp_path: Path) -> None:
+    routes = {"a": ModelRoute(model_tag="m1")}
+    assert AppConfig(live_portals=None, model_routes=routes).live_portals == []
+    cfg = AppConfig(live_portals=["lever", "greenhouse", "lever"], model_routes=routes)
+    assert cfg.live_portals == ["lever", "greenhouse"]
+
+
+def test_no_portal_stays_simulated(factory: sessionmaker[Session], tmp_path: Path) -> None:
+    sim = SimulatedAdapter()
+    orch = Orchestrator(factory, make_cfg(tmp_path, False, ["greenhouse"]), {},
+                        {"simulated": sim}, submitter_factory=FakeSubmitter)
+    with factory() as s:
+        app = make_app_row(s)
+        app.portal = None
+        assert orch._adapter_for(app) == (sim, True)

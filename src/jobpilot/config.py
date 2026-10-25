@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ModelRoute(BaseModel):
@@ -29,6 +29,14 @@ class AppConfig(BaseModel):
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
     model_routes: dict[str, ModelRoute]
+
+    @field_validator("live_portals", mode="before")
+    @classmethod
+    def _live_portals_list(cls, v: Any) -> Any:
+        """``live_portals:`` left empty in YAML means none; duplicates collapse."""
+        if v is None:
+            return []
+        return list(dict.fromkeys(v)) if isinstance(v, list) else v
 
     @property
     def effective_live_portals(self) -> list[str]:
