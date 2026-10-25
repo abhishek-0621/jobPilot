@@ -21,7 +21,11 @@ from jobpilot.data.tables import (
     TaskRow,
 )
 from jobpilot.ids import new_id
-from jobpilot.observability.events import USER_RESOLVED_NOT_SUBMITTED, record_event
+from jobpilot.observability.events import (
+    USER_RESOLVED_NOT_SUBMITTED,
+    prior_unresolved_click,
+    record_event,
+)
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
@@ -197,9 +201,19 @@ def _app(s: Session, application_id: str) -> ApplicationRow:
 
 
 def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
-    """User action on a SUBMISSION_UNCERTAIN application: it was / was not submitted.
-    Commits. Raises LookupError / ActionConflict."""
+    """User action on a SUBMISSION_UNCERTAIN application: it was / was not submitted. A
+    SUBMISSION_FAILED application with an unresolved click may also be marked "not
+    submitted" (no status change). Commits. Raises LookupError / ActionConflict."""
     app = _app(s, application_id)
+    if (app.status == ApplicationStatus.SUBMISSION_FAILED.value and not submitted
+            and prior_unresolved_click(s, application_id)):
+        # A click was recorded before the failure: the user says nothing went out, so a
+        # later Prepare again may submit once more. The status stays FAILED.
+        record_event(s, entity_type="application", entity_id=application_id, actor="user",
+                     action=USER_RESOLVED_NOT_SUBMITTED, outcome="ok",
+                     details={"application_id": application_id})
+        s.commit()
+        return
     if app.status != ApplicationStatus.SUBMISSION_UNCERTAIN.value:
         raise ActionConflict(f"Only uncertain submissions can be resolved "
                              f"(status is {app.status}).")

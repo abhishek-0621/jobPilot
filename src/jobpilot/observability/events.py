@@ -42,6 +42,16 @@ def record_event(
 
 SUBMIT_CLICKED = "submit_clicked"
 
+EVENT_ORDER = literal_column("rowid")  # insertion order; timestamps can tie or skew
+
+
+def last_event(session: Session, entity_type: str, entity_id: str,
+               action: str) -> AuditEventRow | None:
+    """The most recently inserted event of ``action`` for the entity."""
+    return session.execute(select(AuditEventRow).where(
+        AuditEventRow.entity_type == entity_type, AuditEventRow.entity_id == entity_id,
+        AuditEventRow.action == action).order_by(EVENT_ORDER.desc())).scalars().first()
+
 
 def click_needle(idempotency_key: str) -> str:
     """The exact ``"idempotency_key":"<key>"`` fragment of a submit_clicked event."""
@@ -65,7 +75,7 @@ def prior_unresolved_click(session: Session, application_id: str) -> bool:
     """True when the application has a ``submit_clicked`` event (any key) that is not
     followed by a ``user_resolved_not_submitted`` event. Insertion order is the rowid."""
     def last(action: str) -> int | None:
-        return session.execute(select(func.max(literal_column("rowid"))).where(
+        return session.execute(select(func.max(EVENT_ORDER)).where(
             AuditEventRow.entity_type == "application",
             AuditEventRow.entity_id == application_id,
             AuditEventRow.action == action)).scalar()

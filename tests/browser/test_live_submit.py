@@ -24,6 +24,7 @@ from jobpilot.data.tables import (
 from jobpilot.documents import store
 from jobpilot.documents.render import chromium_available
 from jobpilot.forms.browser import portal_page
+from jobpilot.observability.events import EVENT_ORDER
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind
 from jobpilot.portals.greenhouse import GreenhouseAdapter
@@ -119,7 +120,7 @@ def _state(factory: sessionmaker[Session], app_id: str) -> tuple[ApplicationRow,
         app = s.get(ApplicationRow, app_id)
         task = s.execute(select(TaskRow).where(TaskRow.kind == "SUBMIT")).scalar_one()
         events = list(s.execute(select(AuditEventRow).order_by(
-            AuditEventRow.timestamp_utc)).scalars())
+            EVENT_ORDER)).scalars())
         assert app is not None
         s.expunge_all()
         return app, task, events
@@ -465,10 +466,11 @@ def _prepare_again_and_reapprove(factory: sessionmaker[Session], app_id: str,
         s.commit()
 
 
-@pytest.mark.parametrize("user_resolved", [True, False])
+@pytest.mark.parametrize("mode", ["uncertain_resolved", "failed_resolved", "unresolved"])
 async def test_prepare_again_submits_once_more_only_after_user_resolution(
         factory: sessionmaker[Session], tmp_path: Path, form_server: str,
-        form_posts: list[str], user_resolved: bool) -> None:
+        form_posts: list[str], mode: str) -> None:
+    user_resolved = mode != "unresolved"
     from jobpilot.api.actions import resolve_uncertain
     from jobpilot.contracts.enums import ApplicationStatus
     from jobpilot.orchestrator.state_machine import transition
@@ -479,14 +481,17 @@ async def test_prepare_again_submits_once_more_only_after_user_resolution(
     await run_submit(factory, cfg, app_id, _quick(cfg, factory))
     assert form_posts == ["/submit_noconfirm"]
     with factory() as s:
-        if user_resolved:
+        if mode == "uncertain_resolved":
             resolve_uncertain(s, app_id, submitted=False)
-        else:  # failed without the user saying "not submitted"
+        else:  # failed (by verification), with or without the user's "not submitted"
             app = s.get(ApplicationRow, app_id)
             assert app is not None and app.status == "SUBMISSION_UNCERTAIN"
             transition(s, app, ApplicationStatus.SUBMISSION_FAILED, actor="verification",
                        reason="t")
             s.commit()
+            if mode == "failed_resolved":  # the Failed section's own button
+                resolve_uncertain(s, app_id, submitted=False)
+                assert s.get(ApplicationRow, app_id).status == "SUBMISSION_FAILED"  # type: ignore[union-attr]
     _prepare_again_and_reapprove(factory, app_id, cfg)
     await run_submit(factory, cfg, app_id, _quick(cfg, factory))
     with factory() as s:

@@ -12,7 +12,7 @@ from jobpilot.api.main import create_app
 from jobpilot.config import AppConfig
 from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head, utcnow
 from jobpilot.data.tables import ApplicationRow, AuditEventRow, TaskRow
-from jobpilot.observability.events import prior_unresolved_click, record_event
+from jobpilot.observability.events import EVENT_ORDER, prior_unresolved_click, record_event
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.portals.simulated import SimulatedAdapter
@@ -118,7 +118,7 @@ def _transition_reason(factory: sessionmaker[Session], app_id: str) -> tuple[str
     with factory() as s:
         ev = s.execute(select(AuditEventRow).where(
             AuditEventRow.entity_id == app_id, AuditEventRow.action == "status_changed")
-            .order_by(AuditEventRow.timestamp_utc.desc())).scalars().first()
+            .order_by(EVENT_ORDER.desc())).scalars().first()
         assert ev is not None
         return ev.actor, ev.redacted_details_json
 
@@ -203,3 +203,70 @@ def test_prepare_again_edge_is_user_only(factory: sessionmaker[Session]) -> None
         with pytest.raises(IllegalTransition):
             transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor="orchestrator",
                        reason="t")
+
+
+def _failed_with_click(factory: sessionmaker[Session], *, clicked: bool) -> str:
+    if clicked:
+        app_id = _uncertain(factory)
+    else:
+        with factory() as s:
+            (app_id,) = seed_ready_apps(s, 1)
+            s.commit()
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None
+        app.status = "SUBMISSION_FAILED"
+        s.commit()
+    return app_id
+
+
+def test_failed_with_click_can_be_resolved_not_submitted(
+        factory: sessionmaker[Session], tmp_path: Path) -> None:
+    app_id = _failed_with_click(factory, clicked=True)
+    client = _client(factory, AppConfig(storage_path=tmp_path / "s", model_routes={}))
+    page = client.get("/ui/uncertain").text
+    assert page.split("Failed submissions")[1].count("It was not submitted") == 1
+    assert client.post(f"/ui/applications/{app_id}/resolve",
+                       data={"submitted": "yes"}).status_code == 409
+    r = client.post(f"/ui/applications/{app_id}/resolve", data={"submitted": "no"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert _status(factory, app_id) == "SUBMISSION_FAILED"
+    with factory() as s:
+        assert not prior_unresolved_click(s, app_id)
+    assert "It was not submitted" not in client.get("/ui/uncertain").text
+
+
+def test_failed_without_click_has_no_resolve(
+        factory: sessionmaker[Session], tmp_path: Path) -> None:
+    app_id = _failed_with_click(factory, clicked=False)
+    client = _client(factory, AppConfig(storage_path=tmp_path / "s", model_routes={}))
+    assert "It was not submitted" not in client.get("/ui/uncertain").text
+    assert client.post(f"/ui/applications/{app_id}/resolve",
+                       data={"submitted": "no"}).status_code == 409
+
+
+def test_illegal_transition_is_409_and_rolled_back(
+        factory: sessionmaker[Session], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from jobpilot.orchestrator.state_machine import IllegalTransition
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise IllegalTransition("nope")
+
+    app_id = _uncertain(factory)
+    client = _client(factory, AppConfig(storage_path=tmp_path / "s", model_routes={}))
+    monkeypatch.setattr("jobpilot.api.actions.transition", boom)
+    assert client.post(f"/ui/applications/{app_id}/resolve",
+                       data={"submitted": "yes"}).status_code == 409
+    assert _status(factory, app_id) == "SUBMISSION_UNCERTAIN"
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None
+        app.status = "SUBMISSION_FAILED"
+        s.commit()
+    assert client.post(f"/ui/applications/{app_id}/prepare-again").status_code == 409
+    assert _status(factory, app_id) == "SUBMISSION_FAILED"
+    assert client.post("/ui/applications/missing/prepare-again").status_code == 404
+    assert client.post("/ui/applications/missing/resolve",
+                       data={"submitted": "no"}).status_code == 404

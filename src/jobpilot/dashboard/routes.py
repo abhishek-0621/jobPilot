@@ -62,9 +62,10 @@ from jobpilot.data.tables import (
 )
 from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
-from jobpilot.observability.events import SUBMIT_CLICKED
+from jobpilot.observability.events import SUBMIT_CLICKED, last_event, prior_unresolved_click
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
+from jobpilot.orchestrator.state_machine import IllegalTransition
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
 
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
@@ -129,10 +130,7 @@ def _uncertain_count(s: Session) -> int:
 
 
 def _last_event(s: Session, application_id: str, action: str) -> AuditEventRow | None:
-    return s.execute(select(AuditEventRow).where(
-        AuditEventRow.entity_type == "application",
-        AuditEventRow.entity_id == application_id, AuditEventRow.action == action)
-        .order_by(AuditEventRow.timestamp_utc.desc())).scalars().first()
+    return last_event(s, "application", application_id, action)
 
 
 def _submission(s: Session, app: ApplicationRow) -> dict[str, Any]:
@@ -602,7 +600,8 @@ def uncertain_page(request: Request, s: Db) -> HTMLResponse:
                 ApplicationRow.status == status.value)
                 .order_by(ApplicationRow.application_id)).scalars():
             out.append({"app": app, "job": s.get(JobRow, app.job_id),
-                        "submission": _submission(s, app)})
+                        "submission": _submission(s, app),
+                        "unresolved_click": prior_unresolved_click(s, app.application_id)})
         return out
     return _page(request, s, "uncertain.html", {
         "uncertain": rows(ApplicationStatus.SUBMISSION_UNCERTAIN),
@@ -617,8 +616,9 @@ def resolve_ui(application_id: str, s: Db,
     try:
         resolve_uncertain(s, application_id, submitted == "yes")
     except LookupError as e:
+        s.rollback()
         raise HTTPException(404, str(e)) from e
-    except ActionConflict as e:
+    except (ActionConflict, IllegalTransition) as e:
         s.rollback()
         raise HTTPException(409, str(e)) from e
     return RedirectResponse("/ui/uncertain", status_code=303)
@@ -629,8 +629,9 @@ def prepare_again_ui(application_id: str, s: Db, orch: Orch) -> RedirectResponse
     try:
         prepare_again(s, orch, application_id)
     except LookupError as e:
+        s.rollback()
         raise HTTPException(404, str(e)) from e
-    except ActionConflict as e:
+    except (ActionConflict, IllegalTransition) as e:
         s.rollback()
         raise HTTPException(409, str(e)) from e
     return RedirectResponse(f"/ui/applications/{application_id}", status_code=303)

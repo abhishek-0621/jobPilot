@@ -17,7 +17,7 @@
 {% for r in failed %}<tr>
 <td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/applications/{{ r.app.application_id }}">{{ r.job.title }}</a>{% else %}<a href="/ui/applications/{{ r.app.application_id }}" class="mono">{{ r.app.application_id }}</a>{% endif %}</td>
 <td>{% if r.submission.shot %}<a href="/artifacts/{{ r.submission.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Screenshot</a><br>{% endif %}{% for c in r.submission.error_codes %}<span class="warn">{{ c }}</span>{% endfor %}</td>
-<td><form method="post" action="/ui/applications/{{ r.app.application_id }}/prepare-again"><button type="submit">Prepare again</button></form><span class="muted">Re-reads the form; you review and approve again.</span></td>
+<td>{% if r.unresolved_click %}<form method="post" action="/ui/applications/{{ r.app.application_id }}/resolve"><input type="hidden" name="submitted" value="no"><button type="submit">It was not submitted</button></form><span class="muted">A click was recorded; confirm nothing went out before preparing again.</span><br>{% endif %}<form method="post" action="/ui/applications/{{ r.app.application_id }}/prepare-again" style="margin-top:6px"><button type="submit">Prepare again</button></form><span class="muted">Re-reads the form; you review and approve again.</span></td>
 </tr>{% endfor %}</tbody></table></div>
 {% else %}<p class="muted">No failed submissions.</p>{% endif %}
 {% endblock %}
