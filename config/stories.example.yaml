@@ -1,0 +1,33 @@
+# Example story bank. FICTIONAL person ("Sam Example") and company ("Example Corp").
+# Copy to storage/profiles/stories.yaml (git-ignored) and replace with your own stories.
+# Only stories you verify (dashboard: Profile -> Stories, or `verified: true` here) are
+# ever used, and text under `missing` is never stated as fact.
+standing_rules:
+  - Say "several years" rather than an exact number of years.
+  - Name gaps plainly; do not apologise for them.
+stories:
+  - story_id: latency-cut
+    title: Cutting assistant latency at Example Corp
+    themes: [proud_of, achievement, challenge, built_explain, quality_vs_speed]
+    situation: The Example Corp support assistant answered slowly and users abandoned it.
+    task: Sam owned making the assistant fast enough for live support chats.
+    action: Sam profiled the retrieval pipeline, added a cache in front of the vector search and moved reranking to a smaller model.
+    result: Median response time fell from 4 seconds to 1.5 seconds.
+    tradeoffs: The smaller reranker lost a little accuracy on rare questions; Sam added an evaluation set to watch it.
+    evidence:
+      - Median response time fell from 4 seconds to 1.5 seconds
+    missing:
+      - "[ADD] number of daily users"
+    verified: false
+  - story_id: missed-deadline
+    title: A demo that slipped
+    themes: [failure, learning]
+    situation: Sam promised a demo of a new search feature for a quarterly review.
+    task: Ship a working demo in two weeks.
+    action: Sam underestimated data cleaning, told the team early and cut the demo to one product area.
+    result: The smaller demo shipped on time and Sam now adds a data-quality spike to every estimate.
+    evidence: []
+    missing: []
+    verified: false
+canned:
+  weaknesses: I can over-polish internal tools; I now time-box them and ask for feedback early.

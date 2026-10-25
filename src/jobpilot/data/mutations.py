@@ -12,12 +12,13 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.contracts.enums import FieldDecision, OutreachStatus
+from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, OutreachStatus
 from jobpilot.contracts.models import FieldAnswer, is_http_url
 from jobpilot.data.db import utcnow
 from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import (
     AnswerLibraryRow,
+    ApplicationRow,
     ContactCandidateRow,
     DocumentArtifactRow,
     FormFieldAnswerRow,
@@ -45,6 +46,47 @@ def _answer_row(s: Session, application_id: str, field_id: str) -> FormFieldAnsw
     )).scalar_one_or_none()
 
 
+ESSAY_PREFIX = "essay:"
+USER_SOURCE = "user"
+
+
+LIBRARY_ESSAY_PREFIX = "library:essay_"
+CANNED_PREFIX = ESSAY_PREFIX + "canned:"
+
+
+def essay_refs(source: str | None) -> tuple[list[str], str | None] | None:
+    """(story ids, canned key) an essay-derived answer rests on, or None if the source is
+    not essay-derived. Sources: ``essay:<ids>``, ``essay:canned:<key>``,
+    ``library:essay_<key>[:<ids>]``."""
+    if not source:
+        return None
+    if source.startswith(CANNED_PREFIX):
+        return [], source[len(CANNED_PREFIX):] or None
+    if source.startswith(ESSAY_PREFIX):
+        return [i for i in source[len(ESSAY_PREFIX):].split(",") if i], None
+    if source.startswith(LIBRARY_ESSAY_PREFIX):
+        _key, _, ids = source[len("library:"):].partition(":")
+        return [i for i in ids.split(",") if i], None
+    return None
+
+
+def is_essay_source(source: str | None) -> bool:
+    return essay_refs(source) is not None
+
+
+def essay_story_ids(source: str | None) -> list[str]:
+    """Story ids recorded in an essay-derived answer's source."""
+    refs = essay_refs(source)
+    return refs[0] if refs else []
+
+
+def _check_essay(source: str | None, decision: FieldDecision | str | None) -> None:
+    if is_essay_source(source) and decision is not None \
+            and FieldDecision(decision) not in (FieldDecision.FILL_AND_REVIEW,
+                                                FieldDecision.ASK_USER):
+        raise ValueError("essay answers are FILL_AND_REVIEW or ASK_USER only")
+
+
 def set_answer(s: Session, application_id: str, field_id: str, value: Any, *,
                actor: str, source_fact_id: str | None = None,
                decision: FieldDecision | None = None, rationale: str | None = None,
@@ -53,6 +95,7 @@ def set_answer(s: Session, application_id: str, field_id: str, value: Any, *,
     row = _answer_row(s, application_id, field_id)
     if row is None:
         raise LookupError(f"unknown field {field_id} on {application_id}")
+    _check_essay(source_fact_id or row.source_fact_id, decision or row.decision)
     row.proposed_value_json = canonical_json(value)
     if source_fact_id is not None:
         row.source_fact_id = source_fact_id
@@ -76,6 +119,7 @@ def upsert_answer_initial(s: Session, application_id: str, answer: FieldAnswer, 
         raise ValueError(f"field {answer.field_id} already has an answer")
     if ApprovalService(s).active_approval_for(application_id) is not None:
         raise ValueError(f"application {application_id} has an active approval")
+    _check_essay(answer.source_fact_id, answer.decision)
     s.add(FormFieldAnswerRow(
         application_id=application_id, field_id=answer.field_id, label=answer.label,
         field_type=answer.field_type, proposed_value_json=canonical_json(answer.proposed_value),
@@ -85,6 +129,77 @@ def upsert_answer_initial(s: Session, application_id: str, answer: FieldAnswer, 
     record_event(s, entity_type="application", entity_id=application_id, actor=actor,
                  action="answer_created", outcome="ok", details={"field_id": answer.field_id})
     s.flush()
+
+
+_STORY_STALE_STATUSES = (
+    ApplicationStatus.FORM_IN_PROGRESS.value, ApplicationStatus.NEEDS_USER_INPUT.value,
+    ApplicationStatus.VALIDATING.value, ApplicationStatus.VALIDATION_FAILED.value,
+    ApplicationStatus.READY_FOR_REVIEW.value, ApplicationStatus.APPROVED.value,
+    ApplicationStatus.MANUAL_APPLY_READY.value, ApplicationStatus.SUBMISSION_FAILED.value)
+STORY_CHANGED_PREFIX = "story_changed"
+
+
+def is_stale_essay(row: FormFieldAnswerRow) -> bool:
+    """An essay-derived answer the user still has to look at again."""
+    return (is_essay_source(row.source_fact_id)
+            and row.decision == FieldDecision.ASK_USER.value
+            and json.loads(row.proposed_value_json) not in (None, "", []))
+
+
+def invalidate_story_answers(s: Session, story_ids: list[str], *, reason: str,
+                             actor: str = "system",
+                             canned_keys: list[str] | None = None) -> int:
+    """Answers (and library entries) derived from a changed, removed or unverified story,
+    or from a changed canned answer, go back to the user (ASK_USER, draft kept for
+    reference); approvals are revoked and a reviewed application returns to
+    NEEDS_USER_INPUT. The user's own answers are never touched. Returns the number of
+    answers changed."""
+    wanted, keys = set(story_ids), set(canned_keys or [])
+    if not wanted and not keys:
+        return 0
+
+    def hit(ids: list[str], key: str | None) -> bool:
+        return bool(wanted & set(ids)) or (key is not None and key in keys)
+
+    removed = 0
+    for lib in s.execute(select(AnswerLibraryRow).where(
+            AnswerLibraryRow.question_key.like("essay_%"))).scalars().all():
+        v = json.loads(lib.value_json)
+        if isinstance(v, dict) and hit(list(v.get("story_ids") or []), v.get("canned")):
+            s.delete(lib)
+            removed += 1
+    if removed:
+        record_event(s, entity_type="answer_library", entity_id="essay", actor=actor,
+                     action="essay_library_invalidated", outcome="ok",
+                     details={"reason": reason, "entries": removed})
+    rows = s.execute(select(FormFieldAnswerRow).join(
+        ApplicationRow, ApplicationRow.application_id == FormFieldAnswerRow.application_id
+    ).where(ApplicationRow.status.in_(_STORY_STALE_STATUSES))).scalars().all()
+    apps: set[str] = set()
+    n = 0
+    for r in rows:
+        refs = essay_refs(r.source_fact_id)
+        if refs is None or not hit(*refs):
+            continue
+        if r.decision == FieldDecision.ASK_USER.value \
+                and r.rationale.startswith(STORY_CHANGED_PREFIX):
+            continue
+        set_answer(s, r.application_id, r.field_id, json.loads(r.proposed_value_json),
+                   actor=actor, decision=FieldDecision.ASK_USER,
+                   rationale=f"{STORY_CHANGED_PREFIX} ({reason}): a story or canned answer "
+                             "this draft used changed; review or re-draft it")
+        apps.add(r.application_id)
+        n += 1
+    for app_id in sorted(apps):
+        app = get_application(s, app_id)
+        if app.status == ApplicationStatus.READY_FOR_REVIEW.value:
+            transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=actor, reason=reason)
+            transition(s, app, ApplicationStatus.NEEDS_USER_INPUT, actor=actor, reason=reason)
+        record_event(s, entity_type="application", entity_id=app_id, actor=actor,
+                     action="essay_answers_stale", outcome="ok",
+                     details={"reason": reason})
+    s.flush()
+    return n
 
 
 def remove_answer(s: Session, application_id: str, field_id: str, *, actor: str) -> None:
@@ -155,13 +270,47 @@ def set_library_answer(s: Session, question_key: str, value: Any, *,
         s.add(AnswerLibraryRow(
             answer_id=new_id("ans"), profile_version=version, question_key=question_key,
             value_json=json.dumps(value),
-            decision_default=_decision_defaults().get(question_key, _DEFAULT_DECISION)))
+            decision_default=_decision_defaults(None).get(question_key, _DEFAULT_DECISION)))
     else:
         row.value_json = json.dumps(value)
     record_event(s, entity_type="answer_library", entity_id=question_key, actor=actor,
                  action="answer_library_changed", outcome="ok",
                  details={"question_key": question_key, "cleared": value is None})
     s.flush()
+
+
+def save_essay_to_library(s: Session, application_id: str, field_id: str,
+                          value: str | None = None, *, actor: str = "user") -> str:
+    """Save an essay answer as the library answer for its question type (offered, still
+    FILL_AND_REVIEW, on applications prepared afterwards). Only a reviewed draft
+    (FILL_AND_REVIEW, not stale) or the user's own text may be saved; the entry records
+    the stories/canned answer it rests on so a change to them removes it. ``value``, when
+    it differs from the stored answer, is the user's own edit. Returns the library key."""
+    from jobpilot.forms.essay import classify_essay
+
+    row = _answer_row(s, application_id, field_id)
+    if row is None:
+        raise LookupError(f"unknown field {field_id} on {application_id}")
+    key = classify_essay(row.label, "", field_type=row.field_type)
+    if key is None:
+        raise ValueError("not an essay question")
+    stored = json.loads(row.proposed_value_json)
+    text = value.strip() if isinstance(value, str) and value.strip() else stored
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("no answer to save")
+    text = text.strip()
+    if text != (stored.strip() if isinstance(stored, str) else stored) \
+            or row.source_fact_id == USER_SOURCE:
+        ids, canned = [], None  # the user's own words
+    elif row.decision == FieldDecision.FILL_AND_REVIEW.value \
+            and is_essay_source(row.source_fact_id):
+        ids, canned = essay_refs(row.source_fact_id) or ([], None)
+    else:
+        raise ValueError("only a reviewed draft or your own answer can be saved")
+    library_key = "essay_" + key.value
+    set_library_answer(s, library_key, {"text": text, "story_ids": ids, "canned": canned},
+                       actor=actor)
+    return library_key
 
 
 def clear_application_content(s: Session, application_id: str) -> None:

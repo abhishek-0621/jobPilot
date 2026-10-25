@@ -265,3 +265,27 @@ class ControlFlagRow(Base):
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = _ts(default=utcnow)
+
+
+class StoryRow(Base):
+    """One story from the private story bank (storage/profiles/stories.yaml)."""
+    __tablename__ = "story"
+    story_id: Mapped[str] = mapped_column(String, primary_key=True)
+    position: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String)
+    themes_json: Mapped[str] = mapped_column(Text, default="[]")
+    body_json: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String)
+    verified_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = _ts(default=utcnow)
+
+
+class StoryBankRow(Base):
+    """Standing rules and the user's own canned answers (single row 'default')."""
+    __tablename__ = "story_bank"
+    bank_id: Mapped[str] = mapped_column(String, primary_key=True)
+    standing_rules_json: Mapped[str] = mapped_column(Text, default="[]")
+    canned_json: Mapped[str] = mapped_column(Text, default="{}")
+    content_hash: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[datetime] = _ts(default=utcnow)

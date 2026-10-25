@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from jobpilot.agents.essay import draft_essay_answers, essay_candidates, guard_essay_answers
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, ErrorCode, FieldDecision
 from jobpilot.contracts.models import AgentOutput, FieldAnswer
@@ -20,6 +21,7 @@ from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import FormFieldAnswerRow, JobRow, TaskRow
 from jobpilot.documents import store
 from jobpilot.forms.browser import portal_page
+from jobpilot.forms.essay import classify_essay
 from jobpilot.forms.mapping import apply_suggestions, map_fields, suggest_keys
 from jobpilot.forms.model import MappingContext
 from jobpilot.forms.verify import verify_against_stored, with_bound_files
@@ -136,7 +138,7 @@ class PrepareFormAgent:
     prompt_version = PROMPT_VERSION
     output_model = FormPlan
     tools = ("application_loader", "mapping_context", "active_profile_version",
-             "form_opener")
+             "form_opener", "essay_context", "tech_terms")
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> FormPlan:
         load_app: Callable[[str], dict | None] = ctx.tools["application_loader"]
@@ -169,6 +171,9 @@ class PrepareFormAgent:
                             fields=[], blockers=["no_form"], snapshot_hash="")
         answers, unmatched = map_fields(snap, mctx)
         warnings = list(snap.warnings)
+        # essay questions are drafted from stories, never mapped to a library key by a model
+        unmatched = [f for f in unmatched if classify_essay(
+            f.label, f.help_text, field_type=f.field_type, options=f.options) is None]
         if unmatched:
             if ctx.gateway is None:
                 warnings.append("no_model_gateway: suggestions skipped")
@@ -177,12 +182,23 @@ class PrepareFormAgent:
                 better = {a.field_id: a for a in apply_suggestions(snap, unmatched,
                                                                    suggestions, mctx)}
                 answers = [better.get(a.field_id, a) for a in answers]
+        answers = await _with_essays(snap.fields, answers, ctx, inp.entity_id)
         return FormPlan(
             task_id=ctx.task_id, created_at=datetime.now(UTC), warnings=warnings,
             application_id=inp.entity_id, profile_version=version, fields=answers,
             required_ids=[f.field_id for f in snap.fields if f.required],
             options={f.field_id: f.options for f in snap.fields if f.options},
             snapshot_hash=snap_hash)
+
+
+async def _with_essays(fields: list[Any], answers: list[FieldAnswer], ctx: AgentContext,
+                       application_id: str) -> list[FieldAnswer]:
+    load = ctx.tools.get("essay_context")
+    if load is None or not essay_candidates(fields, answers):
+        return answers
+    terms = ctx.tools.get("tech_terms")
+    return await draft_essay_answers(fields, answers, ctx.gateway, load(application_id),
+                                     terms=terms() if terms is not None else None)
 
 
 def _differs(row: FormFieldAnswerRow, a: FieldAnswer) -> bool:
@@ -252,6 +268,7 @@ def prepare_form_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         return []
     if ApprovalService(s).active_approval_for(app.application_id) is not None:
         raise OutputRejected("approval_active")
+    out = out.model_copy(update={"fields": guard_essay_answers(s, out.fields)})
     _store_plan(s, app.application_id, out)
     app.form_snapshot_hash = out.snapshot_hash
     missing = unresolved_required(s, app.application_id)
@@ -367,7 +384,9 @@ def make_validate_handler(storage_path: Path) -> Handler:
         filled = set(out.filled)
         rows = answer_rows(s, app.application_id)
         for r in rows:
-            if r.required and not is_resolved(r):
+            if mutations.is_stale_essay(r):
+                errors.setdefault(r.field_id, "STORY_CHANGED")
+            elif r.required and not is_resolved(r):
                 errors.setdefault(r.field_id, "UNRESOLVED")
             elif r.required and r.decision != FieldDecision.NOT_APPLICABLE.value \
                     and r.field_id not in filled:

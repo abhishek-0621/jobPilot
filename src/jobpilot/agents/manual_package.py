@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from jobpilot.agents.essay import draft_essay_answers, guard_essay_answers
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows
 from jobpilot.contracts.enums import ApplicationStatus, FieldDecision
 from jobpilot.contracts.models import AgentOutput, FieldAnswer
@@ -48,6 +49,17 @@ QUESTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("email", "Email", "email", "text"),
     ("phone", "Phone", "phone", "text"),
 )
+# Common open-ended questions, drafted from verified stories (FILL_AND_REVIEW) or left
+# to the user with a note naming the missing story (ASK_USER).
+ESSAY_QUESTIONS: tuple[tuple[str, str], ...] = (
+    ("proud_of", "What are you most proud of?"),
+    ("failure", "Tell us about a time you failed."),
+    ("challenge", "Describe the most challenging project you worked on."),
+    ("strengths", "What are your greatest strengths?"),
+    ("weaknesses", "What is your greatest weakness?"),
+    ("why_ai", "Why are you interested in AI?"),
+)
+ESSAY_PREFIX = FIELD_PREFIX + "essay_"
 _FILLED = (FieldDecision.AUTO_FILL, FieldDecision.FILL_AND_REVIEW)
 
 
@@ -82,11 +94,26 @@ def package_answers(company: str, role: str, mctx: MappingContext) -> list[Field
     return out
 
 
+def essay_fields() -> list[FormField]:
+    return [FormField(field_id=ESSAY_PREFIX + key, label=label, field_type="textarea",
+                      required=True) for key, label in ESSAY_QUESTIONS]
+
+
+async def essay_answers(gateway: Any, ectx: Any,
+                        terms: set[str] | None = None) -> list[FieldAnswer]:
+    fields = essay_fields()
+    pending = [FieldAnswer(field_id=f.field_id, label=f.label, field_type=f.field_type,
+                           decision=FieldDecision.ASK_USER, confidence=0.0,
+                           rationale="Essay question") for f in fields]
+    return await draft_essay_answers(fields, pending, gateway, ectx, terms=terms)
+
+
 class ManualPackageAgent:
     name = "manual_package"
     prompt_version = PROMPT_VERSION
     output_model = ManualPackage
-    tools = ("application_loader", "mapping_context", "active_profile_version")
+    tools = ("application_loader", "mapping_context", "active_profile_version",
+             "essay_context", "tech_terms")
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> ManualPackage:
         load_app: Callable[[str], dict | None] = ctx.tools["application_loader"]
@@ -101,6 +128,11 @@ class ManualPackageAgent:
         if version is None:
             raise OutputRejected("no_profile")
         fields = package_answers(app["company"], app["title"], mapping_context(inp.entity_id))
+        load_essay = ctx.tools.get("essay_context")
+        if load_essay is not None:
+            load_terms = ctx.tools.get("tech_terms")
+            fields += await essay_answers(ctx.gateway, load_essay(inp.entity_id),
+                                          load_terms() if load_terms is not None else None)
         return ManualPackage(task_id=ctx.task_id, created_at=datetime.now(UTC),
                              application_id=inp.entity_id, profile_version=version,
                              fields=fields)
@@ -123,7 +155,7 @@ def manual_package_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp
     if stale is not None:
         return stale
     existing = {r.field_id: r for r in answer_rows(s, app.application_id)}
-    for a in out.fields:
+    for a in guard_essay_answers(s, out.fields):
         row = existing.get(a.field_id)
         if row is None:
             mutations.upsert_answer_initial(s, app.application_id, a, required=True,

@@ -1,0 +1,138 @@
+# Open-ended application questions -> question key. Matched on the normalised label and
+# help text (lower case, punctuation removed), phrase by phrase. Order matters: the first
+# key with a matching phrase wins, so put the more specific keys first.
+# Sensitive questions (compensation, reasons for leaving, demographics, legal ...) are
+# classified first and are never essays.
+version: 1
+keys:
+  swot:
+    - swot
+    - strengths and weaknesses
+    - strengths weaknesses
+    - opportunities and threats
+    - opportunities threats
+  failure:
+    - biggest failure
+    - greatest failure
+    - a time you failed
+    - time when you failed
+    - when you failed
+    - mistake you made
+    - mistake you ve made
+    - biggest mistake
+    - setback
+    - something that went wrong
+  weaknesses:
+    - greatest weakness
+    - biggest weakness
+    - your weakness
+    - your weaknesses
+    - area of improvement
+    - areas of improvement
+    - areas for improvement
+    - area for growth
+    - areas for growth
+  strengths:
+    - greatest strength
+    - biggest strength
+    - your strengths
+    - your strength
+    - what are you best at
+    - superpower
+  built_explain:
+    - describe a project
+    - something you built
+    - something you ve built
+    - something you have built
+    - walk us through
+    - walk me through
+    - how good
+    - a project you worked on
+    - project you are working on
+  proud_of:
+    - proud
+    - greatest achievement
+    - biggest achievement
+    - greatest accomplishment
+    - most significant accomplishment
+    - most significant achievement
+    - accomplishment you are
+  disagreement:
+    - disagreed
+    - disagreement
+    - disagree with
+    - conflict with a colleague
+    - conflict with your manager
+    - pushed back
+  customer:
+    - helped a customer
+    - help a customer
+    - customer problem
+    - difficult customer
+    - customer issue
+    - went above and beyond for a customer
+    - helped a user
+  leadership:
+    - a time you led
+    - time you took the lead
+    - leadership experience
+    - example of leadership
+    - demonstrated leadership
+    - led a team
+  teamwork:
+    - worked in a team
+    - work in a team
+    - teamwork
+    - collaborated with
+    - cross functional team
+  learning:
+    - learned something quickly
+    - learn something new quickly
+    - learned quickly
+    - learn quickly
+    - learned a new
+    - had to learn
+    - picked up a new
+  ambiguity:
+    - ambiguity
+    - ambiguous
+    - unclear requirements
+    - without clear direction
+  quality_vs_speed:
+    - quality and speed
+    - speed and quality
+    - speed versus quality
+    - quality versus speed
+    - tradeoff between quality
+    - trade off between quality
+  challenge:
+    - challenging project
+    - most challenging
+    - biggest challenge
+    - difficult problem
+    - hardest problem
+    - toughest problem
+    - overcame a challenge
+  why_ai:
+    - why ai
+    - why artificial intelligence
+    - interest in ai
+    - interested in ai
+    - why machine learning
+    - passionate about ai
+    - why generative ai
+  overall_expertise:
+    - overall expertise
+    - area of expertise
+    - areas of expertise
+    - summarize your experience
+    - summarise your experience
+    - tell us about yourself
+    - tell me about yourself
+    - describe your background
+  ownership:
+    - took ownership
+    - take ownership
+    - owned a problem
+    - owned end to end
+    - end to end ownership

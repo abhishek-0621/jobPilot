@@ -11,3 +11,5 @@ routes:
     model_tag: gemma4:e4b
   outreach_draft:
     model_tag: gemma4:e4b
+  essay:
+    model_tag: gemma4:12b
