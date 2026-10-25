@@ -252,3 +252,25 @@ async def test_run_now_followup_stays_queued(tmp_path: Path) -> None:
                   if t.kind == TaskKind.TAILOR.value]
     assert len(tailor) == 1 and tailor[0].status == TaskStatus.QUEUED.value
     engine.dispose()
+
+
+def test_install_multiple_daily_times(tmp_path: Path) -> None:
+    run = FakeLaunchctl()
+    paths = sched.install(_cfg(tmp_path), home=tmp_path / "home", runner=run, uid=501,
+                          at="08:00, 14:00,20:00", with_server=False, uv_path="/usr/bin/uv",
+                          repo_dir=tmp_path)
+    plist = plistlib.loads(paths[0].read_bytes())
+    assert plist["StartCalendarInterval"] == [
+        {"Hour": 8, "Minute": 0}, {"Hour": 14, "Minute": 0}, {"Hour": 20, "Minute": 0}]
+    st = sched.status(_cfg(tmp_path), home=tmp_path / "home", runner=run, uid=501,
+                      now=lambda: datetime(2026, 10, 25, 15, 0))
+    assert st[0].next_run == "2026-10-25 20:00"
+
+
+def test_parse_times_rejects_bad_and_dedupes() -> None:
+    assert sched.parse_times("20:00,08:00,08:00") == [(8, 0), (20, 0)]
+    for bad in ("", "8:00", "08:00,25:00", "08:00;14:00"):
+        with pytest.raises(ValueError):
+            sched.parse_times(bad)
+    assert AppConfig(schedule={"discover_at": "08:00,14:00,20:00"},
+                     model_routes={}).schedule.discover_at == "08:00,14:00,20:00"

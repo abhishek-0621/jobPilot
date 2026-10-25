@@ -572,8 +572,8 @@ def _launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
 @schedule_app.command("install")
 def schedule_install(
     config_dir: ConfigDir = Path("config"),
-    at: Annotated[str | None, typer.Option(help="Daily time HH:MM (default: schedule.discover_at)")
-                  ] = None,
+    at: Annotated[str | None, typer.Option(
+        help="Daily time(s) HH:MM, comma-separated (default: schedule.discover_at)")] = None,
     with_server: Annotated[bool, typer.Option(
         "--with-server", help="Also keep `jobpilot start` running from login")] = False,
 ) -> None:

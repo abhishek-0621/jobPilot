@@ -300,6 +300,7 @@ macOS only. JobPilot can run discovery for you every day with a LaunchAgent:
 ```
 uv run jobpilot schedule install              # daily at schedule.discover_at (default 08:30)
 uv run jobpilot schedule install --at 07:15   # another time
+uv run jobpilot schedule install --at 08:00,14:00,20:00   # several times a day
 uv run jobpilot schedule install --with-server  # also keep `jobpilot start` running from login
 uv run jobpilot schedule status
 uv run jobpilot schedule uninstall

@@ -53,7 +53,7 @@ def render_plist(
     label: str,
     program_args: Sequence[str],
     *,
-    calendar: Mapping[str, int] | None = None,
+    calendar: Mapping[str, int] | list[Mapping[str, int]] | None = None,
     keep_alive: bool = False,
     log_path: Path,
     env: Mapping[str, str],
@@ -71,7 +71,8 @@ def render_plist(
     if working_dir is not None:
         d["WorkingDirectory"] = str(working_dir)
     if calendar is not None:
-        d["StartCalendarInterval"] = dict(calendar)
+        d["StartCalendarInterval"] = (
+            [dict(c) for c in calendar] if isinstance(calendar, list) else dict(calendar))
     if keep_alive:
         d["RunAtLoad"] = True
         d["KeepAlive"] = {"SuccessfulExit": False}
@@ -88,6 +89,14 @@ def parse_hhmm(at: str) -> tuple[int, int]:
     if not (len(h) == 2 and len(m) == 2 and 0 <= hour <= 23 and 0 <= minute <= 59):
         raise ValueError("time must be HH:MM (24h)")
     return hour, minute
+
+
+def parse_times(at: str) -> list[tuple[int, int]]:
+    """Comma-separated HH:MM times ("08:00,14:00,20:00") -> sorted, de-duplicated."""
+    parts = [p.strip() for p in at.split(",")]
+    if not parts or any(not p for p in parts):
+        raise ValueError("time must be HH:MM, or several separated by commas")
+    return sorted({parse_hhmm(p) for p in parts})
 
 
 def _agents_dir(home: Path) -> Path:
@@ -114,13 +123,16 @@ def _loaded(runner: Runner, uid: int, label: str) -> bool:
 def _jobs(
     cfg: AppConfig, *, at: str, with_server: bool, uv_path: str, repo_dir: Path,
     config_dir: Path | None = None,
-) -> list[tuple[str, list[str], dict[str, int] | None, bool, str]]:
-    hour, minute = parse_hhmm(at)
+) -> list[tuple[str, list[str], Any, bool, str]]:
+    times = parse_times(at)
+    calendar: dict[str, int] | list[dict[str, int]] = (
+        {"Hour": times[0][0], "Minute": times[0][1]} if len(times) == 1
+        else [{"Hour": h, "Minute": m} for h, m in times])
     base = [uv_path, "run", "--project", str(repo_dir), "jobpilot"]
     extra = ["--config-dir", str(config_dir)] if config_dir is not None else []
-    jobs: list[tuple[str, list[str], dict[str, int] | None, bool, str]] = [
+    jobs: list[tuple[str, list[str], Any, bool, str]] = [
         (DISCOVER_LABEL, [*base, "discover", *extra, "--run-now", "--scheduled"],
-         {"Hour": hour, "Minute": minute}, False, "discover.log")]
+         calendar, False, "discover.log")]
     if with_server:
         jobs.append((SERVER_LABEL, [*base, "start", *extra], None, True, "server.log"))
     return jobs
@@ -195,8 +207,9 @@ def status(
             plist = plistlib.loads(path.read_bytes())
             cal = plist.get("StartCalendarInterval")
             if loaded and cal:
-                nxt = next_run(f"{cal['Hour']:02d}:{cal['Minute']:02d}",
-                               now()).strftime("%Y-%m-%d %H:%M")
+                cals = cal if isinstance(cal, list) else [cal]
+                nxt = min(next_run(f"{c['Hour']:02d}:{c['Minute']:02d}", now())
+                          for c in cals).strftime("%Y-%m-%d %H:%M")
             elif loaded and plist.get("KeepAlive"):
                 nxt = "running at login (kept alive)"
         out.append(AgentStatus(label, path.exists(), loaded, nxt))

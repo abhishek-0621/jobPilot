@@ -107,7 +107,7 @@ def test_list_and_detail_use_latest_score(factory, tmp_path) -> None:
         [(job, score)] = [(j, sc) for j, sc in jobs_with_scores(s) if j.job_id == job_id]
         assert score == 40
     page = _client(factory, tmp_path).get("/ui/jobs").text
-    assert "40" in page and "90" not in page
+    assert "<td>40.0</td>" in page and "<td>90.0</td>" not in page  # ids may contain "90"
     assert JobRow  # imported for typing clarity
 
 

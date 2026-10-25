@@ -18,7 +18,7 @@
 {% else %}<div class="table-wrap"><table><thead><tr><th>Agent</th><th>State</th><th>Next run</th></tr></thead><tbody>
 {% for a in schedule.agents %}<tr><td class="mono">{{ a.label }}</td><td>{% if a.loaded %}loaded{% elif a.installed %}installed, not loaded{% else %}not installed{% endif %}</td><td>{{ a.next_run or "—" }}</td></tr>{% endfor %}
 </tbody></table></div>{% endif %}
-<p class="muted">Configured time: {{ cfg.schedule.discover_at }}. Manage with <code>uv run jobpilot schedule install|status|uninstall</code>.</p>
+<p class="muted">Configured time(s): {{ cfg.schedule.discover_at }}. Manage with <code>uv run jobpilot schedule install|status|uninstall</code>.</p>
 </div>
 
 <h2>Last backup</h2>
