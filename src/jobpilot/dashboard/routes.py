@@ -3,10 +3,11 @@ profile.importer and data.mutations."""
 
 import json
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -17,14 +18,19 @@ from sqlalchemy.orm import Session
 from jobpilot.agents.form_prep import answer_rows, unresolved_required
 from jobpilot.api.actions import (
     ANSWERABLE_STATUSES,
+    MANUAL_STATUSES,
     ActionConflict,
     ConfirmationRequired,
+    add_manual_job,
     approve_batch,
+    mark_applied,
+    not_applying,
     prepare_again,
     regenerate_documents,
     request_submit,
     reread_form,
     resolve_uncertain,
+    save_manual_answers,
     save_user_answers,
     select_job,
     start_discovery,
@@ -60,6 +66,7 @@ from jobpilot.data.tables import (
     MatchAssessmentRow,
     OutreachDraftRow,
 )
+from jobpilot.discovery.board_finder import find_hits
 from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.observability.events import SUBMIT_CLICKED, last_event, prior_unresolved_click
@@ -67,7 +74,13 @@ from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
+from jobpilot.profile.preferences import (
+    CompaniesFileError,
+    append_companies,
+    load_companies,
+)
 
+MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
 NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
 UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
@@ -165,9 +178,13 @@ def _library_fields(aliases_path: Path) -> list[dict[str, str]]:
 
 
 def _counts(s: Session) -> dict[str, Any]:
+    apps = counts_by_status(s, ApplicationRow)
+    auto = apps.get(ApplicationStatus.CONFIRMED.value, 0)
+    manual = apps.get(ApplicationStatus.SUBMITTED_BY_USER.value, 0)
     return {
+        "applied": {"total": auto + manual, "automated": auto, "manual": manual},
         "sections": [
-            ("Applications", counts_by_status(s, ApplicationRow)),
+            ("Applications", apps),
             ("Jobs", counts_by_status(s, JobRow)),
             ("Batches", counts_by_status(s, ApprovalBatchRow)),
             ("Outreach", counts_by_status(s, OutreachDraftRow)),
@@ -227,13 +244,16 @@ def jobs(request: Request, s: Db, status: str | None = None,
     version = _active_version(s)
     selected = {a.job_id: a.application_id
                 for a in s.execute(select(ApplicationRow)).scalars()}
+    app_status = {a.job_id: a.status for a in s.execute(select(ApplicationRow)).scalars()}
     rows = []
     for job, _score in jobs_with_scores(s, status or None):
         if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
                 and status != JobStatus.DUPLICATE.value:
             continue
         m = _assessment(s, job.job_id, version)
-        rows.append({"job": job, "score": None if m is None else m.total_score,
+        rows.append({"job": job, "label": MANUAL_APPLIED_LABEL if app_status.get(
+                         job.job_id) == ApplicationStatus.SUBMITTED_BY_USER.value
+                     else job.status, "score": None if m is None else m.total_score,
                      "application_id": selected.get(job.job_id),
                      "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
                      "selectable": job.status == JobStatus.MATCHED.value
@@ -250,6 +270,33 @@ def run_discovery(request: Request, s: Db, orch: Orch) -> HTMLResponse:
     except ActionConflict as e:
         return _message(request, str(e), 409)
     return _message(request, "Discovery started", 200, ok=True)
+
+
+@router.get("/ui/jobs/new", response_class=HTMLResponse)
+def new_job_form(request: Request, s: Db) -> HTMLResponse:
+    return _page(request, s, "job_new.html", {"error": None, "form": {}})
+
+
+@router.post("/ui/jobs/new", response_model=None)
+def new_job(
+    request: Request, s: Db, orch: Orch,
+    url: Annotated[str, Form()] = "", title: Annotated[str, Form()] = "",
+    company: Annotated[str, Form()] = "", location: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """Add a job found anywhere (LinkedIn, Naukri, ...). JobPilot never opens such sites;
+    the application is prepared as a manual package."""
+    try:
+        job_id = add_manual_job(s, orch, url=url, title=title, company=company,
+                                location=location, description=description)
+    except ValueError as e:
+        s.rollback()
+        resp = _page(request, s, "job_new.html", {"error": str(e), "form": {
+            "url": url, "title": title, "company": company, "location": location,
+            "description": description}})
+        resp.status_code = 422
+        return resp
+    return RedirectResponse(f"/ui/jobs/{job_id}", status_code=303)
 
 
 @router.get("/ui/jobs/{job_id}", response_class=HTMLResponse)
@@ -419,6 +466,94 @@ async def save_answers_ui(request: Request, application_id: str, s: Db,
     except ActionConflict as e:
         raise HTTPException(409, str(e)) from e
     return RedirectResponse(f"/ui/applications/{application_id}/answers", status_code=303)
+
+
+def _text_value(raw_json: str) -> str:
+    value = json.loads(raw_json)
+    return "" if value is None or value == "" else _display(value)
+
+
+def _manual_app(s: Session, application_id: str) -> ApplicationRow:
+    app = s.get(ApplicationRow, application_id)
+    if app is None:
+        raise HTTPException(404, "application not found")
+    return app
+
+
+@router.get("/ui/applications/{application_id}/apply", response_class=HTMLResponse)
+def apply_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
+    app = _manual_app(s, application_id)
+    if app.status not in MANUAL_STATUSES:
+        raise HTTPException(409, f"No manual apply page for status {app.status}")
+    rows = []
+    for r in answer_rows(s, application_id):
+        rows.append({"field_id": r.field_id, "label": r.label, "decision": r.decision,
+                     "value": _text_value(r.proposed_value_json),
+                     "editable": user_editable(r.decision, r.field_type)})
+    return _page(request, s, "apply.html", {
+        "app": app, "job": s.get(JobRow, app.job_id), "rows": rows,
+        "resume": _latest_artifact(s, application_id, "resume"),
+        "docx": _latest_artifact(s, application_id, "resume_docx"),
+        "cover": _latest_artifact(s, application_id, "cover_letter"),
+        "letter": _artifact_text(request, _latest_artifact(
+            s, application_id, "cover_letter_text")),
+        "ready": app.status == ApplicationStatus.MANUAL_APPLY_READY.value,
+        "today": date.today().isoformat()})
+
+
+@router.post("/ui/applications/{application_id}/apply/answers")
+async def save_manual_answers_ui(request: Request, application_id: str,
+                                 s: Db) -> RedirectResponse:
+    form = await request.form()
+    rows = {r.field_id: r for r in answer_rows(s, application_id)}
+    values: dict[str, str] = {}
+    for key, raw in form.items():
+        if not key.startswith("v:") or not isinstance(raw, str):
+            continue
+        row = rows.get(key[2:])
+        if row is None:  # unknown field: the action refuses it
+            values[key[2:]] = raw.strip()
+        elif raw.strip() != _text_value(row.proposed_value_json):
+            values[row.field_id] = raw.strip()
+    try:
+        save_manual_answers(s, application_id, values)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/apply", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/mark-applied")
+def mark_applied_ui(application_id: str, s: Db, reference: Annotated[str, Form()] = "",
+                    applied_on: Annotated[str, Form()] = "") -> RedirectResponse:
+    try:
+        day = date.fromisoformat(applied_on.strip()) if applied_on.strip() else None
+        mark_applied(s, application_id, reference, day)
+    except ValueError as e:
+        s.rollback()
+        raise HTTPException(422, str(e)) from e
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except (ActionConflict, IllegalTransition) as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}/apply", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/not-applying")
+def not_applying_ui(application_id: str, s: Db) -> RedirectResponse:
+    try:
+        not_applying(s, application_id)
+    except LookupError as e:
+        s.rollback()
+        raise HTTPException(404, str(e)) from e
+    except (ActionConflict, IllegalTransition) as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}", status_code=303)
 
 
 @router.post("/ui/applications/{application_id}/reread")
@@ -707,3 +842,40 @@ async def save_answers(request: Request, s: Db) -> RedirectResponse:
             set_library_answer(s, key, raw.strip(), actor="user")
     s.commit()
     return RedirectResponse("/ui/profile", status_code=303)
+
+
+def _companies_page(request: Request, s: Session, ctx: dict[str, Any],
+                    status: int = 200) -> HTMLResponse:
+    cfg: AppConfig = request.app.state.cfg
+    try:
+        boards = load_companies(cfg)
+    except (AttributeError, TypeError, ValueError, yaml.YAMLError):
+        boards = []  # unusable companies.yaml: the add path reports it; keep the page up
+    resp = _page(request, s, "companies.html", {
+        "boards": boards, "error": None, "results": None, "added": 0, **ctx})
+    resp.status_code = status
+    return resp
+
+
+@router.get("/ui/companies", response_class=HTMLResponse)
+def companies(request: Request, s: Db) -> HTMLResponse:
+    return _companies_page(request, s, {})
+
+
+@router.post("/ui/companies", response_class=HTMLResponse)
+async def add_company(request: Request, s: Db,
+                      name: Annotated[str, Form()] = "") -> HTMLResponse:
+    """Probe the public boards for a company name and append the live ones to
+    storage/profiles/companies.yaml. Only public, login-free endpoints are contacted."""
+    name = name.strip()
+    if not name or len(name) > 100:
+        return _companies_page(request, s, {"error": "Enter a company name (up to 100 characters)"},
+                               422)
+    async with httpx.AsyncClient() as client:
+        hits = await find_hits([name], client)
+    cfg: AppConfig = request.app.state.cfg
+    try:
+        added = append_companies(cfg, [h.board for h in hits])
+    except CompaniesFileError as e:
+        return _companies_page(request, s, {"error": str(e)}, 422)
+    return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})

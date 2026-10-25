@@ -71,7 +71,11 @@ class DiscoverAgent:
                 status[key] = "unsupported_source"
                 continue
             try:
-                postings = await adapter.list_postings(board)
+                if getattr(adapter, "supports_max_postings", False):
+                    postings = await adapter.list_postings(  # type: ignore[call-arg]
+                        board, max_postings=prefs.max_jobs_per_run)
+                else:
+                    postings = await adapter.list_postings(board)
             except SourceError as e:
                 status[key] = e.code.value
                 continue

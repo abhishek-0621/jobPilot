@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import typer
@@ -203,13 +203,11 @@ app.add_typer(sources_app, name="sources")
 
 
 async def _check_sources(cfg: AppConfig, client: httpx.AsyncClient) -> list[str]:
-    from jobpilot.discovery.sources.base import SourceAdapter, SourceError
-    from jobpilot.discovery.sources.greenhouse import GreenhouseSource
-    from jobpilot.discovery.sources.lever import LeverSource
+    from jobpilot.discovery.sources.base import SourceError
     from jobpilot.profile.preferences import load_companies
+    from jobpilot.runtime import build_sources
 
-    adapters: dict[str, SourceAdapter] = {"greenhouse": GreenhouseSource(client),
-                                          "lever": LeverSource(client)}
+    adapters = build_sources(client)
     lines: list[str] = []
     for board in load_companies(cfg):
         label = f"{board.name} ({board.source}:{board.token})"
@@ -239,6 +237,51 @@ def sources_check(config_dir: ConfigDir = Path("config")) -> None:
 
     for line in asyncio.run(run()):
         typer.echo(line)
+
+
+boards_app = typer.Typer(help="Company board commands.", no_args_is_help=True)
+app.add_typer(boards_app, name="boards")
+
+
+def _boards_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient()
+
+
+@boards_app.command("find")
+def boards_find(
+    names: Annotated[list[str], typer.Argument(help="Company names")],
+    write: Annotated[bool, typer.Option(
+        help="Append the boards found to storage/profiles/companies.yaml")] = False,
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Probe the public boards (Greenhouse, Lever, Ashby, SmartRecruiters) for companies."""
+    import asyncio
+
+    from jobpilot.discovery.board_finder import find_hits
+    from jobpilot.profile.preferences import CompaniesFileError, append_companies
+
+    cfg = load_config(config_dir)
+
+    async def run() -> list[Any]:
+        async with _boards_client() as client:
+            return await find_hits(names, client)
+
+    hits = asyncio.run(run())
+    if not hits:
+        typer.echo("No live boards found. Workday tenants must be added by hand.")
+        return
+    typer.echo(f"{'company':<28}{'source':<18}{'token':<28}postings")
+    for h in hits:
+        typer.echo(f"{h.board.name:<28}{h.board.source:<18}{h.board.token:<28}{h.postings}")
+    if write:
+        try:
+            added = append_companies(cfg, [h.board for h in hits])
+        except CompaniesFileError as e:
+            typer.echo(str(e))
+            raise typer.Exit(1) from e
+        target = cfg.storage_path / "profiles" / "companies.yaml"
+        typer.echo(f"Added {len(added)} board(s) to {target} "
+                   f"({len(hits) - len(added)} already configured).")
 
 
 @app.command()

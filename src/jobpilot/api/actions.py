@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -10,9 +11,10 @@ from sqlalchemy.orm import Session
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, FieldDecision, JobStatus
+from jobpilot.contracts.models import JobListing
 from jobpilot.data.db import utcnow
 from jobpilot.data.mutations import set_answer
-from jobpilot.data.repositories import create_application
+from jobpilot.data.repositories import create_application, upsert_job
 from jobpilot.data.tables import (
     ApplicationRow,
     ApprovalBatchRow,
@@ -20,6 +22,7 @@ from jobpilot.data.tables import (
     JobRow,
     TaskRow,
 )
+from jobpilot.discovery.normalize import html_to_text, normalize_url, require_http
 from jobpilot.ids import new_id
 from jobpilot.observability.events import (
     USER_RESOLVED_NOT_SUBMITTED,
@@ -30,6 +33,7 @@ from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
 from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
 from jobpilot.orchestrator.state_machine import transition
+from jobpilot.util.hashing import content_hash
 
 DISCOVERY_RUNNING = "A discovery run is already queued or running."
 
@@ -49,6 +53,45 @@ def start_discovery(s: Session, orch: Orchestrator) -> tuple[str, str]:
     task_id = orch.enqueue_in(s, TaskKind.DISCOVER, "run", run_id)
     s.commit()
     return task_id, run_id
+
+
+MANUAL_SOURCE = "manual"
+
+
+def add_manual_job(s: Session, orch: Orchestrator, *, url: str, title: str, company: str,
+                   location: str | None, description: str) -> str:
+    """Add a job the user found anywhere (LinkedIn, Naukri, ...). The pasted text is
+    untrusted: it is reduced to plain text like a scraped description. A new canonical
+    job gets EXTRACT in the same transaction; a known one returns its id. Commits.
+
+    Raises ValueError (non-http(s) URL, missing title/company)."""
+    checked = require_http(url)
+    if checked is None:
+        raise ValueError("URL must be an absolute http(s) URL")
+    title, company = title.strip(), company.strip()
+    if not title or not company:
+        raise ValueError("Title and company are required")
+    norm = normalize_url(checked)
+    now = utcnow()
+    listing = JobListing(
+        task_id="manual", created_at=now, job_id="", source=MANUAL_SOURCE,
+        source_job_id=content_hash(norm)[7:23], canonical_url=norm, application_url=norm,
+        company=company, title=title, location=(location or "").strip() or None,
+        description_text=html_to_text(description or ""), first_seen_at=now,
+        last_seen_at=now, extraction_confidence=0.0)
+    row, created = upsert_job(s, listing)
+    job_id = row.canonical_job_id or row.job_id
+    if created and row.canonical_job_id is None:
+        orch.enqueue_in(s, TaskKind.EXTRACT, "job", row.job_id)
+    details: dict[str, Any] = {"job_id": row.job_id, "canonical_job_id": job_id}
+    existing = s.get(JobRow, job_id)
+    if existing is not None and existing.source != MANUAL_SOURCE:
+        details |= {"matched_existing": True, "existing_source": existing.source}
+    record_event(s, entity_type="job", entity_id=job_id, actor="user",
+                 action="job_added_manually", outcome="ok" if created else "known",
+                 details=details)
+    s.commit()
+    return job_id
 
 
 def select_job(s: Session, orch: Orchestrator, job_id: str) -> ApplicationRow:
@@ -322,3 +365,67 @@ def reread_form(s: Session, orch: Orchestrator, application_id: str) -> str:
     task_id = orch.enqueue_in(s, TaskKind.PREPARE_FORM, "application", application_id)
     s.commit()
     return task_id
+
+
+MAX_REFERENCE_CHARS = 100
+MANUAL_STATUSES = (ApplicationStatus.MANUAL_APPLY_READY.value,
+                   ApplicationStatus.SUBMITTED_BY_USER.value)
+
+
+def _manual_ready(s: Session, application_id: str, what: str) -> ApplicationRow:
+    app = _app(s, application_id)
+    if app.status != ApplicationStatus.MANUAL_APPLY_READY.value:
+        raise ActionConflict(f"{what} (status is {app.status}).")
+    return app
+
+
+def mark_applied(s: Session, application_id: str, reference: str | None,
+                 applied_on: date | None) -> None:
+    """The user states they applied themselves: MANUAL_APPLY_READY -> SUBMITTED_BY_USER
+    (actor "user", no evidence). The optional reference is stored; the event keeps ids,
+    whether a reference was given and the date only. Commits.
+
+    Raises LookupError / ActionConflict (wrong status or already marked) / ValueError
+    (reference over 100 chars, date in the future)."""
+    ref = (reference or "").strip()
+    if len(ref) > MAX_REFERENCE_CHARS:
+        raise ValueError(f"Reference must be at most {MAX_REFERENCE_CHARS} characters")
+    if applied_on is not None and applied_on > date.today():
+        raise ValueError("Applied date cannot be in the future")
+    app = _manual_ready(s, application_id, "Only manual applications ready to apply can be "
+                        "marked as applied")
+    transition(s, app, ApplicationStatus.SUBMITTED_BY_USER, actor="user",
+               reason="marked_applied")
+    app.confirmation_reference = ref or None
+    record_event(s, entity_type="application", entity_id=application_id, actor="user",
+                 action="user_marked_applied", outcome="ok",
+                 details={"application_id": application_id, "job_id": app.job_id,
+                          "has_reference": bool(ref),
+                          "applied_on": applied_on.isoformat() if applied_on else None})
+    s.commit()
+
+
+def not_applying(s: Session, application_id: str) -> None:
+    """The user will not apply: MANUAL_APPLY_READY -> REJECTED_BY_USER. Commits."""
+    app = _manual_ready(s, application_id, "Only manual applications ready to apply can be "
+                        "dropped")
+    transition(s, app, ApplicationStatus.REJECTED_BY_USER, actor="user",
+               reason="user_not_applying")
+    s.commit()
+
+
+def save_manual_answers(s: Session, application_id: str, values: dict[str, str]) -> None:
+    """Store the user's edits to drafted answers (source "user"; the decision and the
+    application status stay as they are). Commits.
+
+    Raises LookupError / ActionConflict (status, unknown or non-editable field)."""
+    _manual_ready(s, application_id, "Answers can only be edited before you mark the "
+                  "application as applied")
+    rows = {r.field_id: r for r in answer_rows(s, application_id)}
+    for fid, value in values.items():
+        row = rows.get(fid)
+        if row is None or not user_editable(row.decision, row.field_type):
+            s.rollback()
+            raise ActionConflict(f"Field {fid} cannot be edited here.")
+        set_answer(s, application_id, fid, value, actor="user", source_fact_id=USER_SOURCE)
+    s.commit()

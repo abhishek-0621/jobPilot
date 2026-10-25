@@ -20,6 +20,7 @@ from jobpilot.agents.form_prep import (
     make_validate_handler,
     prepare_form_handler,
 )
+from jobpilot.agents.manual_package import ManualPackageAgent, manual_package_handler
 from jobpilot.agents.match import MatchAgent, make_match_handler
 from jobpilot.agents.tailor import TailorAgent, make_tailor_handler
 from jobpilot.config import AppConfig
@@ -36,8 +37,12 @@ from jobpilot.data.tables import (
     MatchAssessmentRow,
 )
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
+from jobpilot.discovery.sources.ashby import AshbySource
+from jobpilot.discovery.sources.base import SourceAdapter
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
+from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
+from jobpilot.discovery.sources.workday import WorkdaySource
 from jobpilot.documents.validate import (
     BANNED_PATH,
     TECH_TERMS_PATH,
@@ -337,6 +342,17 @@ def make_submitter_factory(
     return submitter_factory
 
 
+def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
+    """The one registry of discovery source adapters (runtime and `sources check`)."""
+    return {
+        "greenhouse": GreenhouseSource(client),
+        "lever": LeverSource(client),
+        "ashby": AshbySource(client),
+        "smartrecruiters": SmartRecruitersSource(client),
+        "workday": WorkdaySource(client),
+    }
+
+
 def build_runtime(
     cfg: AppConfig,
     session_factory: sessionmaker[Session],
@@ -348,7 +364,7 @@ def build_runtime(
     http = client if client is not None else httpx.AsyncClient()
     prefs = Provided(lambda: load_search_preferences(cfg))
     tools: dict[str, Any] = {
-        "sources": {"greenhouse": GreenhouseSource(http), "lever": LeverSource(http)},
+        "sources": build_sources(http),
         "prefs": prefs,
         "companies": Provided(lambda: load_companies(cfg)),
         "clock": clock,
@@ -371,6 +387,7 @@ def build_runtime(
         TaskKind.TAILOR: TailorAgent(),
         TaskKind.COVER_LETTER: CoverLetterAgent(),
         TaskKind.PREPARE_FORM: PrepareFormAgent(),
+        TaskKind.MANUAL_PACKAGE: ManualPackageAgent(),
         TaskKind.VALIDATE: ValidateAgent(),
     }
     handlers: dict[TaskKind, Handler] = {
@@ -380,6 +397,7 @@ def build_runtime(
         TaskKind.TAILOR: make_tailor_handler(cfg.storage_path),
         TaskKind.COVER_LETTER: make_cover_letter_handler(cfg.storage_path),
         TaskKind.PREPARE_FORM: prepare_form_handler,
+        TaskKind.MANUAL_PACKAGE: manual_package_handler,
         TaskKind.VALIDATE: make_validate_handler(cfg.storage_path),
     }
     return Runtime(agents=agents, handlers=handlers,

@@ -43,7 +43,7 @@ Put your own files in `storage/profiles/` (git-ignored; never commit them):
   layout; that file is a fictional example).
 - `search_preferences.yaml` — target titles, locations, work modes, `min_match_score`
   (defaults come from `config/search_preferences.yaml`).
-- `companies.yaml` — the Greenhouse/Lever boards to watch (layout as in
+- `companies.yaml` — the boards to watch (see *Job sources*; layout as in
   `config/companies.example.yaml`).
 
 ```sh
@@ -59,6 +59,55 @@ Then, in the dashboard:
 2. On **Jobs** (`/ui/jobs`), click **Discover**. Jobs are fetched from the public boards,
    de-duplicated, extracted and scored by the local model; those below `min_match_score`
    or failing a hard filter (location, seniority, excluded keyword, experience gap) are rejected with a reason.
+
+## Job sources
+
+Automated discovery uses public, login-free job-board APIs only:
+
+| Source | Add it with |
+| --- | --- |
+| Greenhouse | token from `boards.greenhouse.io/<token>` |
+| Lever | token from `jobs.lever.co/<token>` |
+| Ashby | token from `jobs.ashbyhq.com/<token>` |
+| SmartRecruiters | company id from `jobs.smartrecruiters.com/<id>` |
+| Workday | tenant, `wd_host` and `site`, added by hand (below) |
+
+**Add companies by name.** Let JobPilot find which boards a company has:
+
+```sh
+uv run jobpilot boards find "Company A" "Company B"            # just print what it finds
+uv run jobpilot boards find "Company A" --write                # also append to companies.yaml
+```
+
+Adding companies via the finder rewrites `companies.yaml` and drops any comments you added by hand.
+
+Or open **Companies** (`/ui/companies`) in the dashboard, type a name and press *Add company*.
+Both probe each source's public endpoint (at most one request per second per host) and keep
+only boards with at least one live posting. New boards are appended to
+`storage/profiles/companies.yaml` without duplicates; existing entries are kept.
+`uv run jobpilot sources check` then confirms each board is reachable.
+
+**Workday** tenants cannot be guessed, so add them to `storage/profiles/companies.yaml` yourself
+(the `wd_host` and `site` come from the careers-page URL
+`https://acme.wd5.myworkdayjobs.com/Careers`):
+
+```yaml
+companies:
+  - name: Acme Corp
+    source: workday
+    token: acme
+    extra: {wd_host: wd5, site: Careers}
+```
+
+**LinkedIn, Naukri and other login sites** are never automated. Found a job there? Use
+**Add a job** (`/ui/jobs/new`) and paste its URL, title, company and description. JobPilot
+prepares your resume, cover letter and drafted answers, then you apply yourself on the
+site and press *Mark as applied*.
+
+Why they are never automated: those sites require your login, forbid automated access in
+their terms, and a bot on your account risks getting it restricted. JobPilot never opens
+them, never stores their credentials and never scrapes them; the same holds for any
+application page that sits behind a login.
 
 ## Documents
 

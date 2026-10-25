@@ -1,0 +1,41 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "a0000000-0000-4000-8000-000000000001",
+      "title": "Applied AI Engineer",
+      "location": "Bengaluru, India",
+      "secondaryLocations": [{"location": "Pune, India"}, {"location": "Remote - India"}],
+      "isRemote": true,
+      "isListed": true,
+      "descriptionHtml": "<p>Build <strong>agents</strong> at Example AI.</p>",
+      "jobUrl": "https://jobs.ashbyhq.com/exampleai/a0000000-0000-4000-8000-000000000001",
+      "applyUrl": "https://jobs.ashbyhq.com/exampleai/a0000000-0000-4000-8000-000000000001/application",
+      "publishedAt": "2026-10-02T09:30:00.000+00:00"
+    },
+    {
+      "id": "a0000000-0000-4000-8000-000000000002",
+      "title": "Remote Platform Engineer",
+      "location": null,
+      "secondaryLocations": [],
+      "isRemote": true,
+      "isListed": true,
+      "descriptionHtml": "<p>Platform work.</p>",
+      "jobUrl": "https://jobs.ashbyhq.com/exampleai/a0000000-0000-4000-8000-000000000002",
+      "applyUrl": "https://jobs.ashbyhq.com/exampleai/a0000000-0000-4000-8000-000000000002/application",
+      "publishedAt": null
+    },
+    {
+      "id": "a0000000-0000-4000-8000-000000000003",
+      "title": "Unlisted Role",
+      "location": "Bengaluru, India",
+      "secondaryLocations": [],
+      "isRemote": false,
+      "isListed": false,
+      "descriptionHtml": "<p>Hidden.</p>",
+      "jobUrl": "https://jobs.ashbyhq.com/exampleai/a0000000-0000-4000-8000-000000000003",
+      "applyUrl": "https://jobs.ashbyhq.com/exampleai/a0000000-0000-4000-8000-000000000003/application",
+      "publishedAt": "2026-10-03T00:00:00.000+00:00"
+    }
+  ]
+}

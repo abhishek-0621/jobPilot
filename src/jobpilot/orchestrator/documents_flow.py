@@ -23,7 +23,8 @@ from jobpilot.orchestrator.state_machine import transition
 _A = ApplicationStatus
 REGENERABLE = frozenset({_A.DOCUMENTS_PENDING.value, _A.FORM_IN_PROGRESS.value,
                          _A.NEEDS_USER_INPUT.value, _A.VALIDATION_FAILED.value,
-                         _A.READY_FOR_REVIEW.value, _A.APPROVED.value})
+                         _A.READY_FOR_REVIEW.value, _A.APPROVED.value,
+                         _A.MANUAL_APPLY_READY.value})
 _DOC_TASKS = (TaskKind.TAILOR.value, TaskKind.COVER_LETTER.value)
 _ACTIVE = (TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)
 

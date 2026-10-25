@@ -1,5 +1,6 @@
 <section id="counts" hx-get="/ui/overview/counts" hx-trigger="every 5s" hx-swap="outerHTML">
 <div class="grid">
+<div class="card"><h3>Applied</h3><div class="kv"><span>Applied</span><span>{{ applied.total }}</span></div><div class="muted">(automated {{ applied.automated }}, manual {{ applied.manual }})</div></div>
 {% for name, counts in sections %}
 <div class="card"><h3>{{ name }}</h3>
 {% for status, n in counts|dictsort %}<div class="kv"><span>{{ status }}</span><span>{{ n }}</span></div>

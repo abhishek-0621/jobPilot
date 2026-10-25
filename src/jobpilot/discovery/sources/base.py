@@ -19,7 +19,7 @@ TIMEOUT_S = 20.0
 
 
 class RawPosting(Contract):
-    source: Literal["greenhouse", "lever"]
+    source: Literal["greenhouse", "lever", "ashby", "smartrecruiters", "workday"]
     source_job_id: str
     company: str
     title: str
@@ -43,7 +43,7 @@ class SourceAdapter(Protocol):
 
 
 class RateLimitedFetcher:
-    """Sequential JSON GETs with at least ``min_interval_s`` between requests."""
+    """Sequential JSON GET/POST requests with at least ``min_interval_s`` between requests."""
 
     def __init__(
         self,
@@ -60,6 +60,12 @@ class RateLimitedFetcher:
         self._lock = asyncio.Lock()
 
     async def get_json(self, url: str) -> Any:
+        return await self._request("GET", url, None)
+
+    async def post_json(self, url: str, body: dict[str, Any]) -> Any:
+        return await self._request("POST", url, body)
+
+    async def _request(self, method: str, url: str, body: dict[str, Any] | None) -> Any:
         async with self._lock:
             if self._last is not None:
                 wait = self._min_interval_s - (self._clock() - self._last)
@@ -67,7 +73,11 @@ class RateLimitedFetcher:
                     await self._sleep(wait)
             self._last = self._clock()
             try:
-                resp = await self._client.get(url, headers=HEADERS, timeout=TIMEOUT_S)
+                if body is None:
+                    resp = await self._client.get(url, headers=HEADERS, timeout=TIMEOUT_S)
+                else:
+                    resp = await self._client.post(url, json=body, headers=HEADERS,
+                                                   timeout=TIMEOUT_S)
             except httpx.TimeoutException as e:
                 raise SourceError(ErrorCode.SOURCE_TIMEOUT, type(e).__name__) from e
             except httpx.HTTPError as e:

@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from jobpilot.contracts.enums import ErrorCode
-from jobpilot.discovery.normalize import normalize_url
+from jobpilot.discovery.normalize import normalize_url, require_http
 from jobpilot.discovery.sources.base import RateLimitedFetcher, RawPosting, SourceError
 from jobpilot.profile.preferences import CompanyBoard
 
@@ -32,13 +32,17 @@ class GreenhouseSource:
     async def list_postings(self, board: CompanyBoard) -> list[RawPosting]:
         data = await self._fetch.get_json(f"{BASE}/{board.token}/jobs?content=true")
         try:
-            return [_parse(j, board) for j in data["jobs"]]
+            parsed = (_parse(j, board) for j in data["jobs"])
+            return [p for p in parsed if p is not None]
         except (KeyError, TypeError, ValueError) as e:
             raise SourceError(ErrorCode.SOURCE_CHANGED, type(e).__name__) from e
 
 
-def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting:
-    url = normalize_url(j["absolute_url"])
+def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting | None:
+    raw_url = require_http(j["absolute_url"])
+    if raw_url is None:
+        return None
+    url = normalize_url(raw_url)
     loc = j.get("location") or {}
     updated = j.get("updated_at")
     return RawPosting(

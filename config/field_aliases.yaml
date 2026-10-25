@@ -11,7 +11,7 @@ version: 1
 fields:
   full_name:
     profile: identity.full_name
-    aliases: [full name, name, your name, candidate name, applicant name, legal name, full legal name, name as per documents, complete name]
+    aliases: [full name, name, your name, candidate name, applicant name, legal name, full legal name, name as per documents, complete name, systemfield name]
   first_name:
     profile: identity.first_name
     aliases: [first name, given name, forename, fname, first]
@@ -26,7 +26,7 @@ fields:
     aliases: [preferred name, preferred first name, nickname, what should we call you]
   email:
     profile: identity.email
-    aliases: [email, e mail, email address, email id, mail id, work email, personal email, contact email, primary email]
+    aliases: [email, e mail, email address, email id, mail id, work email, personal email, contact email, primary email, systemfield email]
   confirm_email:
     profile: identity.email
     aliases: [confirm email, re enter email, retype email, verify email]
@@ -108,7 +108,7 @@ fields:
     aliases: [languages, languages known, languages spoken, language proficiency]
   resume:
     profile: artifact.resume
-    aliases: [resume, cv, resume cv, upload resume, attach resume, curriculum vitae, resume upload]
+    aliases: [resume, cv, resume cv, upload resume, attach resume, curriculum vitae, resume upload, systemfield resume]
   cover_letter:
     profile: artifact.cover_letter
     aliases: [cover letter, covering letter, motivation letter, letter of motivation, upload cover letter]

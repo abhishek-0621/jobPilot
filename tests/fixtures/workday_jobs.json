@@ -1,0 +1,19 @@
+{
+  "total": 2,
+  "jobPostings": [
+    {
+      "title": "Machine Learning Engineer",
+      "externalPath": "/job/Bengaluru/Machine-Learning-Engineer_R-1001",
+      "locationsText": "Bengaluru, India",
+      "postedOn": "Posted 3 Days Ago",
+      "bulletFields": ["R-1001"]
+    },
+    {
+      "title": "Data Platform Engineer",
+      "externalPath": "/job/Remote-India/Data-Platform-Engineer_R-1002",
+      "locationsText": "2 Locations",
+      "postedOn": "Posted Today",
+      "bulletFields": ["R-1002"]
+    }
+  ]
+}

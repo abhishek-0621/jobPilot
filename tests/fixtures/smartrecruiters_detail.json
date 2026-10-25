@@ -1,0 +1,14 @@
+{
+  "id": "744000000000001",
+  "name": "ML Engineer",
+  "releasedDate": "2026-10-05T08:00:00.000Z",
+  "location": {"city": "Bengaluru", "country": "in", "remote": false},
+  "jobAd": {
+    "sections": {
+      "companyDescription": {"title": "Company Description", "text": "<p>Sample Labs builds tools.</p>"},
+      "jobDescription": {"title": "Job Description", "text": "<p>Train models.</p>"},
+      "qualifications": {"title": "Qualifications", "text": "<ul><li>Python</li></ul>"},
+      "additionalInformation": {"title": "Additional Information", "text": "<p>Hybrid.</p>"}
+    }
+  }
+}

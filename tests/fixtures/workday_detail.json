@@ -1,0 +1,12 @@
+{
+  "jobPostingInfo": {
+    "id": "abc123",
+    "title": "Machine Learning Engineer",
+    "jobDescription": "<p>Train and ship <strong>models</strong>.</p>",
+    "location": "Bengaluru, India",
+    "startDate": "2026-10-08",
+    "externalUrl": "https://sample.wd3.myworkdayjobs.com/External/job/Bengaluru/Machine-Learning-Engineer_R-1001",
+    "jobReqId": "R-1001",
+    "remoteType": "Hybrid"
+  }
+}

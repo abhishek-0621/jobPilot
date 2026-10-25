@@ -15,7 +15,7 @@ from jobpilot.contracts.enums import ApplicationStatus
 from jobpilot.contracts.models import AgentOutput
 from jobpilot.data import mutations
 from jobpilot.data.repositories import get_application
-from jobpilot.data.tables import CandidateFactRow, TaskRow
+from jobpilot.data.tables import CandidateFactRow, JobRow, TaskRow
 from jobpilot.documents import store
 from jobpilot.documents.model import split_skills
 from jobpilot.documents.render import DocRenderError, html_to_pdf, render_cover_letter_html
@@ -31,6 +31,7 @@ from jobpilot.orchestrator.engine import (
     TaskKind,
 )
 from jobpilot.orchestrator.state_machine import transition
+from jobpilot.portals.registry import apply_mode
 from jobpilot.profile.schema import ProfileFile
 from jobpilot.util.hashing import canonical_json
 
@@ -230,5 +231,8 @@ def make_cover_letter_handler(storage_path: Path) -> Handler:
                                actor=_ACTOR)
         transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=_ACTOR,
                    reason="documents_ready")
-        return [(TaskKind.PREPARE_FORM, "application", app.application_id)]
+        job = s.get(JobRow, app.job_id)
+        automated = job is not None and apply_mode(job) == "automated"
+        kind = TaskKind.PREPARE_FORM if automated else TaskKind.MANUAL_PACKAGE
+        return [(kind, "application", app.application_id)]
     return cover_letter_handler

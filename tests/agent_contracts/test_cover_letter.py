@@ -323,3 +323,23 @@ async def test_cover_letter_job_title_numbers_do_not_widen_source(
     good = {**GOOD, "paragraphs": [p1, GOOD["paragraphs"][1]]}
     ok = await run_agent(factory, cfg, SeqGateway(good))
     assert ok.role == "Lead of 40-person team"
+
+
+def test_loader_job_fields_give_the_job_apply_mode(
+        factory: sessionmaker[Session]) -> None:  # noqa: F811
+    """The registry decides from the loader's job fields; they must agree with the job."""
+    from jobpilot.portals.registry import apply_mode
+    seed(factory)
+    for source, url in (("greenhouse", "https://boards.greenhouse.io/x/jobs/1"),
+                        ("greenhouse", "https://www.linkedin.com/jobs/view/1"),
+                        ("manual", "https://boards.greenhouse.io/x/jobs/2")):
+        with factory() as s:
+            app = s.get(ApplicationRow, APP)
+            assert app is not None
+            job = s.get(JobRow, app.job_id)
+            assert job is not None
+            job.source, job.canonical_url, job.application_url = source, url, None
+            s.commit()
+            loaded = make_application_loader(factory)(APP)
+            assert loaded is not None
+            assert apply_mode(loaded) == apply_mode(job)

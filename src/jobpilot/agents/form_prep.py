@@ -17,7 +17,7 @@ from jobpilot.contracts.enums import ApplicationStatus, ErrorCode, FieldDecision
 from jobpilot.contracts.models import AgentOutput, FieldAnswer
 from jobpilot.data import mutations
 from jobpilot.data.repositories import get_application
-from jobpilot.data.tables import FormFieldAnswerRow, TaskRow
+from jobpilot.data.tables import FormFieldAnswerRow, JobRow, TaskRow
 from jobpilot.documents import store
 from jobpilot.forms.browser import portal_page
 from jobpilot.forms.mapping import apply_suggestions, map_fields, suggest_keys
@@ -36,7 +36,7 @@ from jobpilot.orchestrator.engine import (
 )
 from jobpilot.orchestrator.state_machine import transition
 from jobpilot.portals.playwright_form import PlaywrightFormAdapter
-from jobpilot.portals.registry import ADAPTERS, PortalConfigError, allowed_hosts
+from jobpilot.portals.registry import ADAPTERS, PortalConfigError, allowed_hosts, apply_mode
 from jobpilot.portals.registry import form_url as registry_form_url
 from jobpilot.util.hashing import canonical_json
 
@@ -75,6 +75,7 @@ def make_form_opener(cfg: AppConfig) -> FormOpener:
 
 
 def form_url(app: dict[str, Any]) -> str:
+    """The form to open; the registry refuses (before any browser opens) manual-path apps."""
     try:
         return registry_form_url(app)
     except PortalConfigError as e:
@@ -238,6 +239,9 @@ def prepare_form_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
     app = get_application(s, out.application_id)
     if app.status not in PREPARABLE:
         raise OutputRejected("not_form_in_progress")
+    job = s.get(JobRow, app.job_id)
+    if job is None or apply_mode(job) != "automated":
+        raise OutputRejected("manual_apply_mode")
     stale = stale_follow_up(s, task, app.application_id,
                             _doc_versions(s, app, out.profile_version), _ACTOR)
     if stale is not None:
