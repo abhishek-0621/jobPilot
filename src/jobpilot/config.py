@@ -1,8 +1,9 @@
+import re
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ModelRoute(BaseModel):
@@ -14,6 +15,28 @@ class ModelRoute(BaseModel):
     timeout_s: float = 120
     keep_alive: str = "10m"
     fallback: str | None = None
+
+
+class ScheduleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    discover_at: str = "08:30"
+    backup: bool = True
+
+    @field_validator("discover_at")
+    @classmethod
+    def _hhmm(cls, v: str) -> str:
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+            raise ValueError("discover_at must be HH:MM (24h)")
+        return v
+
+
+class RetentionDays(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifacts: int = Field(365, ge=1)
+    contacts: int = Field(180, ge=1)
+    exports: int = Field(7, ge=1)
 
 
 class AppConfig(BaseModel):
@@ -28,6 +51,9 @@ class AppConfig(BaseModel):
     ollama_url: str = "http://127.0.0.1:11434"
     browser_headless: bool = False
     field_aliases_path: Path = Path("config/field_aliases.yaml")
+    schedule: ScheduleConfig = ScheduleConfig()
+    backup_keep: int = 14
+    retention_days: RetentionDays = RetentionDays()
     model_routes: dict[str, ModelRoute]
 
     @field_validator("live_portals", mode="before")

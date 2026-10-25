@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import shutil
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -56,6 +58,7 @@ from jobpilot.data.tables import (
     OutreachDraftRow,
 )
 from jobpilot.llm.ollama_client import ModelGateway
+from jobpilot.ops.export import contained_artifact_path
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.runtime import Runtime, build_runtime
@@ -69,6 +72,10 @@ ARTIFACT_MEDIA_TYPES = {
     ".txt": "text/plain",
     ".png": "image/png",
 }
+
+
+def _schedule_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, check=False, timeout=3)
 
 
 class LocalOriginMiddleware(BaseHTTPMiddleware):
@@ -181,6 +188,9 @@ def create_app(
     app.state.storage_path = cfg.storage_path
     app.state.cfg = cfg
     app.state.field_aliases_path = cfg.field_aliases_path
+    app.state.schedule_runner = _schedule_runner
+    app.state.schedule_home = Path.home()
+    app.state.platform = sys.platform
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(dashboard_router)
 
@@ -288,10 +298,9 @@ def create_app(
         row = s.get(DocumentArtifactRow, artifact_id)
         if row is None:
             raise HTTPException(404, "artifact not found")
-        base = (cfg.storage_path / "artifacts").resolve()
-        path = (cfg.storage_path / row.path).resolve()
-        media = ARTIFACT_MEDIA_TYPES.get(path.suffix.lower())
-        if not path.is_relative_to(base) or not path.is_file() or media is None:
+        path = contained_artifact_path(cfg.storage_path, row.path)
+        media = ARTIFACT_MEDIA_TYPES.get(path.suffix.lower()) if path else None
+        if path is None or media is None:
             raise HTTPException(404, "artifact not found")
         return FileResponse(path, media_type=media, filename=path.name,
                             content_disposition_type="inline")

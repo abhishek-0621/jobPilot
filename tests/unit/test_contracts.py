@@ -19,6 +19,7 @@ def test_application_status_members_match_spec() -> None:
         "VALIDATING", "VALIDATION_FAILED", "READY_FOR_REVIEW", "APPROVED",
         "SUBMISSION_IN_PROGRESS", "SUBMITTED", "CONFIRMED", "SUBMISSION_UNCERTAIN",
         "SUBMISSION_FAILED", "REJECTED_BY_USER", "MANUAL_APPLY_READY", "SUBMITTED_BY_USER",
+        "DELETED",
     ]
 
 

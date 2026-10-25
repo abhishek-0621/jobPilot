@@ -28,6 +28,7 @@ class ApplicationStatus(StrEnum):
     REJECTED_BY_USER = "REJECTED_BY_USER"
     MANUAL_APPLY_READY = "MANUAL_APPLY_READY"
     SUBMITTED_BY_USER = "SUBMITTED_BY_USER"
+    DELETED = "DELETED"
 
 
 class BatchStatus(StrEnum):

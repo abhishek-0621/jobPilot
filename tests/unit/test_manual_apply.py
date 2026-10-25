@@ -54,7 +54,7 @@ def test_manual_state_edges() -> None:
     assert A.MANUAL_APPLY_READY in edges[A.FORM_IN_PROGRESS]
     assert edges[A.MANUAL_APPLY_READY] == {A.SUBMITTED_BY_USER, A.DOCUMENTS_PENDING,
                                            A.REJECTED_BY_USER}
-    assert edges[A.SUBMITTED_BY_USER] == frozenset()
+    assert edges[A.SUBMITTED_BY_USER] == frozenset({A.DELETED})
 
 
 def test_submitted_by_user_needs_user_actor(db_session: Session) -> None:

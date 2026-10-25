@@ -2,6 +2,8 @@
 profile.importer and data.mutations."""
 
 import json
+import os
+import time
 from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
@@ -10,7 +12,7 @@ from typing import Annotated, Any
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -70,6 +72,8 @@ from jobpilot.discovery.board_finder import find_hits
 from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
 from jobpilot.observability.events import SUBMIT_CLICKED, last_event, prior_unresolved_click
+from jobpilot.ops import schedule as sched
+from jobpilot.ops.backup import ARCHIVE_RE, backups_dir
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.orchestrator.state_machine import IllegalTransition
@@ -240,7 +244,7 @@ def _one_line(text: str, limit: int = 120) -> str:
 
 @router.get("/ui/jobs", response_class=HTMLResponse)
 def jobs(request: Request, s: Db, status: str | None = None,
-         show_duplicates: int = 0) -> HTMLResponse:
+         show_duplicates: int = 0, deleted: str | None = None) -> HTMLResponse:
     version = _active_version(s)
     selected = {a.job_id: a.application_id
                 for a in s.execute(select(ApplicationRow)).scalars()}
@@ -260,6 +264,8 @@ def jobs(request: Request, s: Db, status: str | None = None,
                      and job.job_id not in selected})
     return _page(request, s, "jobs.html", {
         "rows": rows, "status": status or "", "show_duplicates": bool(show_duplicates),
+        "flash": f"Deleted the data of application {deleted}. Its audit history is kept."
+        if deleted else None,
         "statuses": [st.value for st in JobStatus]})
 
 
@@ -401,6 +407,59 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
         "facts": facts, "letter": _artifact_text(request, letter_txt), "evidence": evidence,
         "submission": _submission(s, app),
         "events": list(reversed(list_events(s, application_id)))})
+
+
+@router.get("/ui/applications/{application_id}/export")
+def export_application_ui(request: Request, application_id: str, s: Db) -> FileResponse:
+    """Build the bundle in a temp dir and stream it; nothing is left in storage/exports."""
+    import shutil
+    import tempfile
+
+    from starlette.background import BackgroundTask
+
+    from jobpilot.ops.export import export_application
+
+    if s.get(ApplicationRow, application_id) is None:
+        raise HTTPException(404, "application not found")
+    cfg: AppConfig = request.app.state.cfg
+    tmp = Path(tempfile.mkdtemp(prefix="jobpilot-export-"))
+    try:
+        tmp.chmod(0o700)
+        path = export_application(cfg, s, application_id, out_dir=tmp)
+    except LookupError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise HTTPException(404, str(e)) from e
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return FileResponse(path, media_type="application/zip", filename=path.name,
+                        content_disposition_type="attachment",
+                        background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True))
+
+
+@router.post("/ui/applications/{application_id}/delete", response_class=HTMLResponse,
+             response_model=None)
+def delete_application_ui(request: Request, application_id: str, s: Db,
+                          confirm: Annotated[str, Form()] = ""
+                          ) -> HTMLResponse | RedirectResponse:
+    from urllib.parse import quote
+
+    from jobpilot.ops import purge
+    from jobpilot.ops.lock import LockHeld
+    from jobpilot.ops.purge import ConfirmationMismatch, DeleteRefused
+
+    if s.get(ApplicationRow, application_id) is None:
+        raise HTTPException(404, "application not found")
+    try:
+        purge.delete_application(request.app.state.cfg, s, application_id,
+                                 confirm=confirm.strip())
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ConfirmationMismatch as e:
+        return _message(request, str(e), 422)
+    except (DeleteRefused, LockHeld) as e:
+        return _message(request, str(e), 409)
+    return RedirectResponse(f"/ui/jobs?deleted={quote(application_id)}", status_code=303)
 
 
 def _display(value: Any) -> str:
@@ -879,3 +938,55 @@ async def add_company(request: Request, s: Db,
     except CompaniesFileError as e:
         return _companies_page(request, s, {"error": str(e)}, 422)
     return _companies_page(request, s, {"results": hits, "added": len(added), "searched": name})
+
+
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _human_age(seconds: float) -> str:
+    s = max(0, int(seconds))
+    for unit, span in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if s >= span:
+            n = s // span
+            return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    return "just now"
+
+
+def _last_backup(cfg: AppConfig) -> dict[str, str] | None:
+    try:
+        found = [p for p in backups_dir(cfg).iterdir()
+                 if ARCHIVE_RE.fullmatch(p.name) and p.is_file()]
+        newest = max(found, key=lambda p: p.stat().st_mtime)
+        st = newest.stat()
+    except (OSError, ValueError):
+        return None
+    return {"name": newest.name, "size": _human_size(st.st_size),
+            "age": _human_age(time.time() - st.st_mtime)}
+
+
+def _schedule_view(request: Request, cfg: AppConfig) -> dict[str, Any]:
+    state = request.app.state
+    if state.platform != "darwin":
+        return {"available": False, "agents": None}
+    try:
+        agents = sched.status(cfg, home=state.schedule_home, runner=state.schedule_runner,
+                              uid=os.getuid())
+    except Exception:  # a hung or missing launchctl must not break the page
+        return {"available": True, "agents": None}
+    return {"available": True, "agents": agents}
+
+
+@router.get("/ui/settings", response_class=HTMLResponse)
+def settings(request: Request, s: Db) -> HTMLResponse:
+    cfg: AppConfig = request.app.state.cfg
+    return _page(request, s, "settings.html", {
+        "cfg": cfg, "schedule": _schedule_view(request, cfg),
+        "backup": _last_backup(cfg),
+        "retention": cfg.retention_days.model_dump(),
+    })

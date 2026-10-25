@@ -197,6 +197,68 @@ Resolving uncertain submissions: an *Uncertain (n)* link appears in the navigati
 clicks a second time on its own: a failed application offers *Prepare again*, which
 revokes the approval and re-reads the form, so you review, approve and submit it again.
 
+## Running daily
+
+macOS only. JobPilot can run discovery for you every day with a LaunchAgent:
+
+```
+uv run jobpilot schedule install              # daily at schedule.discover_at (default 08:30)
+uv run jobpilot schedule install --at 07:15   # another time
+uv run jobpilot schedule install --with-server  # also keep `jobpilot start` running from login
+uv run jobpilot schedule status
+uv run jobpilot schedule uninstall
+```
+
+Installing again is safe (it replaces the previous agent). Logs go to `storage/logs/`.
+
+What runs: `jobpilot discover` (find jobs, extract and score them) followed by a daily
+backup (set `schedule.backup: false` in `config/app.yaml` to turn it off; rotation keeps
+the newest `backup_keep` archives), then retention maintenance, and, with `--with-server`,
+the dashboard. Running `discover --run-now` by hand does not back up; use
+`uv run jobpilot backup`. What never runs on a schedule: tailoring, preparing
+forms, approval, submission and outreach sending. Those only happen when you press the
+button in the dashboard. The *Settings* page shows the schedule, the last backup,
+retention and model routes (read-only).
+
+## Backups & restore
+
+```
+uv run jobpilot backup                        # storage/backups/jobpilot-<time>.tar.gz
+uv run jobpilot backup --keep 30
+uv run jobpilot restore <archive> --confirm RESTORE
+```
+
+- A backup holds the database, `storage/profiles` and `storage/artifacts`. It does not
+  hold browser sessions (`browser_state`), logs, exports or other backups.
+- Scheduled daily runs make a backup automatically (disable with `schedule.backup: false`).
+  Only the newest `backup_keep` archives are kept (default 14); older ones are rotated out.
+- Restore is CLI only and needs the typed word `RESTORE`. The archive is verified first,
+  JobPilot must not be running, and your current data is saved aside (`storage/.pre-restore-<time>`) before it is replaced.
+- Backups contain personal data. Files are created private (mode `0600`) under the
+  git-ignored `storage/`; keep copies somewhere equally private.
+
+## Your data
+
+```
+uv run jobpilot export app <application_id>   # audit bundle (zip) in storage/exports
+uv run jobpilot export all                    # every table as JSON, plus profiles/artifacts
+uv run jobpilot delete app <application_id> --confirm <application_id>
+uv run jobpilot delete all --confirm "DELETE ALL" [--include-backups]
+```
+
+- Exports contain personal data; they are written to `storage/exports/`. Files there older
+  than `retention_days.exports` (7 days) are deleted by maintenance.
+- `delete all` also removes the `storage/.pre-restore-*` copies a restore leaves behind;
+  maintenance prunes those after `retention_days.artifacts`, and `jobpilot doctor` lists
+  any that are present with their age.
+- Deleting an application is available in the dashboard (type the application id) and the
+  CLI, and only for finished applications. Deleting everything is CLI only.
+- Retention (`retention_days` in `config/app.yaml`): finished applications lose their
+  documents and screenshots after 365 days, old contact candidates go after 180 days and
+  exports after 7 days. Applications still in progress are never pruned.
+- The audit history is append-only: deletion adds a `data_deleted` event with ids and
+  counts, never personal details, and does not remove earlier events.
+
 ## Where data lives
 
 All state lives in `storage/` (SQLite database `storage/jobpilot.db`, generated artifacts).

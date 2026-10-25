@@ -5,6 +5,7 @@
 <p><strong>{{ app.status }}</strong>{% if job %} · <a href="/ui/jobs/{{ job.job_id }}">Job</a> · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}{% endif %}</p>
 <p><button type="button" hx-post="/ui/applications/{{ app.application_id }}/regenerate" hx-target="#regen-result" hx-swap="innerHTML">Regenerate documents</button></p>
 <div id="regen-result"></div>
+<p><a href="/ui/applications/{{ app.application_id }}/export" download>Export bundle</a> <span class="muted">· audit bundle (zip) with answers, documents and events. It contains personal data; keep it private.</span></p>
 <p><a href="/ui/applications/{{ app.application_id }}/answers">Form answers</a>{% if app.status == "MANUAL_APPLY_READY" or app.status == "SUBMITTED_BY_USER" %} · <a href="/ui/applications/{{ app.application_id }}/apply">Manual apply page</a>{% endif %}</p>
 <h2>Submission</h2>
 <p>Status: <strong>{{ app.status }}</strong>{% if app.confirmation_reference %} · Confirmation reference: <span class="mono">{{ app.confirmation_reference }}</span>{% endif %}</p>
@@ -29,6 +30,14 @@
 <h3>Evidence</h3>
 <ul>{% for f in evidence %}<li><span class="mono">{{ f.fact_id }}</span>: {{ f.value }}</li>{% endfor %}</ul>
 {% else %}<p class="muted">Not generated yet.</p>{% endif %}
+{% if app.status in ("CONFIRMED", "SUBMITTED_BY_USER", "REJECTED_BY_USER", "SUBMISSION_FAILED") %}
+<h2>Delete this application's data</h2>
+<p class="muted">Permanently deletes the form answers and documents of this application. This cannot be undone. The job and the audit history are kept.</p>
+<form method="post" action="/ui/applications/{{ app.application_id }}/delete">
+<label>Type the application id to confirm <input type="text" name="confirm" autocomplete="off" required placeholder="{{ app.application_id }}"></label>
+<button type="submit">Delete permanently</button>
+</form>
+{% endif %}
 <h2>Status timeline</h2>
 {% if events %}<ul>{% for e in events %}<li>{{ e.timestamp_utc|local }} · {{ e.actor }} · {{ e.action }} · {{ e.outcome }}</li>{% endfor %}</ul>{% else %}<p class="muted">No events.</p>{% endif %}
 {% endblock %}

@@ -145,3 +145,25 @@ def set_library_answer(s: Session, question_key: str, value: Any, *,
                  action="answer_library_changed", outcome="ok",
                  details={"question_key": question_key, "cleared": value is None})
     s.flush()
+
+
+def clear_application_content(s: Session, application_id: str) -> None:
+    """Data deletion: drop the user content an application row holds. The idempotency key
+    stays (submit-click checks key on it). Callers invalidate approvals and record the
+    deletion event."""
+    app = get_application(s, application_id)
+    app.confirmation_reference = None
+    app.content_hash = None
+    app.form_snapshot_hash = None
+    app.submit_live_intent = None
+    app.resume_artifact_id = None
+    app.cover_letter_artifact_id = None
+    s.flush()
+
+
+def clear_artifact_refs(s: Session, application_id: str) -> None:
+    """Retention/deletion removed the documents: unbind them from the application."""
+    app = get_application(s, application_id)
+    app.resume_artifact_id = None
+    app.cover_letter_artifact_id = None
+    s.flush()

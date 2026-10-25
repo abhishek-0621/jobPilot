@@ -49,11 +49,19 @@ _APPLICATION: dict[StrEnum, set[StrEnum]] = {
                                A.READY_FOR_REVIEW, A.NEEDS_USER_INPUT},
     A.SUBMITTED: {A.CONFIRMED, A.SUBMISSION_UNCERTAIN},
     A.SUBMISSION_UNCERTAIN: {A.CONFIRMED, A.SUBMISSION_FAILED},
-    # "Prepare again" after a failed submission (explicit user action only).
-    A.SUBMISSION_FAILED: {A.FORM_IN_PROGRESS},
+    # "Prepare again" after a failed submission (explicit user action only); straight to
+    # DOCUMENTS_PENDING when retention pruned the documents.
+    A.SUBMISSION_FAILED: {A.FORM_IN_PROGRESS, A.DOCUMENTS_PENDING},
 }
 for _s in _PRE_SUBMISSION:
     _APPLICATION[_s] = _APPLICATION.get(_s, set()) | {A.REJECTED_BY_USER}
+
+# Terminal states: nothing more happens to these applications, so retention may prune them.
+TERMINAL_APPLICATION = frozenset({A.CONFIRMED, A.SUBMITTED_BY_USER, A.REJECTED_BY_USER,
+                                  A.SUBMISSION_FAILED, A.DELETED})
+# Deleting an application's data (user only) is allowed from any terminal state but DELETED.
+for _s in TERMINAL_APPLICATION - {A.DELETED}:
+    _APPLICATION[_s] = _APPLICATION.get(_s, set()) | {A.DELETED}
 
 _OUTREACH: dict[StrEnum, set[StrEnum]] = {
     O.NOT_ELIGIBLE: {O.CONTACT_RESEARCH},
@@ -97,9 +105,11 @@ RESTRICTED_EDGES: dict[tuple[StrEnum, StrEnum], frozenset[str]] = {
     (A.SUBMISSION_UNCERTAIN, A.CONFIRMED): frozenset({"user", "verification"}),
     (A.SUBMISSION_UNCERTAIN, A.SUBMISSION_FAILED): frozenset({"user", "verification"}),
     (A.SUBMISSION_FAILED, A.FORM_IN_PROGRESS): frozenset({"user"}),
+    (A.SUBMISSION_FAILED, A.DOCUMENTS_PENDING): frozenset({"user"}),
     (A.MANUAL_APPLY_READY, A.SUBMITTED_BY_USER): frozenset({"user"}),
     (A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW): frozenset({"presubmit"}),
     (A.SUBMISSION_IN_PROGRESS, A.NEEDS_USER_INPUT): frozenset({"presubmit"}),
+    **{(s, A.DELETED): frozenset({"user"}) for s in TERMINAL_APPLICATION - {A.DELETED}},
 }
 # Edges that are illegal once the submit control may have been clicked.
 _NO_CLICK_EDGES = frozenset({(A.SUBMISSION_IN_PROGRESS, A.READY_FOR_REVIEW),

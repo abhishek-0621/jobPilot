@@ -2,6 +2,7 @@
 {% block title %}Jobs{% endblock %}
 {% block content %}
 <h1>Jobs</h1>
+{% if flash %}<p class="card" role="status">{{ flash }}</p>{% endif %}
 <p><button type="button" hx-post="/ui/runs/discovery" hx-target="#discover-result" hx-swap="innerHTML">Discover</button> <a href="/ui/jobs/new">Add a job</a></p>
 <div id="discover-result"></div>
 <form method="get" action="/ui/jobs">
