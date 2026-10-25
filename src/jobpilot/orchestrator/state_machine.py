@@ -68,7 +68,7 @@ _OUTREACH: dict[StrEnum, set[StrEnum]] = {
     O.CONTACT_RESEARCH: {O.DRAFT_READY},
     O.DRAFT_READY: {O.NEEDS_REVIEW},
     O.NEEDS_REVIEW: {O.APPROVED, O.DRAFT_READY},
-    O.APPROVED: {O.SEND_IN_PROGRESS},
+    O.APPROVED: {O.SEND_IN_PROGRESS, O.NEEDS_REVIEW},  # edit/contact change: review again
     O.SEND_IN_PROGRESS: {O.SENT, O.DELIVERY_UNKNOWN, O.FAILED},
 }
 # SKIPPED is reachable from every non-terminal state except those where a send

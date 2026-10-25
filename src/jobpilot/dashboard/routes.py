@@ -585,11 +585,12 @@ async def save_manual_answers_ui(request: Request, application_id: str,
 
 
 @router.post("/ui/applications/{application_id}/mark-applied")
-def mark_applied_ui(application_id: str, s: Db, reference: Annotated[str, Form()] = "",
+def mark_applied_ui(request: Request, application_id: str, s: Db,
+                    reference: Annotated[str, Form()] = "",
                     applied_on: Annotated[str, Form()] = "") -> RedirectResponse:
     try:
         day = date.fromisoformat(applied_on.strip()) if applied_on.strip() else None
-        mark_applied(s, application_id, reference, day)
+        mark_applied(s, application_id, reference, day, cfg=request.app.state.cfg)
     except ValueError as e:
         s.rollback()
         raise HTTPException(422, str(e)) from e
@@ -803,12 +804,12 @@ def uncertain_page(request: Request, s: Db) -> HTMLResponse:
 
 
 @router.post("/ui/applications/{application_id}/resolve")
-def resolve_ui(application_id: str, s: Db,
+def resolve_ui(request: Request, application_id: str, s: Db,
                submitted: Annotated[str, Form()]) -> RedirectResponse:
     if submitted not in ("yes", "no"):
         raise HTTPException(422, "submitted must be yes or no")
     try:
-        resolve_uncertain(s, application_id, submitted == "yes")
+        resolve_uncertain(s, application_id, submitted == "yes", cfg=request.app.state.cfg)
     except LookupError as e:
         s.rollback()
         raise HTTPException(404, str(e)) from e

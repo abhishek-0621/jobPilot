@@ -32,8 +32,14 @@ from jobpilot.observability.events import (
 )
 from jobpilot.orchestrator.approval import ApprovalService, forget_live_intent
 from jobpilot.orchestrator.documents_flow import DocumentsConflict, reset_documents
-from jobpilot.orchestrator.engine import Orchestrator, TaskKind, TaskStatus
+from jobpilot.orchestrator.engine import (
+    Orchestrator,
+    TaskKind,
+    TaskStatus,
+    queue_outreach_research,
+)
 from jobpilot.orchestrator.state_machine import transition
+from jobpilot.outreach.state import research_blocker
 from jobpilot.util.hashing import content_hash
 
 DISCOVERY_RUNNING = "A discovery run is already queued or running."
@@ -251,10 +257,13 @@ def _app(s: Session, application_id: str) -> ApplicationRow:
     return app
 
 
-def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
+def resolve_uncertain(s: Session, application_id: str, submitted: bool,
+                      cfg: AppConfig | None = None) -> None:
     """User action on a SUBMISSION_UNCERTAIN application: it was / was not submitted. A
     SUBMISSION_FAILED application with an unresolved click may also be marked "not
-    submitted" (no status change). Commits. Raises LookupError / ActionConflict."""
+    submitted" (no status change). With ``cfg``, a real confirmed submission queues
+    outreach research (``outreach.auto_draft``). Commits. Raises LookupError /
+    ActionConflict."""
     app = _app(s, application_id)
     if (app.status == ApplicationStatus.SUBMISSION_FAILED.value and not submitted
             and prior_unresolved_click(s, application_id)):
@@ -271,6 +280,8 @@ def resolve_uncertain(s: Session, application_id: str, submitted: bool) -> None:
     if submitted:
         transition(s, app, ApplicationStatus.CONFIRMED, actor="user",
                    reason="user_confirmed")
+        if cfg is not None:
+            queue_outreach_research(s, app, cfg)
     else:
         transition(s, app, ApplicationStatus.SUBMISSION_FAILED, actor="user",
                    reason="user_not_submitted")
@@ -389,13 +400,14 @@ def _manual_ready(s: Session, application_id: str, what: str) -> ApplicationRow:
 
 
 def mark_applied(s: Session, application_id: str, reference: str | None,
-                 applied_on: date | None) -> None:
+                 applied_on: date | None, *, cfg: AppConfig | None = None) -> None:
     """The user states they applied themselves: MANUAL_APPLY_READY -> SUBMITTED_BY_USER
     (actor "user", no evidence). The optional reference is stored; the event keeps ids,
     whether a reference was given and the date only. Commits.
 
     Raises LookupError / ActionConflict (wrong status or already marked) / ValueError
-    (reference over 100 chars, date in the future)."""
+    (reference over 100 chars, date in the future). With ``cfg``, outreach research is
+    queued in the same transaction when ``outreach.auto_draft`` is on."""
     ref = (reference or "").strip()
     if len(ref) > MAX_REFERENCE_CHARS:
         raise ValueError(f"Reference must be at most {MAX_REFERENCE_CHARS} characters")
@@ -411,7 +423,31 @@ def mark_applied(s: Session, application_id: str, reference: str | None,
                  details={"application_id": application_id, "job_id": app.job_id,
                           "has_reference": bool(ref),
                           "applied_on": applied_on.isoformat() if applied_on else None})
+    if cfg is not None:
+        queue_outreach_research(s, app, cfg)
     s.commit()
+
+
+_BLOCKER_MESSAGES = {
+    "not_applied": "Outreach can only be drafted after you have applied.",
+    "no_company": "This job has no company name.",
+    "duplicate_company": "An outreach draft already exists for this company in this "
+                         "campaign.",
+    "research_pending": "Outreach research is already queued for this application.",
+}
+
+
+def request_outreach(s: Session, orch: Orchestrator, application_id: str,
+                     cfg: AppConfig) -> str:
+    """User action ("Draft outreach"): queue OUTREACH_RESEARCH for an applied application.
+    Commits. Raises LookupError / ActionConflict (not applied, duplicate, queued)."""
+    app = _app(s, application_id)
+    blocker = research_blocker(s, app, cfg)
+    if blocker is not None:
+        raise ActionConflict(_BLOCKER_MESSAGES[blocker])
+    task_id = orch.enqueue_in(s, TaskKind.OUTREACH_RESEARCH, "application", application_id)
+    s.commit()
+    return task_id
 
 
 def not_applying(s: Session, application_id: str) -> None:

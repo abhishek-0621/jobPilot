@@ -9,12 +9,13 @@ import shutil
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from sqlalchemy import Engine, inspect, select, text
+from sqlalchemy import Engine, delete, inspect, select, text
 from sqlalchemy.orm import Session
 
 from jobpilot.config import AppConfig
 from jobpilot.data.db import make_engine, make_session_factory, utcnow
-from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow
+from jobpilot.data.mutations import detach_contacts
+from jobpilot.data.tables import ApplicationRow, ContactCandidateRow, DocumentArtifactRow
 from jobpilot.observability.events import last_event, record_event
 from jobpilot.ops.backup import pre_restore_dirs, restore_marker
 from jobpilot.ops.lock import ops_lock
@@ -90,7 +91,8 @@ def _prune_pre_restore(cfg: AppConfig, cutoff: datetime) -> int:
 
 
 def _prune_contacts(engine: Engine, s: Session, cutoff: datetime) -> int:
-    """No-op until contact_candidate carries ``created_at`` and ``application_id``."""
+    """Remove old contacts researched for finished applications; drafts that pointed at
+    them are unbound first (their approval is revoked). Drafts and events stay."""
     insp = inspect(engine)
     if not insp.has_table("contact_candidate"):
         return 0
@@ -98,14 +100,16 @@ def _prune_contacts(engine: Engine, s: Session, cutoff: datetime) -> int:
     if not {"created_at", "application_id"} <= cols:
         return 0
     terminal = [t.value for t in TERMINAL_APPLICATION]
-    marks = ", ".join(f":t{i}" for i in range(len(terminal)))
-    res = s.execute(text(
-        "DELETE FROM contact_candidate WHERE created_at < :cutoff AND application_id IN "
-        f"(SELECT application_id FROM application WHERE status IN ({marks}))"),
-        {"cutoff": cutoff.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f"),
-         **{f"t{i}": v for i, v in enumerate(terminal)}})
+    ids = list(s.execute(select(ContactCandidateRow.contact_id).where(
+        ContactCandidateRow.created_at < cutoff,
+        ContactCandidateRow.application_id.in_(select(ApplicationRow.application_id).where(
+            ApplicationRow.status.in_(terminal))))).scalars())
+    if not ids:
+        return 0
+    detach_contacts(s, ids, reason="retention")
+    s.execute(delete(ContactCandidateRow).where(ContactCandidateRow.contact_id.in_(ids)))
     s.commit()
-    return int(res.rowcount or 0)  # type: ignore[attr-defined]
+    return len(ids)
 
 
 def run_maintenance(cfg: AppConfig, *, now: Callable[[], datetime] = utcnow) -> dict[str, int]:

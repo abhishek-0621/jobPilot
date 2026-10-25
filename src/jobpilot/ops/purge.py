@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus
-from jobpilot.data.mutations import clear_application_content, clear_artifact_refs
+from jobpilot.data.mutations import (
+    clear_application_content,
+    clear_artifact_refs,
+    delete_outreach_for_application,
+)
 from jobpilot.data.tables import ApplicationRow, DocumentArtifactRow, FormFieldAnswerRow
 from jobpilot.observability.events import record_event
 from jobpilot.ops.backup import pre_restore_dirs, restore_marker, server_running
@@ -70,7 +74,8 @@ def remove_artifacts(cfg: AppConfig, s: Session, application_id: str) -> tuple[i
 
 def delete_application(cfg: AppConfig, s: Session, application_id: str, *,
                        confirm: str) -> dict[str, int]:
-    """Delete answers, documents and user content of one finished application, then
+    """Delete answers, documents, outreach drafts/contacts and user content of one
+    finished application, then
     mark it DELETED. ``confirm`` must equal the application id. Commits."""
     if confirm != application_id:
         raise ConfirmationMismatch("type the application id exactly to confirm deletion")
@@ -92,6 +97,7 @@ def delete_application(cfg: AppConfig, s: Session, application_id: str, *,
         s.execute(delete(FormFieldAnswerRow).where(
             FormFieldAnswerRow.application_id == application_id))
         ApprovalService(s).invalidate_application(application_id, "data_deleted")
+        contacts_n, drafts_n = delete_outreach_for_application(s, application_id)
         clear_application_content(s, application_id)
         transition(s, app, ApplicationStatus.DELETED, actor="user", reason="data_deleted")
         artifacts = s.execute(select(func.count()).select_from(DocumentArtifactRow).where(
@@ -100,7 +106,8 @@ def delete_application(cfg: AppConfig, s: Session, application_id: str, *,
         record_event(s, entity_type="application", entity_id=application_id, actor="user",
                      action=DATA_DELETED, outcome="ok",
                      details={"app_id": application_id, "answers_n": answers,
-                              "artifacts_n": artifacts})
+                              "artifacts_n": artifacts, "contacts_n": contacts_n,
+                              "drafts_n": drafts_n})
         remove_artifacts(cfg, s, application_id)  # commits
     return {"answers_n": answers, "artifacts_n": artifacts}
 

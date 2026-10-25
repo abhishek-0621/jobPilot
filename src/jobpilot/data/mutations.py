@@ -10,13 +10,22 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobpilot.contracts.enums import FieldDecision
+from jobpilot.contracts.enums import FieldDecision, OutreachStatus
 from jobpilot.contracts.models import FieldAnswer, is_http_url
+from jobpilot.data.db import utcnow
 from jobpilot.data.repositories import get_application
-from jobpilot.data.tables import AnswerLibraryRow, DocumentArtifactRow, FormFieldAnswerRow, JobRow
+from jobpilot.data.tables import (
+    AnswerLibraryRow,
+    ContactCandidateRow,
+    DocumentArtifactRow,
+    FormFieldAnswerRow,
+    JobRow,
+    OutreachDraftRow,
+)
 from jobpilot.ids import new_id
 from jobpilot.observability.events import record_event
 from jobpilot.orchestrator.approval import ApprovalService
+from jobpilot.outreach.contacts import FoundContact
 from jobpilot.profile.importer import _DEFAULT_DECISION, _decision_defaults, active_profile
 from jobpilot.util.hashing import canonical_json
 
@@ -167,3 +176,71 @@ def clear_artifact_refs(s: Session, application_id: str) -> None:
     app.resume_artifact_id = None
     app.cover_letter_artifact_id = None
     s.flush()
+
+
+# ---- outreach --------------------------------------------------------------------
+def _contact_row(company: str, application_id: str | None, c: FoundContact,
+                 verified: bool = False) -> ContactCandidateRow:
+    return ContactCandidateRow(
+        contact_id=new_id("con"), company=company, name=c.name[:200],
+        professional_title=(c.professional_title or None) and c.professional_title[:200],
+        public_source_url=c.public_source_url, channel=c.channel, confidence=c.confidence,
+        address=c.address, kind=c.kind, application_id=application_id,
+        verified_at=utcnow() if verified else None, created_at=utcnow())
+
+
+def create_outreach_draft(s: Session, *, application_id: str, company: str, company_key: str,
+                          campaign_id: str, contacts: list[FoundContact], message_text: str,
+                          actor: str) -> OutreachDraftRow:
+    """Store the researched contacts (best first) and one NOT_ELIGIBLE draft bound to the
+    best one. The (company_key, campaign_id) constraint allows one draft per company."""
+    rows = [_contact_row(company, application_id, c) for c in contacts]
+    s.add_all(rows)
+    s.flush()
+    draft = OutreachDraftRow(
+        outreach_id=new_id("out"), application_id=application_id, company_key=company_key,
+        campaign_id=campaign_id, contact_id=rows[0].contact_id if rows else None,
+        channel=rows[0].channel if rows else None, message_text=message_text,
+        status=OutreachStatus.NOT_ELIGIBLE.value, created_at=utcnow())
+    s.add(draft)
+    s.flush()
+    record_event(s, entity_type="outreach", entity_id=draft.outreach_id, actor=actor,
+                 action="outreach_draft_created", outcome="ok",
+                 details={"application_id": application_id, "contacts_n": len(rows)})
+    return draft
+
+
+def detach_contacts(s: Session, contact_ids: list[str], *, reason: str) -> int:
+    """Unbind contacts (about to be removed) from any draft; approvals are revoked."""
+    if not contact_ids:
+        return 0
+    drafts = list(s.execute(select(OutreachDraftRow).where(
+        OutreachDraftRow.contact_id.in_(contact_ids))).scalars())
+    for d in drafts:
+        ApprovalService(s).invalidate_outreach(d.outreach_id, reason)
+        d.contact_id = None
+        d.channel = None
+        record_event(s, entity_type="outreach", entity_id=d.outreach_id, actor="system",
+                     action="outreach_contact_detached", outcome="ok",
+                     details={"reason": reason})
+    s.flush()
+    return len(drafts)
+
+
+def delete_outreach_for_application(s: Session, application_id: str) -> tuple[int, int]:
+    """Data deletion: remove the application's drafts and contacts (events stay).
+    Returns (contacts removed, drafts removed)."""
+    drafts = list(s.execute(select(OutreachDraftRow).where(
+        OutreachDraftRow.application_id == application_id)).scalars())
+    svc = ApprovalService(s)
+    for d in drafts:
+        svc.invalidate_outreach(d.outreach_id, "data_deleted")
+        s.delete(d)
+    s.flush()
+    contacts = list(s.execute(select(ContactCandidateRow).where(
+        ContactCandidateRow.application_id == application_id)).scalars())
+    detach_contacts(s, [c.contact_id for c in contacts], reason="data_deleted")
+    for c in contacts:
+        s.delete(c)
+    s.flush()
+    return len(contacts), len(drafts)

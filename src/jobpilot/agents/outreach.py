@@ -6,6 +6,7 @@ opening (role, company and the recorded application date only), greeting and sig
 validates, retries once and otherwise falls back to a deterministic template.
 """
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
@@ -13,14 +14,34 @@ from importlib import resources
 from typing import Any
 
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.agents.cover_letter import _LETTER_WORDS, _mask
+from jobpilot.config import AppConfig
+from jobpilot.contracts.enums import OutreachStatus
 from jobpilot.contracts.models import AgentOutput
+from jobpilot.data import mutations
+from jobpilot.data.repositories import get_application
+from jobpilot.data.tables import (
+    ApplicationRow,
+    CandidateFactRow,
+    DocumentArtifactRow,
+    JobRow,
+    TaskRow,
+)
 from jobpilot.discovery.normalize import html_to_text
 from jobpilot.documents.model import split_skills
 from jobpilot.documents.validate import _PLACEHOLDER_RE, validate_rewrite
 from jobpilot.llm.prompts import build_messages
-from jobpilot.orchestrator.engine import AgentContext, OutputRejected, TaskInput
+from jobpilot.observability.events import record_event
+from jobpilot.orchestrator.engine import (
+    AgentContext,
+    FollowUp,
+    Handler,
+    OutputRejected,
+    TaskInput,
+)
+from jobpilot.orchestrator.state_machine import transition
 from jobpilot.outreach.contacts import (
     MAX_POSTING_CHARS,
     FoundContact,
@@ -28,6 +49,13 @@ from jobpilot.outreach.contacts import (
     extract_from_posting,
     rank,
 )
+from jobpilot.outreach.state import (
+    applied_for_real,
+    company_key,
+    existing_draft,
+    recorded_applied_on,
+)
+from jobpilot.profile.preferences import CAREERS_URL_KEY, CompanyBoard, load_companies
 from jobpilot.util.hashing import canonical_json
 from jobpilot.util.textmatch import has_phrase
 
@@ -37,6 +65,9 @@ MAX_WORDS = 120
 GREETING = "Hello,"
 CLOSING = "Best regards,"
 POLITE_CLOSE = "Thank you for your time, and I would be glad to share more if it helps."
+_ACTOR = "orchestrator"
+NO_PUBLIC_CONTACT = "no_public_contact"
+DUPLICATE_EVENT = "outreach_duplicate_company"
 _CONTACT_RE = re.compile(r"@|https?://|www\.|\+?\d[\d\s().-]{7,}\d")
 
 
@@ -215,3 +246,107 @@ class OutreachAgent:
                 instructions = (base + "\nYour previous attempt was rejected for: "
                                 + ", ".join(codes) + ". Fix every one of these.")
         return "", [], True
+
+
+def careers_url_for(boards: list[CompanyBoard], company: str) -> str | None:
+    key = company_key(company)
+    for b in boards:
+        if company_key(b.name) == key and b.extra.get(CAREERS_URL_KEY):
+            return b.extra[CAREERS_URL_KEY]
+    return None
+
+
+def make_outreach_loader(
+    session_factory: sessionmaker[Session], cfg: AppConfig,
+    boards: Callable[[], list[CompanyBoard]] | None = None,
+) -> Callable[[str], dict[str, Any] | None]:
+    """What research needs about one application: job text and URLs, whether it was
+    really applied (and the recorded date), the careers URL and the dedupe state."""
+    def companies() -> list[CompanyBoard]:
+        if boards is not None:
+            return boards()
+        try:
+            return load_companies(cfg)
+        except Exception:  # a broken companies file only loses the careers lookup
+            return []
+
+    def outreach_context(application_id: str) -> dict[str, Any] | None:
+        with session_factory() as s:
+            app = s.get(ApplicationRow, application_id)
+            job = None if app is None else s.get(JobRow, app.job_id)
+            if app is None or job is None:
+                return None
+            key = company_key(job.company)
+            resume_ids: list[str] = []
+            if app.resume_artifact_id is not None:
+                art = s.get(DocumentArtifactRow, app.resume_artifact_id)
+                try:
+                    resume_ids = list(json.loads(art.source_fact_ids_json)) if art else []
+                except ValueError:
+                    resume_ids = []
+            return {
+                "application_id": application_id, "status": app.status,
+                "applied": applied_for_real(s, app),
+                "applied_on": recorded_applied_on(s, app),
+                "company": job.company, "title": job.title,
+                "canonical_url": job.canonical_url, "application_url": job.application_url,
+                "description_text": job.description_text,
+                "careers_url": careers_url_for(companies(), job.company),
+                "company_key": key, "campaign_id": cfg.outreach.campaign,
+                "duplicate": existing_draft(s, key, cfg.outreach.campaign) is not None,
+                "resume_fact_ids": [str(i) for i in resume_ids],
+            }
+    return outreach_context
+
+
+def make_outreach_handler(cfg: AppConfig) -> Handler:
+    """Persists contacts and the one draft per company/campaign, then moves it to review
+    (or SKIPPED when no public contact was found). Nothing is ever sent."""
+    def outreach_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
+        if not isinstance(out, OutreachResearch) or out.application_id != task.entity_id:
+            raise OutputRejected("outreach output does not match task application")
+        app = get_application(s, out.application_id)
+        job = s.get(JobRow, app.job_id)
+        if job is None or not applied_for_real(s, app):
+            raise OutputRejected("not_applied")
+        key, campaign = company_key(job.company), cfg.outreach.campaign
+        if out.company_key != key or out.campaign_id != campaign:
+            raise OutputRejected("outreach_company_or_campaign_mismatch")
+        prior = existing_draft(s, key, campaign)
+        if out.duplicate or prior is not None:
+            record_event(s, entity_type="application", entity_id=app.application_id,
+                         actor=_ACTOR, action=DUPLICATE_EVENT, outcome="skipped",
+                         details={"application_id": app.application_id,
+                                  "outreach_id": prior.outreach_id if prior else None})
+            return []
+        if not out.message_text.strip():
+            raise OutputRejected("empty_message")
+        if out.evidence_fact_ids:
+            verified = {f.fact_id for f in s.query(CandidateFactRow).filter(
+                CandidateFactRow.profile_version == out.profile_version,
+                CandidateFactRow.verified_by_user.is_(True))}
+            if any(i not in verified for i in out.evidence_fact_ids):
+                raise OutputRejected("unverified_fact")
+        draft = mutations.create_outreach_draft(
+            s, application_id=app.application_id, company=job.company, company_key=key,
+            campaign_id=campaign, contacts=out.contacts, message_text=out.message_text,
+            actor=_ACTOR)
+        transition(s, draft, OutreachStatus.CONTACT_RESEARCH, actor=_ACTOR,
+                   reason="research_started")
+        if not out.contacts:
+            draft.skip_reason = NO_PUBLIC_CONTACT
+            transition(s, draft, OutreachStatus.SKIPPED, actor=_ACTOR,
+                       reason=NO_PUBLIC_CONTACT)
+        else:
+            transition(s, draft, OutreachStatus.DRAFT_READY, actor=_ACTOR,
+                       reason="draft_ready")
+            transition(s, draft, OutreachStatus.NEEDS_REVIEW, actor=_ACTOR,
+                       reason="needs_review")
+        record_event(s, entity_type="outreach", entity_id=draft.outreach_id, actor=_ACTOR,
+                     action="outreach_drafted", outcome="ok",
+                     details={"application_id": app.application_id,
+                              "contacts_n": len(out.contacts),
+                              "used_fallback": out.used_fallback,
+                              "evidence_fact_ids": out.evidence_fact_ids})
+        return []
+    return outreach_handler

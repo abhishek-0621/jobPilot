@@ -22,6 +22,7 @@ from jobpilot.agents.form_prep import (
 )
 from jobpilot.agents.manual_package import ManualPackageAgent, manual_package_handler
 from jobpilot.agents.match import MatchAgent, make_match_handler
+from jobpilot.agents.outreach import OutreachAgent, make_outreach_handler, make_outreach_loader
 from jobpilot.agents.tailor import TailorAgent, make_tailor_handler
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import FieldDecision
@@ -38,7 +39,7 @@ from jobpilot.data.tables import (
 )
 from jobpilot.discovery.finder import DiscoverAgent, discover_handler
 from jobpilot.discovery.sources.ashby import AshbySource
-from jobpilot.discovery.sources.base import SourceAdapter
+from jobpilot.discovery.sources.base import RateLimitedFetcher, SourceAdapter
 from jobpilot.discovery.sources.greenhouse import GreenhouseSource
 from jobpilot.discovery.sources.lever import LeverSource
 from jobpilot.discovery.sources.smartrecruiters import SmartRecruitersSource
@@ -54,6 +55,7 @@ from jobpilot.forms.model import BoundArtifacts, MappingContext, load_aliases
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import active_profile_version
 from jobpilot.orchestrator.engine import Agent, Handler, OutputRejected, Provided, TaskKind
+from jobpilot.outreach.contacts import FoundContact, fetch_careers_inbox
 from jobpilot.portals.base import PortalAdapter
 from jobpilot.portals.live_submit import LiveSubmitter, SubmitContext, make_before_click
 from jobpilot.portals.simulated import SimulatedAdapter
@@ -353,6 +355,17 @@ def build_sources(client: httpx.AsyncClient) -> dict[str, SourceAdapter]:
     }
 
 
+def make_careers_inbox(
+    client: httpx.AsyncClient,
+) -> Callable[[str | None, str | None], Any]:
+    """One rate-limited GET of a configured careers page (same User-Agent as sources)."""
+    fetcher = RateLimitedFetcher(client)
+
+    async def careers_inbox(url: str | None, domain: str | None) -> list[FoundContact]:
+        return await fetch_careers_inbox(url, fetcher, domain)
+    return careers_inbox
+
+
 def build_runtime(
     cfg: AppConfig,
     session_factory: sessionmaker[Session],
@@ -379,6 +392,8 @@ def build_runtime(
         "artifact_dir": make_artifact_dir(cfg),
         "tech_terms": lambda: load_tech_terms(TECH_TERMS_PATH),
         "cover_letter_banned": lambda: load_banned(BANNED_PATH),
+        "outreach_context": make_outreach_loader(session_factory, cfg),
+        "careers_inbox": make_careers_inbox(http),
     }
     agents: dict[TaskKind, Agent[Any, Any]] = {
         TaskKind.DISCOVER: DiscoverAgent(),
@@ -389,6 +404,7 @@ def build_runtime(
         TaskKind.PREPARE_FORM: PrepareFormAgent(),
         TaskKind.MANUAL_PACKAGE: ManualPackageAgent(),
         TaskKind.VALIDATE: ValidateAgent(),
+        TaskKind.OUTREACH_RESEARCH: OutreachAgent(),
     }
     handlers: dict[TaskKind, Handler] = {
         TaskKind.DISCOVER: discover_handler,
@@ -399,6 +415,7 @@ def build_runtime(
         TaskKind.PREPARE_FORM: prepare_form_handler,
         TaskKind.MANUAL_PACKAGE: manual_package_handler,
         TaskKind.VALIDATE: make_validate_handler(cfg.storage_path),
+        TaskKind.OUTREACH_RESEARCH: make_outreach_handler(cfg),
     }
     return Runtime(agents=agents, handlers=handlers,
                    adapters={"simulated": SimulatedAdapter()}, tools=tools,
