@@ -10,10 +10,12 @@ import yaml
 from pydantic import BaseModel, StringConstraints, field_validator, model_validator
 
 from jobpilot.config import AppConfig
+from jobpilot.contracts.models import is_http_url
 
 CONFIG_DIR = Path("config")
 _SAFE = r"^[A-Za-z0-9_-]{1,64}$"
 _SAFE_RE = re.compile(_SAFE)
+CAREERS_URL_KEY = "careers_url"  # optional public careers page (outreach inbox lookup)
 
 
 class SearchPreferences(BaseModel):
@@ -37,6 +39,10 @@ class CompanyBoard(BaseModel):
     @classmethod
     def _extra_safe(cls, v: dict[str, str]) -> dict[str, str]:
         for k, val in v.items():
+            if k == CAREERS_URL_KEY:
+                if not is_http_url(val) or any(c.isspace() for c in val) or len(val) > 500:
+                    raise ValueError("extra.careers_url must be an http(s) URL")
+                continue
             if not _SAFE_RE.fullmatch(k) or not _SAFE_RE.fullmatch(val):
                 raise ValueError("extra keys and values must match [A-Za-z0-9_-]{1,64}")
         return v

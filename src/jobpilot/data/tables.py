@@ -181,6 +181,14 @@ class ContactCandidateRow(Base):
     channel: Mapped[str | None] = mapped_column(String, nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
     verified_at: Mapped[datetime | None] = _ts(nullable=True)
+    # Plan 8: the published address (email) or profile URL, where it came from, the
+    # application it was researched for (retention/deletion) and when it was stored.
+    address: Mapped[str | None] = mapped_column(String, nullable=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    application_id: Mapped[str | None] = mapped_column(
+        ForeignKey("application.application_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(default=utcnow)
 
 
 class OutreachDraftRow(Base):
@@ -202,6 +210,9 @@ class OutreachDraftRow(Base):
     status: Mapped[str] = mapped_column(String)
     sent_at: Mapped[datetime | None] = _ts(nullable=True)
     evidence_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = _ts(default=utcnow)
+    skip_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    sent_note: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class AgentRunRow(Base):
