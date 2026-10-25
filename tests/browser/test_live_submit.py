@@ -442,3 +442,66 @@ async def test_crash_after_click_is_uncertain(
     assert app.status == "SUBMISSION_UNCERTAIN" and task.status == "FAILED"
     assert _clicks(events) == 1
     assert any(e.action == "submit_error" for e in events)
+
+
+def _prepare_again_and_reapprove(factory: sessionmaker[Session], app_id: str,
+                                 cfg: AppConfig) -> None:
+    """User "Prepare again", then stand in for PREPARE_FORM and re-approve."""
+    from jobpilot.api.actions import prepare_again
+
+    orch = Orchestrator(factory, cfg, {}, {"simulated": SimulatedAdapter()})
+    with factory() as s:
+        snap = s.get(ApplicationRow, app_id).form_snapshot_hash  # type: ignore[union-attr]
+        prepare_again(s, orch, app_id)
+    with factory() as s:
+        for t in s.execute(select(TaskRow).where(TaskRow.kind == "PREPARE_FORM")).scalars():
+            s.delete(t)  # the form was already read in this test; nothing to prepare
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.status == "FORM_IN_PROGRESS"
+        app.status, app.form_snapshot_hash = "READY_FOR_REVIEW", snap
+        svc = ApprovalService(s)
+        batch = svc.build_batch([app_id])
+        svc.approve(batch.batch_id, batch.version, batch.content_hash or "", [app_id])
+        s.commit()
+
+
+@pytest.mark.parametrize("user_resolved", [True, False])
+async def test_prepare_again_submits_once_more_only_after_user_resolution(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str], user_resolved: bool) -> None:
+    from jobpilot.api.actions import resolve_uncertain
+    from jobpilot.contracts.enums import ApplicationStatus
+    from jobpilot.orchestrator.state_machine import transition
+
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg,
+                                 f"{form_server}/greenhouse_submit_noconfirm.html")
+    await run_submit(factory, cfg, app_id, _quick(cfg, factory))
+    assert form_posts == ["/submit_noconfirm"]
+    with factory() as s:
+        if user_resolved:
+            resolve_uncertain(s, app_id, submitted=False)
+        else:  # failed without the user saying "not submitted"
+            app = s.get(ApplicationRow, app_id)
+            assert app is not None and app.status == "SUBMISSION_UNCERTAIN"
+            transition(s, app, ApplicationStatus.SUBMISSION_FAILED, actor="verification",
+                       reason="t")
+            s.commit()
+    _prepare_again_and_reapprove(factory, app_id, cfg)
+    await run_submit(factory, cfg, app_id, _quick(cfg, factory))
+    with factory() as s:
+        app = s.get(ApplicationRow, app_id)
+        assert app is not None and app.status == "SUBMISSION_UNCERTAIN"
+        clicks = s.execute(select(AuditEventRow).where(
+            AuditEventRow.action == "submit_clicked")).scalars().all()
+        denied = [json.loads(e.redacted_details_json) for e in s.execute(
+            select(AuditEventRow).where(AuditEventRow.action == "gate_denied")).scalars()]
+    if user_resolved:
+        assert form_posts == ["/submit_noconfirm", "/submit_noconfirm"]
+        assert len(clicks) == 2 and denied == []
+        keys = {json.loads(c.redacted_details_json)["idempotency_key"] for c in clicks}
+        assert len(keys) == 2  # a new attempt gets a new idempotency key
+    else:
+        assert form_posts == ["/submit_noconfirm"]
+        assert len(clicks) == 1
+        assert [d["reasons"] for d in denied] == [["prior_click"]]

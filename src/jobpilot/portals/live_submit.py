@@ -18,12 +18,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, ErrorCode, PortalCapability
 from jobpilot.contracts.models import FieldAnswer, SubmitResult
-from jobpilot.data.tables import AuditEventRow
+from jobpilot.data.tables import ApplicationRow, AuditEventRow
 from jobpilot.forms.browser import portal_page
 from jobpilot.forms.verify import verify_against_stored, with_bound_files
 from jobpilot.observability.events import (
     SUBMIT_CLICKED,
     click_needle,
+    prior_unresolved_click,
     record_event,
     submit_click_recorded,
 )
@@ -172,14 +173,19 @@ class LiveSubmitter:
         return self._evidence
 
     async def find_existing_submission(self, idempotency_key: str) -> SubmitResult | None:
-        """A recorded click for this key means the outcome is unknown: never click again."""
+        """A recorded click for this key, or any click for the application the user has
+        not resolved as "not submitted", means the outcome is unknown: never click again."""
         with self._sf() as s:
-            if not submit_click_recorded(s, idempotency_key):
+            app_id = s.execute(select(ApplicationRow.application_id).where(
+                ApplicationRow.idempotency_key == idempotency_key).limit(1)).scalar()
+            if not submit_click_recorded(s, idempotency_key) and not (
+                    app_id is not None and prior_unresolved_click(s, app_id)):
                 return None
-            app_id = s.execute(select(AuditEventRow.entity_id).where(
-                AuditEventRow.action == SUBMIT_CLICKED,
-                AuditEventRow.redacted_details_json.contains(click_needle(idempotency_key)))
-                .limit(1)).scalar_one()
+            if app_id is None:
+                app_id = s.execute(select(AuditEventRow.entity_id).where(
+                    AuditEventRow.action == SUBMIT_CLICKED,
+                    AuditEventRow.redacted_details_json.contains(
+                        click_needle(idempotency_key))).limit(1)).scalar_one()
         return SubmitResult(task_id=idempotency_key, created_at=datetime.now(UTC),
                             application_id=app_id, status=_A.SUBMISSION_UNCERTAIN,
                             error_code=ErrorCode.SUBMIT_NO_CONFIRMATION.value,

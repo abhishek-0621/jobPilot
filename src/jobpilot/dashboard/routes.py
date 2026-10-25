@@ -11,20 +11,25 @@ import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from jobpilot.agents.form_prep import answer_rows, unresolved_required
 from jobpilot.api.actions import (
     ANSWERABLE_STATUSES,
     ActionConflict,
-    approve_and_queue,
+    ConfirmationRequired,
+    approve_batch,
+    prepare_again,
     regenerate_documents,
+    request_submit,
     reread_form,
+    resolve_uncertain,
     save_user_answers,
     select_job,
     start_discovery,
     start_tailor,
+    submit_candidates,
     user_editable,
 )
 from jobpilot.config import AppConfig
@@ -45,6 +50,7 @@ from jobpilot.data.tables import (
     AnswerLibraryRow,
     ApplicationRow,
     ApprovalBatchRow,
+    AuditEventRow,
     BatchItemRow,
     CandidateFactRow,
     CandidateProfileRow,
@@ -56,6 +62,7 @@ from jobpilot.data.tables import (
 )
 from jobpilot.forms.classify import classify_sensitive
 from jobpilot.forms.mapping import MODEL_SUGGESTED_RATIONALE
+from jobpilot.observability.events import SUBMIT_CLICKED
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.profile.importer import PROFILE_ID, active_profile, verify_fact
@@ -112,7 +119,39 @@ def _page(request: Request, s: Session, name: str, ctx: dict[str, Any]) -> HTMLR
     cfg: AppConfig = request.app.state.cfg
     return templates.TemplateResponse(
         request, name, {**ctx, "profile_banner": _profile_banner(s),
-                        "live_portals": cfg.effective_live_portals})
+                        "live_portals": cfg.effective_live_portals,
+                        "uncertain_count": _uncertain_count(s)})
+
+
+def _uncertain_count(s: Session) -> int:
+    return s.execute(select(func.count()).select_from(ApplicationRow).where(
+        ApplicationRow.status == ApplicationStatus.SUBMISSION_UNCERTAIN.value)).scalar_one()
+
+
+def _last_event(s: Session, application_id: str, action: str) -> AuditEventRow | None:
+    return s.execute(select(AuditEventRow).where(
+        AuditEventRow.entity_type == "application",
+        AuditEventRow.entity_id == application_id, AuditEventRow.action == action)
+        .order_by(AuditEventRow.timestamp_utc.desc())).scalars().first()
+
+
+def _submission(s: Session, app: ApplicationRow) -> dict[str, Any]:
+    """Evidence of the latest submit attempt: screenshot, error codes, time of click."""
+    finished = _last_event(s, app.application_id, "submit_finished")
+    try:
+        details = json.loads(finished.redacted_details_json) if finished else {}
+    except ValueError:
+        details = {}
+    codes = details.get("error_codes") if isinstance(details, dict) else None
+    clicked = _last_event(s, app.application_id, SUBMIT_CLICKED)
+    return {
+        "shot": _latest_artifact(s, app.application_id, "submit_confirmation"),
+        "error_codes": [str(c) for c in codes] if isinstance(codes, list) else [],
+        "error_code": finished.error_code if finished else None,
+        "clicked_at": clicked.timestamp_utc if clicked else None,
+        "finished_at": finished.timestamp_utc if finished else None,
+        "requested_at": app.submit_requested_at,
+    }
 
 
 def _library_fields(aliases_path: Path) -> list[dict[str, str]]:
@@ -315,6 +354,7 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
         "diff": _diff_rows(_artifact_text(request, _latest_artifact(
             s, application_id, "resume_diff"))),
         "facts": facts, "letter": _artifact_text(request, letter_txt), "evidence": evidence,
+        "submission": _submission(s, app),
         "events": list(reversed(list_events(s, application_id)))})
 
 
@@ -469,6 +509,9 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
             .order_by(FormFieldAnswerRow.field_id)).scalars():
         answers.setdefault(a.application_id, []).append(a)
     svc = ApprovalService(s)
+    cfg: AppConfig = request.app.state.cfg
+    live = set(cfg.effective_live_portals)
+    submittable = submit_candidates(s, batch.batch_id)
     rows = []
     for item in items:
         app = apps.get(item.application_id)
@@ -481,6 +524,7 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
             or svc.application_hash(item.application_id) != item.item_hash
         rows.append({
             "item": item, "app": app, "job": job, "changed": changed,
+            "live": app is not None and app.portal in live,
             "shot": shots.get(item.application_id), "summary": sorted(summary.items()),
             "answers": [{"label": a.label, "decision": a.decision, "source": a.source_fact_id,
                          "display": _display(json.loads(a.proposed_value_json))} for a in mine],
@@ -490,7 +534,9 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
                                BatchStatus.PARTIALLY_APPROVED.value)
     return _page(request, s, "batch.html", {
         "batch": batch, "rows": rows, "pending": pending,
-        "any_changed": any(r["changed"] for r in rows)})
+        "any_changed": any(r["changed"] for r in rows),
+        "submittable": [{"app": a, "live": a.portal in live} for a in submittable],
+        "submit_live": any(a.portal in live for a in submittable)})
 
 
 @router.post("/ui/batches/{batch_id}/rebuild")
@@ -518,14 +564,76 @@ def approve(
     ids: Annotated[list[str], Form()],
 ) -> HTMLResponse:
     try:
-        res = approve_and_queue(s, orch, batch_id, version, content_hash, ids)
+        res = approve_batch(s, batch_id, version, content_hash, ids)
     except StaleApprovalError:
         return _message(request, STALE_MESSAGE, 409)
     except ValueError as e:
         return _message(request, f"Could not approve: {e}", 422)
     n = len(res.approved_ids)
-    return _message(request, f"Approved {n} application{'s' if n != 1 else ''}; "
-                             "simulated submission queued.", 200, ok=True)
+    return _message(request, f"Approved {n} application{'s' if n != 1 else ''}. "
+                             "Nothing is submitted until you press Submit — reload to "
+                             "see the Submit button.", 200, ok=True)
+
+
+@router.post("/ui/batches/{batch_id}/submit", response_class=HTMLResponse)
+def submit_ui(
+    request: Request, batch_id: str, s: Db, orch: Orch,
+    confirm: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    try:
+        queued = request_submit(s, orch, batch_id, None, confirm.strip() or None,
+                                request.app.state.cfg)
+    except LookupError as e:
+        return _message(request, str(e), 404)
+    except ActionConflict as e:
+        return _message(request, str(e), 409)
+    except ConfirmationRequired as e:
+        return _message(request, str(e), 422)
+    n = len(queued)
+    return _message(request, f"Submission queued for {n} application"
+                             f"{'s' if n != 1 else ''}.", 200, ok=True)
+
+
+@router.get("/ui/uncertain", response_class=HTMLResponse)
+def uncertain_page(request: Request, s: Db) -> HTMLResponse:
+    def rows(status: ApplicationStatus) -> list[dict[str, Any]]:
+        out = []
+        for app in s.execute(select(ApplicationRow).where(
+                ApplicationRow.status == status.value)
+                .order_by(ApplicationRow.application_id)).scalars():
+            out.append({"app": app, "job": s.get(JobRow, app.job_id),
+                        "submission": _submission(s, app)})
+        return out
+    return _page(request, s, "uncertain.html", {
+        "uncertain": rows(ApplicationStatus.SUBMISSION_UNCERTAIN),
+        "failed": rows(ApplicationStatus.SUBMISSION_FAILED)})
+
+
+@router.post("/ui/applications/{application_id}/resolve")
+def resolve_ui(application_id: str, s: Db,
+               submitted: Annotated[str, Form()]) -> RedirectResponse:
+    if submitted not in ("yes", "no"):
+        raise HTTPException(422, "submitted must be yes or no")
+    try:
+        resolve_uncertain(s, application_id, submitted == "yes")
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse("/ui/uncertain", status_code=303)
+
+
+@router.post("/ui/applications/{application_id}/prepare-again")
+def prepare_again_ui(application_id: str, s: Db, orch: Orch) -> RedirectResponse:
+    try:
+        prepare_again(s, orch, application_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ActionConflict as e:
+        s.rollback()
+        raise HTTPException(409, str(e)) from e
+    return RedirectResponse(f"/ui/applications/{application_id}", status_code=303)
 
 
 def _profile_context(s: Session, aliases_path: Path) -> dict[str, Any]:

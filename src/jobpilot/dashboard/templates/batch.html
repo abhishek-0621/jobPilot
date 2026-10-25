@@ -12,7 +12,7 @@
 <td>{% if r.item.selected and not r.changed %}✓{% elif r.app %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" {% if r.changed or r.app.status != "READY_FOR_REVIEW" %}disabled{% else %}checked{% endif %} aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
 <td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/jobs/{{ r.job.job_id }}">{{ r.job.title }}</a> · <a href="{{ r.job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">portal</a>{% endif %}
 {% if r.changed %}<br><span class="warn">Changed since batch was built — rebuild batch</span>{% endif %}</td>
-<td>{{ r.app.status if r.app else "" }}</td>
+<td>{{ r.app.status if r.app else "" }}{% if r.app %}<br>{% if r.live %}<span class="live">will submit LIVE to {{ r.app.portal }}</span>{% else %}<span class="muted">dry run (simulated)</span>{% endif %}{% endif %}</td>
 <td>{% if r.app and r.app.resume_artifact_id %}<a href="/artifacts/{{ r.app.resume_artifact_id }}" target="_blank" rel="noopener noreferrer">Resume</a>{% else %}<span class="muted">No resume</span>{% endif %}<br>{% if r.app and r.app.cover_letter_artifact_id %}<a href="/artifacts/{{ r.app.cover_letter_artifact_id }}" target="_blank" rel="noopener noreferrer">Cover letter</a>{% else %}<span class="muted">No cover letter</span>{% endif %}</td>
 <td><details><summary>{% for d, n in r.summary %}{{ d }} {{ n }}{% if not loop.last %} · {% endif %}{% else %}No answers{% endfor %}</summary>
 <table><thead><tr><th>Field</th><th>Decision</th><th>Value</th><th>Source</th></tr></thead><tbody>
@@ -26,4 +26,13 @@
 </form>
 {% if pending or any_changed %}<form method="post" action="/ui/batches/{{ batch.batch_id }}/rebuild"><button type="submit">Rebuild batch</button> <span class="muted">Re-freezes the applications that are still ready for review.</span></form>{% endif %}
 <div id="approve-result"></div>
+{% if submittable %}<h2>Submit</h2>
+<p>{{ submittable|length }} approved application{{ "s" if submittable|length != 1 }} not yet submitted:
+{% for s in submittable %}<span class="mono">{{ s.app.application_id }}</span> {% if s.live %}<span class="live">LIVE to {{ s.app.portal }}</span>{% else %}<span class="muted">dry run (simulated)</span>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+<form hx-post="/ui/batches/{{ batch.batch_id }}/submit" hx-target="#submit-result" hx-swap="innerHTML" method="post" action="/ui/batches/{{ batch.batch_id }}/submit">
+{% if submit_live %}<p class="live">This sends real applications to employers. One click per application; it cannot be undone.</p>
+<label>Type SUBMIT to confirm: <input name="confirm" autocomplete="off" required pattern="SUBMIT" aria-label="Type SUBMIT to confirm live submission"></label>{% endif %}
+<button type="submit">Submit approved applications</button>
+</form>
+<div id="submit-result"></div>{% endif %}
 {% endblock %}

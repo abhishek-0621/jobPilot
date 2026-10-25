@@ -33,6 +33,7 @@ from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import (
     AgentRunRow,
     ApplicationRow,
+    AuditEventRow,
     ControlFlagRow,
     FormFieldAnswerRow,
     JobRow,
@@ -42,7 +43,12 @@ from jobpilot.data.tables import (
 from jobpilot.documents import store
 from jobpilot.ids import new_id
 from jobpilot.llm.ollama_client import ModelError, ModelGateway
-from jobpilot.observability.events import record_event, submit_click_recorded
+from jobpilot.observability.events import (
+    USER_RESOLVED_NOT_SUBMITTED,
+    prior_unresolved_click,
+    record_event,
+    submit_click_recorded,
+)
 from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.policies import PolicyConfig, may_send_outreach, may_submit
 from jobpilot.orchestrator.state_machine import transition
@@ -158,6 +164,15 @@ def add_task(
                  action="task_enqueued", outcome="ok",
                  details={"kind": kind, "entity_type": entity_type, "entity_id": entity_id})
     return task_id
+
+
+def _submit_action(s: Session, app: ApplicationRow) -> str:
+    """Idempotency action per attempt: a user-resolved "not submitted" starts a new one."""
+    n = len(s.execute(select(AuditEventRow.event_id).where(
+        AuditEventRow.entity_type == "application",
+        AuditEventRow.entity_id == app.application_id,
+        AuditEventRow.action == USER_RESOLVED_NOT_SUBMITTED)).all())
+    return "submit" if n == 0 else f"submit#{n + 1}"
 
 
 class Orchestrator:
@@ -415,7 +430,9 @@ class Orchestrator:
             return
 
         portal = adapter.name
-        key = idempotency_key(app.application_id, portal, "submit", approved_hash or "")
+        key = idempotency_key(app.application_id, portal, _submit_action(s, app),
+                              approved_hash or "")
+        prior_click = prior_unresolved_click(s, app.application_id)
         app.idempotency_key = key
         transition(s, app, ApplicationStatus.SUBMISSION_IN_PROGRESS, actor=_ACTOR,
                    reason="submit_started")
@@ -424,6 +441,13 @@ class Orchestrator:
                      details={"idempotency_key": key, "task_id": task.task_id,
                               "simulated": simulated})
         s.commit()  # write-ahead: never act before this is durable
+        if prior_click:  # an earlier click was never resolved by the user: no click
+            transition(s, app, ApplicationStatus.SUBMISSION_UNCERTAIN, actor=_ACTOR,
+                       reason="prior_click")
+            self._fail(s, task, "gate_denied", {"reasons": ["prior_click"],
+                                                "idempotency_key": key})
+            s.commit()
+            return
 
         timeout_s = getattr(adapter, "timeout_s", self._adapter_timeout_s)
         try:
@@ -657,8 +681,8 @@ class Orchestrator:
                            reason="stranded_in_progress")
 
     def _requeue_orphaned_approvals(self, s: Session) -> None:
-        """APPROVED apps with a valid approval and no live SUBMIT task get one; those
-        whose approval was item-revoked return to review."""
+        """APPROVED apps whose submit was requested, with a valid approval and no live
+        SUBMIT task, get one; those whose approval was item-revoked return to review."""
         live = set(s.execute(select(TaskRow.entity_id).where(
             TaskRow.kind == TaskKind.SUBMIT.value,
             TaskRow.status.in_((TaskStatus.QUEUED.value, TaskStatus.RUNNING.value)),
@@ -674,8 +698,8 @@ class Orchestrator:
             if svc.active_approval_for(app_id) is None:
                 transition(s, get_application(s, app_id), ApplicationStatus.READY_FOR_REVIEW,
                            actor=_ACTOR, reason="approval_item_revoked")
-            elif app_id not in live:
-                self._add_task(s, TaskKind.SUBMIT, "application", app_id)
+            elif app_id not in live and get_application(s, app_id).submit_requested_at:
+                self._add_task(s, TaskKind.SUBMIT, "application", app_id)  # user asked
 
     def _recover_side_effect(self, s: Session, task: TaskRow, kind: TaskKind) -> None:
         if kind is TaskKind.SUBMIT:

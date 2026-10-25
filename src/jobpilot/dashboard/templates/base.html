@@ -37,6 +37,7 @@ button{font:inherit;padding:8px 16px;border-radius:6px;border:0;background:var(-
 .msg{padding:10px 12px;border-radius:6px;margin-top:12px;border:1px solid var(--line)}
 .msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
 .err{color:var(--bad)}
+.live{color:var(--bad);font-weight:700}
 .warn{background:var(--warn-bg);color:var(--warn-fg);padding:1px 6px;border-radius:4px;font-size:12px;margin-right:4px}
 details summary{cursor:pointer}
 </style>
@@ -45,7 +46,7 @@ details summary{cursor:pointer}
 {% if live_portals %}<div class="live-bar" role="alert">LIVE SUBMISSION ON for: {{ live_portals | join(", ") }}</div>{% endif %}
 <header><div class="wrap">
 <strong>JobPilot</strong>
-<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/batches">Batches</a><a href="/ui/events">Activity</a><a href="/ui/profile">Profile</a></nav>
+<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/batches">Batches</a>{% if uncertain_count %}<a href="/ui/uncertain" class="err">Uncertain ({{ uncertain_count }})</a>{% endif %}<a href="/ui/events">Activity</a><a href="/ui/profile">Profile</a></nav>
 {% if not live_portals %}<span class="badge">Dry run — nothing is submitted</span>{% endif %}
 </div></header>
 <main class="wrap">{% if profile_banner %}<div class="msg bad" role="status">{{ profile_banner }}</div>{% endif %}{% block content %}{% endblock %}</main>

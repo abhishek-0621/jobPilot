@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import PortalCapability
-from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head
+from jobpilot.data.db import make_engine, make_session_factory, upgrade_to_head, utcnow
 from jobpilot.data.mutations import (
     set_answer,
     set_application_url,
@@ -18,6 +18,7 @@ from jobpilot.data.mutations import (
 from jobpilot.data.repositories import get_application, list_events
 from jobpilot.data.tables import (
     AnswerLibraryRow,
+    ApplicationRow,
     ApprovalRow,
     CandidateFactRow,
     DocumentArtifactRow,
@@ -135,6 +136,10 @@ def test_orphan_sweep_skips_item_revoked(factory: sessionmaker[Session]) -> None
         approval = _approve(s, [a1, a2])
         # Simulate a revoked item whose app is still APPROVED (e.g. crash mid-invalidate).
         approval.revoked_item_ids_json = f'["{a1}"]'
+        for a in (a1, a2):  # the user asked to submit both
+            row = s.get(ApplicationRow, a)
+            assert row is not None
+            row.submit_requested_at = utcnow()
         s.commit()
     orch = Orchestrator(factory, AppConfig(model_routes={}), {},
                         {"simulated": SimulatedAdapter()})
@@ -237,6 +242,10 @@ def test_orphan_sweep_returns_item_revoked_to_review(
         a1, a2 = seed_ready_apps(s, 2)
         approval = _approve(s, [a1, a2])
         approval.revoked_item_ids_json = f'["{a1}"]'
+        for a in (a1, a2):  # the user asked to submit both
+            row = s.get(ApplicationRow, a)
+            assert row is not None
+            row.submit_requested_at = utcnow()
         s.commit()
     orch = Orchestrator(factory, AppConfig(model_routes={}), {},
                         {"simulated": SimulatedAdapter()})

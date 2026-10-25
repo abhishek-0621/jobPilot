@@ -52,9 +52,11 @@ def test_uncertain_exit_requires_user_or_verification(db_session):
 
 def test_terminal_states_have_no_exits():
     app = TRANSITIONS[ApplicationStatus]
-    for s in (ApplicationStatus.CONFIRMED, ApplicationStatus.SUBMISSION_FAILED,
-              ApplicationStatus.REJECTED_BY_USER):
+    for s in (ApplicationStatus.CONFIRMED, ApplicationStatus.REJECTED_BY_USER):
         assert app[s] == frozenset()
+    # the only exit from SUBMISSION_FAILED is the user's explicit "Prepare again"
+    assert app[ApplicationStatus.SUBMISSION_FAILED] == frozenset(
+        {ApplicationStatus.FORM_IN_PROGRESS})
     assert TRANSITIONS[OutreachStatus][OutreachStatus.SENT] == frozenset()
 
 

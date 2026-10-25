@@ -122,6 +122,15 @@ class ApproveIn(BaseModel):
     application_ids: list[str]
 
 
+class SubmitIn(BaseModel):
+    application_ids: list[str] | None = None
+    confirm: str | None = None
+
+
+class SubmitOut(_Out):
+    queued: list[str]
+
+
 class ApprovalOut(_Out):
     approval_id: str
     batch_status: str

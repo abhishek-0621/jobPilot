@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
 from jobpilot.contracts.enums import ErrorCode
@@ -56,3 +56,21 @@ def submit_click_recorded(session: Session, idempotency_key: str | None) -> bool
         AuditEventRow.action == SUBMIT_CLICKED,
         AuditEventRow.redacted_details_json.contains(click_needle(idempotency_key)))
         .limit(1)).first() is not None
+
+
+USER_RESOLVED_NOT_SUBMITTED = "user_resolved_not_submitted"
+
+
+def prior_unresolved_click(session: Session, application_id: str) -> bool:
+    """True when the application has a ``submit_clicked`` event (any key) that is not
+    followed by a ``user_resolved_not_submitted`` event. Insertion order is the rowid."""
+    def last(action: str) -> int | None:
+        return session.execute(select(func.max(literal_column("rowid"))).where(
+            AuditEventRow.entity_type == "application",
+            AuditEventRow.entity_id == application_id,
+            AuditEventRow.action == action)).scalar()
+    click = last(SUBMIT_CLICKED)
+    if click is None:
+        return False
+    resolved = last(USER_RESOLVED_NOT_SUBMITTED)
+    return resolved is None or resolved < click

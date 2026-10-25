@@ -101,6 +101,7 @@ class ApplicationRow(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
     confirmation_reference: Mapped[str | None] = mapped_column(String, nullable=True)
     form_snapshot_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    submit_requested_at: Mapped[datetime | None] = _ts(nullable=True)
 
 
 class DocumentArtifactRow(Base):
