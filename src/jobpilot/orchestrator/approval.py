@@ -62,11 +62,39 @@ class ApprovalService:
                 FormFieldAnswerRow.application_id == application_id
             )
         ).scalars()
+        return self._hash(app, job, list(answers))
+
+    def application_hashes(self, application_ids: list[str]) -> dict[str, str]:
+        """``application_hash`` for many applications with a fixed number of queries
+        (dashboard pages). Missing applications are left out."""
+        s = self.session
+        apps = list(s.execute(select(ApplicationRow).where(
+            ApplicationRow.application_id.in_(application_ids))).scalars())
+        jobs = {j.job_id: j for j in s.execute(select(JobRow).where(
+            JobRow.job_id.in_([a.job_id for a in apps]))).scalars()}
+        art_ids = [i for a in apps for i in (a.resume_artifact_id, a.cover_letter_artifact_id)
+                   if i]
+        # Keep a strong reference: the session identity map is weak, and _artifact_hash's
+        # session.get must find these rows without a query.
+        arts = list(s.execute(select(DocumentArtifactRow).where(
+            DocumentArtifactRow.artifact_id.in_(art_ids))).scalars())
+        answers: dict[str, list[FormFieldAnswerRow]] = {}
+        for a in s.execute(select(FormFieldAnswerRow).where(
+                FormFieldAnswerRow.application_id.in_(application_ids))).scalars():
+            answers.setdefault(a.application_id, []).append(a)
+        out = {a.application_id: self._hash(a, jobs.get(a.job_id),
+                                            answers.get(a.application_id, []))
+               for a in apps}
+        del arts
+        return out
+
+    def _hash(self, app: ApplicationRow, job: JobRow | None,
+              answers: list[FormFieldAnswerRow]) -> str:
         answer_list: list[Any] = sorted(
             [a.field_id, json.loads(a.proposed_value_json), a.decision] for a in answers
         )
         return content_hash({
-            "application_id": application_id,
+            "application_id": app.application_id,
             "application_url": job.application_url if job is not None else None,
             "resume_artifact_hash": self._artifact_hash(app.resume_artifact_id),
             "cover_letter_artifact_hash": self._artifact_hash(app.cover_letter_artifact_id),

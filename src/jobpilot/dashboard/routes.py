@@ -2,6 +2,7 @@
 profile.importer and data.mutations."""
 
 import json
+import logging
 import os
 import re
 import time
@@ -65,6 +66,7 @@ from jobpilot.data.mutations import (
     set_library_answer,
 )
 from jobpilot.data.repositories import (
+    assessments_for,
     batch_items,
     counts_by_status,
     jobs_with_scores,
@@ -114,6 +116,7 @@ NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
 UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
 STALE_MESSAGE = "This batch changed since you viewed it — reload to review the latest version."
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent / "templates")
 
@@ -270,15 +273,16 @@ def _one_line(text: str, limit: int = 120) -> str:
 def jobs(request: Request, s: Db, status: str | None = None,
          show_duplicates: int = 0, deleted: str | None = None) -> HTMLResponse:
     version = _active_version(s)
-    selected = {a.job_id: a.application_id
-                for a in s.execute(select(ApplicationRow)).scalars()}
-    app_status = {a.job_id: a.status for a in s.execute(select(ApplicationRow)).scalars()}
+    apps = list(s.execute(select(ApplicationRow)).scalars())
+    selected = {a.job_id: a.application_id for a in apps}
+    app_status = {a.job_id: a.status for a in apps}
+    assessments = assessments_for(s, None, version)  # one query, same rule as job detail
     rows = []
     for job, _score in jobs_with_scores(s, status or None):
         if job.status == JobStatus.DUPLICATE.value and not show_duplicates \
                 and status != JobStatus.DUPLICATE.value:
             continue
-        m = _assessment(s, job.job_id, version)
+        m = assessments.get(job.job_id)
         rows.append({"job": job, "label": MANUAL_APPLIED_LABEL if app_status.get(
                          job.job_id) == ApplicationStatus.SUBMITTED_BY_USER.value
                      else job.status, "score": None if m is None else m.total_score,
@@ -769,6 +773,7 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
     cfg: AppConfig = request.app.state.cfg
     live = set(cfg.effective_live_portals)
     submittable = submit_candidates(s, batch.batch_id)
+    hashes = svc.application_hashes(app_ids)
     rows = []
     for item in items:
         app = apps.get(item.application_id)
@@ -778,7 +783,7 @@ def batch_page(request: Request, batch_id: str, s: Db) -> HTMLResponse:
         for a in mine:
             summary[a.decision] = summary.get(a.decision, 0) + 1
         changed = app is None or app.status not in CHANGED_STATUSES \
-            or svc.application_hash(item.application_id) != item.item_hash
+            or hashes.get(item.application_id) != item.item_hash
         rows.append({
             "item": item, "app": app, "job": job, "changed": changed,
             "live": app is not None and app.portal in live,
@@ -1084,6 +1089,7 @@ def _schedule_view(request: Request, cfg: AppConfig) -> dict[str, Any]:
         agents = sched.status(cfg, home=state.schedule_home, runner=state.schedule_runner,
                               uid=os.getuid())
     except Exception:  # a hung or missing launchctl must not break the page
+        log.warning("settings: schedule status unavailable", exc_info=True)
         return {"available": True, "agents": None}
     return {"available": True, "agents": agents}
 

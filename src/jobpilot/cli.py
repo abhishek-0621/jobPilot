@@ -37,9 +37,62 @@ def _ollama_tags(cfg: AppConfig) -> set[str] | None:
     try:
         r = httpx.get(f"{cfg.ollama_url.rstrip('/')}/api/tags", timeout=5)
         r.raise_for_status()
-    except httpx.HTTPError:
-        return None
-    return {m["name"] for m in r.json().get("models", [])}
+        return {str(m["name"]) for m in r.json()["models"]}
+    except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
+        return None  # down, refused or not Ollama: reported as unreachable, no traceback
+
+
+def _chromium_installed() -> bool:
+    from jobpilot.documents.render import chromium_available
+
+    return chromium_available()
+
+
+def _readiness(cfg: AppConfig, has_db: bool) -> list[str]:
+    """First-run checklist lines (informational: they never fail doctor)."""
+    from sqlalchemy import func, select
+
+    from jobpilot.data.tables import CandidateFactRow, CandidateProfileRow, StoryRow
+
+    lines: list[str] = []
+    facts = stories = total_facts = 0
+    if has_db:
+        engine = make_engine(cfg.db_path)
+        try:
+            with make_session_factory(engine)() as s:
+                version = s.execute(select(func.max(CandidateProfileRow.version))).scalar()
+                if version is not None:
+                    q = select(func.count()).select_from(CandidateFactRow).where(
+                        CandidateFactRow.profile_version == version)
+                    total_facts = s.execute(q).scalar() or 0
+                    facts = s.execute(q.where(
+                        CandidateFactRow.verified_by_user.is_(True))).scalar() or 0
+                stories = s.execute(select(func.count()).select_from(StoryRow).where(
+                    StoryRow.verified_by_user.is_(True))).scalar() or 0
+        finally:
+            engine.dispose()
+    fix = "" if facts else (" — run `uv run jobpilot profile import`, then verify facts "
+                            "at /ui/profile")
+    lines.append(f"[{'ok' if facts else 'todo'}] verified facts: {facts} of {total_facts}{fix}")
+    fix = "" if stories else (" — optional: write storage/profiles/stories.yaml, run "
+                              "`uv run jobpilot profile import`, then verify at "
+                              "/ui/profile/stories (needed for essay answers)")
+    lines.append(f"[{'ok' if stories else 'todo'}] verified stories: {stories}{fix}")
+    companies = cfg.storage_path / "profiles" / "companies.yaml"
+    try:
+        from jobpilot.profile.preferences import _read_entries
+
+        n = len(_read_entries(companies)) if companies.exists() else 0
+        detail = f"{n} configured" if n else ("none configured — run "
+                                              "`uv run jobpilot boards find \"Company\" --write`")
+    except Exception as e:  # noqa: BLE001 - a broken file is reported, never a traceback
+        n, detail = 0, f"{companies} is unreadable ({e}); fix or remove it"
+    lines.append(f"[{'ok' if n else 'todo'}] companies: {detail}")
+    chromium = _chromium_installed()
+    lines.append(f"[{'ok' if chromium else 'todo'}] playwright chromium: "
+                 + ("installed" if chromium else
+                    "missing — run `uv run playwright install chromium`"))
+    return lines
 
 
 def _migrate(cfg: AppConfig) -> None:
@@ -98,7 +151,8 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
         ("ollama", available is not None, "reachable" if available is not None
          else f"unreachable at {cfg.ollama_url}"),
         ("models", not missing, "all present" if not missing
-         else "missing: " + ", ".join(missing)),
+         else "missing: " + ", ".join(missing) + " — run "
+         + "; ".join(f"`ollama pull {t}`" for t in missing)),
         ("database", bool(revision), revision if revision
          else "not initialised — run `uv run jobpilot setup`" if missing_db
          else "not migrated — run `uv run jobpilot migrate`"),
@@ -121,6 +175,8 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
     typer.echo(f"[info] story bank: {'present' if stories_file.exists() else 'none'}"
                " (optional; see config/stories.example.yaml)")
     typer.echo(f"[info] dry_run: {cfg.dry_run}")
+    for line in _readiness(cfg, bool(revision)):
+        typer.echo(line)
     if not all(ok for _, ok, _ in checks):
         raise typer.Exit(1)
 

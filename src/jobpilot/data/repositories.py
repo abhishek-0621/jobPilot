@@ -9,6 +9,7 @@ from jobpilot.data.tables import (
     ApprovalBatchRow,
     AuditEventRow,
     BatchItemRow,
+    CandidateProfileRow,
     JobRow,
     MatchAssessmentRow,
 )
@@ -112,16 +113,41 @@ def _find_canonical(s: Session, clause: ColumnElement[bool]) -> JobRow | None:
     ).scalar_one_or_none()
 
 
+def active_profile_version(s: Session) -> int | None:
+    return s.execute(select(func.max(CandidateProfileRow.version))).scalar()
+
+
+def assessments_for(s: Session, job_ids: list[str] | None = None,
+                    version: int | None = None) -> dict[str, MatchAssessmentRow]:
+    """One query: per job, the assessment for ``version`` (the active profile version)
+    when there is one, else its latest. ``job_ids`` None means every job."""
+    q = select(MatchAssessmentRow).order_by(MatchAssessmentRow.profile_version)
+    if job_ids is not None:
+        q = q.where(MatchAssessmentRow.job_id.in_(job_ids))
+    out: dict[str, MatchAssessmentRow] = {}
+    for m in s.execute(q).scalars():
+        if out.get(m.job_id) is None or out[m.job_id].profile_version != version:
+            out[m.job_id] = m  # ascending: ends on the latest unless the active one won
+    return out
+
+
 def jobs_with_scores(
     s: Session, status: str | None = None, min_score: float | None = None
 ) -> list[tuple[JobRow, float | None]]:
-    q = select(JobRow, func.max(MatchAssessmentRow.total_score)).outerjoin(
-        MatchAssessmentRow, MatchAssessmentRow.job_id == JobRow.job_id
-    ).group_by(JobRow.job_id).order_by(JobRow.first_seen_at.desc(), JobRow.job_id)
+    """Jobs, newest first, with the same score the job page shows: the assessment for the
+    active profile version, else the latest one."""
+    q = select(JobRow).order_by(JobRow.first_seen_at.desc(), JobRow.job_id)
     if status is not None:
         q = q.where(JobRow.status == status)
-    return [(job, score) for job, score in s.execute(q).all()
-            if min_score is None or (score is not None and score >= min_score)]
+    jobs = list(s.execute(q).scalars())
+    scores = assessments_for(s, None, active_profile_version(s))
+    out = []
+    for job in jobs:
+        m = scores.get(job.job_id)
+        score = None if m is None else m.total_score
+        if min_score is None or (score is not None and score >= min_score):
+            out.append((job, score))
+    return out
 
 
 def latest_batch(s: Session, batch_id: str) -> ApprovalBatchRow | None:
