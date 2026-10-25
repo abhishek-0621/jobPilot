@@ -100,6 +100,10 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
          else "not initialised — run `uv run jobpilot setup`" if missing_db
          else "not migrated — run `uv run jobpilot migrate`"),
     ]
+    from jobpilot.ops.backup import recovery_instructions, restore_marker
+
+    if restore_marker(cfg).exists():
+        checks.append(("restore", False, recovery_instructions(cfg)))
     for name, ok, detail in checks:
         typer.echo(f"[{'ok' if ok else 'FAIL'}] {name}: {detail}")
     typer.echo(f"[info] dry_run: {cfg.dry_run}")
@@ -110,7 +114,12 @@ def doctor(config_dir: ConfigDir = Path("config")) -> None:
 @app.command()
 def start(config_dir: ConfigDir = Path("config")) -> None:
     """Recover interrupted work, start the worker and serve the dashboard."""
+    from jobpilot.ops.backup import recovery_instructions, restore_marker
+
     cfg = load_config(config_dir)
+    if restore_marker(cfg).exists():
+        typer.echo(recovery_instructions(cfg))
+        raise typer.Exit(1)
     _migrate(cfg)
     api = app_from_config(config_dir)  # lifespan runs recover_on_startup + worker loop
     from jobpilot.ops.backup import remove_pid_file, write_pid_file
@@ -129,10 +138,15 @@ def backup(
     config_dir: ConfigDir = Path("config"),
 ) -> None:
     """Back up the database, profiles and artifacts to storage/backups."""
+    from jobpilot.ops.backup import BackupError
     from jobpilot.ops.backup import backup as do_backup
 
     cfg = load_config(config_dir)
-    path = do_backup(cfg, keep=keep)
+    try:
+        path = do_backup(cfg, keep=keep)
+    except BackupError as e:
+        typer.echo(f"Backup failed: {e}")
+        raise typer.Exit(1) from e
     typer.echo(f"Backup written: {path} ({path.stat().st_size:,} bytes)")
     typer.echo("Warning: backups contain your personal data. Keep them private.")
 
@@ -230,6 +244,9 @@ async def _discover_now(cfg: AppConfig) -> int:
         engine.dispose()
 
 
+_LOCK_BUSY_SCHEDULED = "Another JobPilot operation holds the lock; skipping this scheduled run."
+
+
 def _run_maintenance_if_available(cfg: AppConfig) -> None:
     """Task 4 adds `jobpilot.ops.maintenance.run_maintenance`; until then this is a no-op."""
     import importlib
@@ -237,7 +254,10 @@ def _run_maintenance_if_available(cfg: AppConfig) -> None:
 
     if importlib.util.find_spec("jobpilot.ops.maintenance") is None:
         return
-    importlib.import_module("jobpilot.ops.maintenance").run_maintenance(cfg)
+    from jobpilot.ops.lock import ops_lock
+
+    with ops_lock(cfg):
+        importlib.import_module("jobpilot.ops.maintenance").run_maintenance(cfg)
 
 
 @app.command()
@@ -245,6 +265,9 @@ def discover(
     config_dir: ConfigDir = Path("config"),
     run_now: Annotated[bool, typer.Option(
         "--run-now", help="Run discover, extract and match in-process (no server needed)")
+    ] = False,
+    scheduled: Annotated[bool, typer.Option(
+        "--scheduled", hidden=True, help="Set by the LaunchAgent: skip quietly if busy")
     ] = False,
 ) -> None:
     """Queue a discovery run; the worker in `jobpilot start` processes it."""
@@ -256,10 +279,20 @@ def discover(
     cfg = load_config(config_dir)
     _migrate(cfg)
     if run_now:
-        steps = asyncio.run(_discover_now(cfg))
-        typer.echo(f"Discovery cycle finished ({steps} tasks). "
-                   "Other work stays queued for `jobpilot start`.")
-        _run_maintenance_if_available(cfg)
+        from jobpilot.ops.lock import LockHeld, ops_lock
+
+        try:
+            with ops_lock(cfg):
+                steps = asyncio.run(_discover_now(cfg))
+                typer.echo(f"Discovery cycle finished ({steps} tasks). "
+                           "Other work stays queued for `jobpilot start`.")
+                _run_maintenance_if_available(cfg)
+        except LockHeld as e:
+            if scheduled:
+                typer.echo(f"{_LOCK_BUSY_SCHEDULED} ({e})")
+                return
+            typer.echo(str(e))
+            raise typer.Exit(1) from e
         return
     engine = make_engine(cfg.db_path)
     try:
@@ -275,6 +308,51 @@ def discover(
     typer.echo(f"Queued discovery run {run_id}")
     if not _server_running(cfg):
         typer.echo("Run `uv run jobpilot start` to process it.")
+
+
+export_app = typer.Typer(help="Export your data (contains personal data).", no_args_is_help=True)
+app.add_typer(export_app, name="export")
+_EXPORT_WARNING = "Warning: exports contain your personal data. Keep them private."
+
+
+def _export(config_dir: Path, run: Any) -> Path:
+    cfg = load_config(config_dir)
+    if not cfg.db_path.is_file():
+        typer.echo(f"No database at {cfg.db_path}; run `uv run jobpilot setup` first.")
+        raise typer.Exit(1)
+    engine = make_engine(cfg.db_path)
+    try:
+        with make_session_factory(engine)() as s:
+            try:
+                return run(cfg, s)  # type: ignore[no-any-return]
+            except LookupError as e:
+                typer.echo(str(e))
+                raise typer.Exit(1) from e
+    finally:
+        engine.dispose()
+
+
+@export_app.command("app")
+def export_app_cmd(
+    application_id: Annotated[str, typer.Argument(help="Application id")],
+    config_dir: ConfigDir = Path("config"),
+) -> None:
+    """Write an audit bundle (zip) for one application to storage/exports."""
+    from jobpilot.ops.export import export_application
+
+    path = _export(config_dir, lambda cfg, s: export_application(cfg, s, application_id))
+    typer.echo(f"Export written: {path}")
+    typer.echo(_EXPORT_WARNING)
+
+
+@export_app.command("all")
+def export_all_cmd(config_dir: ConfigDir = Path("config")) -> None:
+    """Write every table as JSON, plus profiles and artifacts, to storage/exports."""
+    from jobpilot.ops.export import export_all
+
+    path = _export(config_dir, export_all)
+    typer.echo(f"Export written: {path}")
+    typer.echo(_EXPORT_WARNING)
 
 
 schedule_app = typer.Typer(help="Daily discovery via macOS LaunchAgents.", no_args_is_help=True)

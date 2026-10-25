@@ -5,6 +5,7 @@
 <p><strong>{{ app.status }}</strong>{% if job %} · <a href="/ui/jobs/{{ job.job_id }}">Job</a> · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}{% endif %}</p>
 <p><button type="button" hx-post="/ui/applications/{{ app.application_id }}/regenerate" hx-target="#regen-result" hx-swap="innerHTML">Regenerate documents</button></p>
 <div id="regen-result"></div>
+<p><a href="/ui/applications/{{ app.application_id }}/export" download>Export bundle</a> <span class="muted">· audit bundle (zip) with answers, documents and events. It contains personal data; keep it private.</span></p>
 <p><a href="/ui/applications/{{ app.application_id }}/answers">Form answers</a>{% if app.status == "MANUAL_APPLY_READY" or app.status == "SUBMITTED_BY_USER" %} · <a href="/ui/applications/{{ app.application_id }}/apply">Manual apply page</a>{% endif %}</p>
 <h2>Submission</h2>
 <p>Status: <strong>{{ app.status }}</strong>{% if app.confirmation_reference %} · Confirmation reference: <span class="mono">{{ app.confirmation_reference }}</span>{% endif %}</p>

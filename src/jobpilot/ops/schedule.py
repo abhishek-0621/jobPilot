@@ -119,7 +119,7 @@ def _jobs(
     base = [uv_path, "run", "--project", str(repo_dir), "jobpilot"]
     extra = ["--config-dir", str(config_dir)] if config_dir is not None else []
     jobs: list[tuple[str, list[str], dict[str, int] | None, bool, str]] = [
-        (DISCOVER_LABEL, [*base, "discover", *extra, "--run-now"],
+        (DISCOVER_LABEL, [*base, "discover", *extra, "--run-now", "--scheduled"],
          {"Hour": hour, "Minute": minute}, False, "discover.log")]
     if with_server:
         jobs.append((SERVER_LABEL, [*base, "start", *extra], None, True, "server.log"))

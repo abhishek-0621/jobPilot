@@ -10,7 +10,7 @@ from typing import Annotated, Any
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -401,6 +401,17 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
         "facts": facts, "letter": _artifact_text(request, letter_txt), "evidence": evidence,
         "submission": _submission(s, app),
         "events": list(reversed(list_events(s, application_id)))})
+
+
+@router.get("/ui/applications/{application_id}/export")
+def export_application_ui(request: Request, application_id: str, s: Db) -> FileResponse:
+    from jobpilot.ops.export import export_application
+
+    if s.get(ApplicationRow, application_id) is None:
+        raise HTTPException(404, "application not found")
+    path = export_application(request.app.state.cfg, s, application_id)
+    return FileResponse(path, media_type="application/zip", filename=path.name,
+                        content_disposition_type="attachment")
 
 
 def _display(value: Any) -> str:

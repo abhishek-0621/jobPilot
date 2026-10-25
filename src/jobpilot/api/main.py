@@ -56,6 +56,7 @@ from jobpilot.data.tables import (
     OutreachDraftRow,
 )
 from jobpilot.llm.ollama_client import ModelGateway
+from jobpilot.ops.export import contained_artifact_path
 from jobpilot.orchestrator.approval import ApprovalService, StaleApprovalError
 from jobpilot.orchestrator.engine import Orchestrator
 from jobpilot.runtime import Runtime, build_runtime
@@ -288,10 +289,9 @@ def create_app(
         row = s.get(DocumentArtifactRow, artifact_id)
         if row is None:
             raise HTTPException(404, "artifact not found")
-        base = (cfg.storage_path / "artifacts").resolve()
-        path = (cfg.storage_path / row.path).resolve()
-        media = ARTIFACT_MEDIA_TYPES.get(path.suffix.lower())
-        if not path.is_relative_to(base) or not path.is_file() or media is None:
+        path = contained_artifact_path(cfg.storage_path, row.path)
+        media = ARTIFACT_MEDIA_TYPES.get(path.suffix.lower()) if path else None
+        if path is None or media is None:
             raise HTTPException(404, "artifact not found")
         return FileResponse(path, media_type=media, filename=path.name,
                             content_disposition_type="inline")

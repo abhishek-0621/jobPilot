@@ -197,3 +197,166 @@ def test_server_running_pid_and_port(tmp_path: Path) -> None:
     (run / "server.pid").write_text("999999999")
     assert bk.server_running(cfg, port_open=lambda _h, _p: False) is False
     assert bk.server_running(cfg, port_open=lambda _h, _p: True) is True
+
+
+def test_restore_marker_lifecycle(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    archive = bk.backup(cfg, now=lambda: _at(0))
+    seen: list[bool] = []
+
+    def check(db: Path) -> str:
+        seen.append(bk.restore_marker(cfg).exists())
+        return "ok"
+
+    bk.restore(cfg, archive, confirm="RESTORE", server_running=_not_running,
+               now=lambda: _at(1), integrity_check=check)
+    assert seen == [True] and not bk.restore_marker(cfg).exists()
+    with pytest.raises(bk.RestoreError, match="integrity"):
+        bk.restore(cfg, archive, confirm="RESTORE", server_running=_not_running,
+                   now=lambda: _at(2), integrity_check=lambda _p: "bad")
+    assert not bk.restore_marker(cfg).exists()
+    bk.restore_marker(cfg).write_text("stale")
+    with pytest.raises(bk.RestoreError, match=r"\.pre-restore-"):
+        bk.restore(cfg, archive, confirm="RESTORE", server_running=_not_running)
+
+
+def test_doctor_and_start_detect_restore_marker(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+    from tests.unit.test_cli import _config
+
+    d = _config(tmp_path)
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    (storage / "RESTORE_IN_PROGRESS").write_text("started")
+    runner = CliRunner()
+    r = runner.invoke(cli.app, ["doctor", "--config-dir", str(d)])
+    assert r.exit_code == 1 and ".pre-restore-" in r.output
+    r = runner.invoke(cli.app, ["start", "--config-dir", str(d)])
+    assert r.exit_code == 1 and ".pre-restore-" in r.output
+    assert not (storage / "jobpilot.db").exists()  # start refused before migrating
+
+
+def test_ops_lock_exclusive_and_reentrant(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from jobpilot.ops.lock import lock_path, ops_lock
+
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    probe = ("import sys; from pathlib import Path; from jobpilot.config import AppConfig; "
+             "from jobpilot.ops.lock import ops_lock, LockHeld\n"
+             "s=Path(sys.argv[1]); c=AppConfig(storage_path=s, db_path=s/'jobpilot.db', "
+             "model_routes={})\n"
+             "try:\n  ops_lock(c).__enter__()\nexcept LockHeld: sys.exit(7)\n")
+    with ops_lock(cfg):
+        with ops_lock(cfg):  # re-entrant in-process
+            pass
+        assert lock_path(cfg).exists()
+        held = subprocess.run([sys.executable, "-c", probe, str(cfg.storage_path)])
+        assert held.returncode == 7
+    free = subprocess.run([sys.executable, "-c", probe, str(cfg.storage_path)])
+    assert free.returncode == 0
+
+
+def test_backup_and_restore_refuse_when_lock_held_elsewhere(tmp_path: Path) -> None:
+    import fcntl
+    import os
+
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    archive = bk.backup(cfg, now=lambda: _at(0))
+    run = cfg.storage_path / "run"
+    run.mkdir(exist_ok=True)
+    fd = os.open(run / "ops.lock", os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # a different open file description: conflicts
+        with pytest.raises(bk.BackupError, match="in progress"):
+            bk.backup(cfg, now=lambda: _at(1))
+        with pytest.raises(bk.RestoreError, match="in progress"):
+            bk.restore(cfg, archive, confirm="RESTORE", server_running=_not_running)
+    finally:
+        os.close(fd)
+    bk.backup(cfg, now=lambda: _at(2))
+
+
+def test_malformed_manifest_is_restore_error(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    archive = bk.backup(cfg, now=lambda: _at(0))
+    for i, payload in enumerate((b"{not json", b'["list"]', b'{"format": 1, "files": []}',
+                                 b'{"format": 1, "files": {"db.sqlite": 5}}')):
+        def mutate(m: tarfile.TarInfo, data: bytes | None, p: bytes = payload
+                   ) -> tuple[tarfile.TarInfo, bytes | None]:
+            if m.name == "manifest.json":
+                m.size = len(p)
+                return m, p
+            return m, data
+
+        bad = _rewrite(archive, tmp_path / f"bad{i}.tar.gz", mutate)
+        with pytest.raises(bk.RestoreError):
+            bk.restore(cfg, bad, confirm="RESTORE", server_running=_not_running)
+
+
+def test_backup_missing_db_errors_without_creating_one(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    with pytest.raises(bk.BackupError, match="database not found"):
+        bk.backup(cfg, now=lambda: _at(0))
+    assert not cfg.db_path.exists()
+    assert not (cfg.storage_path / "backups").exists()
+
+
+def test_same_second_backups_get_suffix_and_rotate(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    names = [bk.backup(cfg, now=lambda: _at(0), keep=3).name for _ in range(3)]
+    assert names == ["jobpilot-20261025-080000.tar.gz", "jobpilot-20261025-080000-2.tar.gz",
+                     "jobpilot-20261025-080000-3.tar.gz"]
+    bk.backup(cfg, now=lambda: _at(0), keep=3)  # -4 pushes out the oldest, not the newest
+    left = sorted(p.name for p in (cfg.storage_path / "backups").glob("jobpilot-*"))
+    assert left == ["jobpilot-20261025-080000-2.tar.gz", "jobpilot-20261025-080000-3.tar.gz",
+                    "jobpilot-20261025-080000-4.tar.gz"]
+
+
+def test_server_running_message_names_pid_file(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    archive = bk.backup(cfg, now=lambda: _at(0))
+    with pytest.raises(bk.RestoreError, match="server.pid"):
+        bk.restore(cfg, archive, confirm="RESTORE", server_running=lambda _c: True)
+
+
+def test_discover_run_now_lock_held(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import fcntl
+    import os
+
+    from typer.testing import CliRunner
+
+    from jobpilot import cli
+    from tests.unit.test_cli import _config
+
+    d = _config(tmp_path)
+    ran: list[str] = []
+
+    async def fake_now(_cfg: AppConfig) -> int:
+        ran.append("cycle")
+        return 0
+
+    monkeypatch.setattr(cli, "_discover_now", fake_now)
+    run = tmp_path / "storage" / "run"
+    run.mkdir(parents=True)
+    fd = os.open(run / "ops.lock", os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        runner = CliRunner()
+        r = runner.invoke(cli.app, ["discover", "--run-now", "--config-dir", str(d)])
+        assert r.exit_code == 1 and "in progress" in r.output
+        r = runner.invoke(cli.app, ["discover", "--run-now", "--scheduled",
+                                    "--config-dir", str(d)])
+        assert r.exit_code == 0 and "skipping" in r.output
+        assert ran == []
+    finally:
+        os.close(fd)

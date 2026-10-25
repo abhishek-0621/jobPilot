@@ -27,13 +27,36 @@ log = logging.getLogger(__name__)
 
 CONFIRM_WORD = "RESTORE"
 FORMAT = 1
-ARCHIVE_RE = re.compile(r"jobpilot-\d{8}-\d{6}\.tar\.gz")
+ARCHIVE_RE = re.compile(r"jobpilot-\d{8}-\d{6}(?:-(\d+))?\.tar\.gz")
+MARKER_NAME = "RESTORE_IN_PROGRESS"
 TREES = ("profiles", "artifacts")
 TOP_FILES = ("db.sqlite", "manifest.json")
 
 
 class RestoreError(RuntimeError):
     pass
+
+
+class BackupError(RuntimeError):
+    pass
+
+
+def restore_marker(cfg: AppConfig) -> Path:
+    return cfg.storage_path / MARKER_NAME
+
+
+def recovery_instructions(cfg: AppConfig) -> str:
+    """Printed by doctor/start when a restore was interrupted (marker file present)."""
+    marker = restore_marker(cfg)
+    try:
+        detail = marker.read_text().strip()
+    except OSError:
+        detail = ""
+    return (f"A restore did not finish ({marker} exists{': ' + detail if detail else ''}). "
+            f"Your original data is in {cfg.storage_path}/.pre-restore-<timestamp>/ "
+            "(jobpilot.db, profiles, artifacts). Move those back into place, then delete "
+            "the marker file; or re-run `jobpilot restore` with a good archive after "
+            "deleting the marker.")
 
 
 def _ts(now: Callable[[], datetime]) -> str:
@@ -126,7 +149,12 @@ def _copy_tree(src: Path, dest: Path) -> None:
 
 
 def _rotate(bdir: Path, keep: int) -> None:
-    archives = sorted(p for p in bdir.iterdir() if ARCHIVE_RE.fullmatch(p.name) and p.is_file())
+    def order(p: Path) -> tuple[str, int]:
+        m = ARCHIVE_RE.fullmatch(p.name)
+        return p.name[len("jobpilot-"):len("jobpilot-") + 15], int(m.group(1) or 1) if m else 1
+
+    archives = sorted((p for p in bdir.iterdir() if ARCHIVE_RE.fullmatch(p.name) and p.is_file()),
+                      key=order)
     for old in archives[:-keep] if keep > 0 else archives:
         old.unlink()
 
@@ -141,6 +169,19 @@ def _tar_filter(ti: tarfile.TarInfo) -> tarfile.TarInfo:
 def backup(cfg: AppConfig, *, now: Callable[[], datetime] = utcnow,
            keep: int | None = None) -> Path:
     """Write storage/backups/jobpilot-<ts>.tar.gz atomically, then rotate."""
+    from jobpilot.ops.lock import LockHeld, ops_lock
+
+    if not cfg.db_path.is_file():
+        raise BackupError(f"database not found at {cfg.db_path}; nothing to back up "
+                          "(run `uv run jobpilot setup` first)")
+    try:
+        with ops_lock(cfg):
+            return _backup(cfg, now=now, keep=keep)
+    except LockHeld as e:
+        raise BackupError(str(e)) from e
+
+
+def _backup(cfg: AppConfig, *, now: Callable[[], datetime], keep: int | None) -> Path:
     keep = cfg.backup_keep if keep is None else keep
     bdir = _private_dir(backups_dir(cfg))
     tmp_root = _private_dir(bdir / ".tmp")
@@ -172,6 +213,10 @@ def backup(cfg: AppConfig, *, now: Callable[[], datetime] = utcnow,
                 tar.add(stage / name, arcname=name, filter=_tar_filter)
         tmp_archive.chmod(0o600)
         final = bdir / f"jobpilot-{ts}.tar.gz"
+        n = 1
+        while final.exists():
+            n += 1
+            final = bdir / f"jobpilot-{ts}-{n}.tar.gz"
         os.replace(tmp_archive, final)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -204,10 +249,18 @@ def _extract_verified(archive: Path, dest: Path) -> None:
     mpath = dest / "manifest.json"
     if not mpath.is_file() or not (dest / "db.sqlite").is_file():
         raise RestoreError("archive is missing manifest.json or db.sqlite")
-    manifest = json.loads(mpath.read_text())
+    try:
+        manifest = json.loads(mpath.read_text())
+    except (ValueError, OSError) as e:
+        raise RestoreError(f"manifest.json is not valid JSON: {e}") from e
+    if not isinstance(manifest, dict):
+        raise RestoreError("manifest.json is malformed")
     if manifest.get("format") != FORMAT:
         raise RestoreError(f"unsupported backup format {manifest.get('format')!r}")
-    listed: dict[str, str] = manifest.get("files", {})
+    listed = manifest.get("files")
+    if not isinstance(listed, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in listed.items()):
+        raise RestoreError("manifest.json is malformed: 'files' must map names to hashes")
     present = {p.relative_to(dest).as_posix() for p in dest.rglob("*")
                if p.is_file() or p.is_symlink()} - {"manifest.json"}
     if present != set(listed):
@@ -229,8 +282,22 @@ def restore(cfg: AppConfig, archive: Path, *, confirm: str,
     """Replace DB/profiles/artifacts with the archive's; returns the pre-restore dir."""
     if confirm != CONFIRM_WORD:
         raise RestoreError(f"type {CONFIRM_WORD} exactly to confirm a restore")
+    from jobpilot.ops.lock import LockHeld, ops_lock
+
     if server_running(cfg):
-        raise RestoreError("jobpilot start is running; stop it before restoring")
+        raise RestoreError(f"jobpilot start is running (pid file: {pid_file(cfg)}); "
+                           "stop it before restoring")
+    if restore_marker(cfg).exists():
+        raise RestoreError(recovery_instructions(cfg))
+    try:
+        with ops_lock(cfg):
+            return _restore(cfg, archive, now=now, integrity_check=integrity_check)
+    except LockHeld as e:
+        raise RestoreError(str(e)) from e
+
+
+def _restore(cfg: AppConfig, archive: Path, *, now: Callable[[], datetime],
+             integrity_check: Callable[[Path], str]) -> Path:
     tmp_root = _private_dir(backups_dir(cfg) / ".tmp")
     work = Path(tempfile.mkdtemp(prefix="restore-", dir=tmp_root))
     try:
@@ -240,6 +307,8 @@ def restore(cfg: AppConfig, archive: Path, *, confirm: str,
         if pre.exists():
             raise RestoreError(f"{pre} already exists")
         _private_dir(pre)
+        marker = restore_marker(cfg)
+        marker.write_text(f"started {now().isoformat()}; originals in {pre}\n")
         targets = [(cfg.db_path, work / "db.sqlite", pre / "jobpilot.db")]
         targets += [(storage / t, work / t, pre / t) for t in TREES]
         sidecars = [cfg.db_path.with_name(cfg.db_path.name + s) for s in ("-wal", "-shm")]
@@ -271,7 +340,9 @@ def restore(cfg: AppConfig, archive: Path, *, confirm: str,
             for saved, current in reversed(moved):
                 os.replace(saved, current)
             shutil.rmtree(pre, ignore_errors=True)
+            marker.unlink(missing_ok=True)
             raise
+        marker.unlink(missing_ok=True)
         return pre
     finally:
         shutil.rmtree(work, ignore_errors=True)

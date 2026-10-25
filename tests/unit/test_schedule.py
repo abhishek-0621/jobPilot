@@ -75,7 +75,7 @@ def test_install_writes_plist_and_bootstraps(tmp_path: Path) -> None:
     assert all(p.parent == tmp_path / "home" / "Library" / "LaunchAgents" for p in paths)
     d = plistlib.loads(paths[0].read_bytes())
     assert d["ProgramArguments"] == [UV, "run", "--project", str(tmp_path / "repo"),
-                                     "jobpilot", "discover", "--run-now"]
+                                     "jobpilot", "discover", "--run-now", "--scheduled"]
     assert d["StartCalendarInterval"] == {"Hour": 7, "Minute": 5}
     log = str(tmp_path / "repo" / "storage" / "logs" / "discover.log")
     assert d["StandardOutPath"] == log == d["StandardErrorPath"]
@@ -217,7 +217,7 @@ def test_custom_config_dir_baked_into_plists(tmp_path: Path) -> None:
     paths = _install(tmp_path, FakeLaunchctl(), with_server=True,
                      config_dir=tmp_path / "cfg")
     d = plistlib.loads(paths[0].read_bytes())["ProgramArguments"]
-    assert d[5:] == ["discover", "--config-dir", str(tmp_path / "cfg"), "--run-now"]
+    assert d[5:] == ["discover", "--config-dir", str(tmp_path / "cfg"), "--run-now", "--scheduled"]
     s = plistlib.loads(paths[1].read_bytes())["ProgramArguments"]
     assert s[5:] == ["start", "--config-dir", str(tmp_path / "cfg")]
     default = _install(tmp_path, FakeLaunchctl())
