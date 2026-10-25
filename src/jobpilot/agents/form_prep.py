@@ -8,7 +8,6 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,9 +35,9 @@ from jobpilot.orchestrator.engine import (
     TaskKind,
 )
 from jobpilot.orchestrator.state_machine import transition
-from jobpilot.portals.greenhouse import GreenhouseAdapter
-from jobpilot.portals.lever import LeverAdapter
 from jobpilot.portals.playwright_form import PlaywrightFormAdapter
+from jobpilot.portals.registry import ADAPTERS, PortalConfigError, allowed_hosts
+from jobpilot.portals.registry import form_url as registry_form_url
 from jobpilot.util.hashing import canonical_json
 
 PROMPT_VERSION = "form_prep_v1"
@@ -46,9 +45,6 @@ _ACTOR = "orchestrator"
 USER_SOURCE = "user"
 _A = ApplicationStatus
 PREPARABLE = (_A.FORM_IN_PROGRESS.value, _A.NEEDS_USER_INPUT.value)
-ADAPTERS: dict[str, type[PlaywrightFormAdapter]] = {
-    "greenhouse": GreenhouseAdapter, "lever": LeverAdapter}
-_LOOPBACK = frozenset({"127.0.0.1", "localhost"})
 _USER_GATED = (FieldDecision.ASK_USER.value, FieldDecision.USER_ONLY.value,
                FieldDecision.BLOCKED.value)
 _LAYOUT = ErrorCode.FORM_LAYOUT_CHANGED.value
@@ -60,16 +56,6 @@ FormOpener = Callable[[str, str, str], AbstractAsyncContextManager[PlaywrightFor
 
 
 # ---- shared helpers -------------------------------------------------------------------
-
-
-def allowed_hosts(adapter_cls: type[PlaywrightFormAdapter], url: str) -> set[str]:
-    """The application URL's host plus the portal's asset hosts (loopback only for a
-    loopback application host, i.e. local test servers)."""
-    host = (urlsplit(url).hostname or "").lower()
-    hosts = {host, *adapter_cls.ASSET_HOSTS} - {""}
-    if host in _LOOPBACK:
-        hosts |= _LOOPBACK
-    return hosts
 
 
 def make_form_opener(cfg: AppConfig) -> FormOpener:
@@ -89,14 +75,10 @@ def make_form_opener(cfg: AppConfig) -> FormOpener:
 
 
 def form_url(app: dict[str, Any]) -> str:
-    url = app.get("application_url")
-    if url:
-        return str(url)
-    cls = ADAPTERS.get(app.get("source") or "")
-    canonical = app.get("canonical_url")
-    if cls is None or not canonical:
-        raise OutputRejected("no_application_url")
-    return cls.apply_url(str(canonical))
+    try:
+        return registry_form_url(app)
+    except PortalConfigError as e:
+        raise OutputRejected(e.code) from e
 
 
 def _empty(v: Any) -> bool:

@@ -67,7 +67,8 @@ async def _snapshot_hash(cfg: AppConfig, portal: Portal, url: str) -> str:
 
 
 async def seed_approved(factory: sessionmaker[Session], cfg: AppConfig, url: str,
-                        portal: Portal = "greenhouse") -> str:
+                        portal: Portal = "greenhouse", *,
+                        extra_answers: tuple[str, ...] = ()) -> str:
     """An APPROVED application whose stored answers fit the *_submit.html fixtures."""
     snap = await _snapshot_hash(cfg, portal, url)
     with factory() as s:
@@ -86,7 +87,8 @@ async def seed_approved(factory: sessionmaker[Session], cfg: AppConfig, url: str
         for fid, ftype, value, source in [
                 ("first_name", "text", "Testy", "fact_identity_first"),
                 ("email", "email", "candidate@example.com", "fact_identity_email"),
-                ("resume", "file", str(resume), "artifact:resume")]:
+                ("resume", "file", str(resume), "artifact:resume"),
+                *[(f, "text", "x", "fact_x") for f in extra_answers]]:
             s.add(FormFieldAnswerRow(
                 application_id=app.application_id, field_id=fid, label=fid,
                 field_type=ftype, proposed_value_json=canonical_json(value),
@@ -127,10 +129,10 @@ def _clicks(events: list[AuditEventRow]) -> int:
     return sum(e.action == "submit_clicked" for e in events)
 
 
-def _assert_no_click_back_to_review(factory: sessionmaker[Session], app_id: str,
-                                    code: str) -> None:
+def _assert_no_click(factory: sessionmaker[Session], app_id: str, code: str,
+                     status: str = "READY_FOR_REVIEW") -> ApplicationRow:
     app, task, events = _state(factory, app_id)
-    assert app.status == "READY_FOR_REVIEW"
+    assert app.status == status
     assert task.status == "FAILED"
     assert _clicks(events) == 0
     failed = [json.loads(e.redacted_details_json) for e in events
@@ -139,7 +141,9 @@ def _assert_no_click_back_to_review(factory: sessionmaker[Session], app_id: str,
     assert any(e.action == "approval_item_revoked" for e in events)
     with factory() as s:
         assert ApprovalService(s).active_approval_for(app_id) is None
-        assert s.execute(select(TaskRow).where(TaskRow.status == "QUEUED")).first() is None
+        assert s.execute(select(TaskRow).where(TaskRow.status == "QUEUED",
+                                               TaskRow.kind == "SUBMIT")).first() is None
+    return app
 
 
 @pytest.mark.parametrize("portal", ["greenhouse", "lever"])
@@ -186,7 +190,7 @@ async def test_presubmit_mismatch_never_clicks(factory: sessionmaker[Session], t
 
     await run_submit(factory, cfg, app_id, submitter)
     assert form_posts == []
-    _assert_no_click_back_to_review(factory, app_id, "HASH_MISMATCH")
+    _assert_no_click(factory, app_id, "HASH_MISMATCH")
 
 
 async def test_layout_change_never_clicks(factory: sessionmaker[Session], tmp_path: Path,
@@ -200,7 +204,39 @@ async def test_layout_change_never_clicks(factory: sessionmaker[Session], tmp_pa
         s.commit()
     await run_submit(factory, cfg, app_id)
     assert form_posts == []
-    _assert_no_click_back_to_review(factory, app_id, "FORM_LAYOUT_CHANGED")
+    app = _assert_no_click(factory, app_id, "FORM_LAYOUT_CHANGED", "NEEDS_USER_INPUT")
+    assert app.form_snapshot_hash is None
+
+
+async def test_value_mismatch_back_to_user(factory: sessionmaker[Session], tmp_path: Path,
+                                           form_server: str, form_posts: list[str]) -> None:
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg, f"{form_server}/greenhouse_submit.html",
+                                 extra_answers=("gone_field",))  # not on the page
+    await run_submit(factory, cfg, app_id)
+    assert form_posts == []
+    app = _assert_no_click(factory, app_id, "VALUE_MISMATCH", "NEEDS_USER_INPUT")
+    assert app.form_snapshot_hash is None
+
+
+async def test_stale_documents_never_clicks(factory: sessionmaker[Session], tmp_path: Path,
+                                            form_server: str, form_posts: list[str]) -> None:
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg, f"{form_server}/greenhouse_submit.html")
+    with factory() as s:  # profile re-imported after approval
+        s.add(CandidateProfileRow(profile_id=PROFILE_ID, version=2))
+        s.commit()
+    await run_submit(factory, cfg, app_id)
+    assert form_posts == []
+    _assert_no_click(factory, app_id, "STALE_DOCUMENTS", "DOCUMENTS_PENDING")
+    _app, _task, events = _state(factory, app_id)
+    tos = [json.loads(e.redacted_details_json).get("to") for e in events
+           if e.action == "status_changed" and e.entity_id == app_id]
+    assert tos[-2:] == ["READY_FOR_REVIEW", "DOCUMENTS_PENDING"]
+    assert any(e.action == "documents_stale" for e in events)
+    with factory() as s:
+        # TAILOR was queued (this test's orchestrator has no agents to run it)
+        assert s.execute(select(TaskRow).where(TaskRow.kind == "TAILOR")).first()
 
 
 async def test_ambiguous_submit_control(factory: sessionmaker[Session], tmp_path: Path,
@@ -259,3 +295,43 @@ async def test_no_confirmation_is_uncertain(factory: sessionmaker[Session], tmp_
     assert form_posts == ["/submit_noconfirm"]
     app, _task, events = _state(factory, app_id)
     assert app.status == "SUBMISSION_UNCERTAIN" and _clicks(events) == 1
+
+
+def _quick(cfg: AppConfig, factory: sessionmaker[Session]) -> object:
+    loader = make_submit_loader(factory, cfg.storage_path)
+
+    def submitter(portal: str) -> LiveSubmitter:
+        return LiveSubmitter(cfg, portal, loader, make_before_click(factory), factory,
+                             confirm_timeout_s=1)
+    return submitter
+
+
+@pytest.mark.parametrize("page", [
+    "jobs/submitted-roles/1?utm=thankyou&x=success",  # words only in path part / query
+    "greenhouse_submit_static.html",  # confirmation phrases in the page before the click
+])
+async def test_preexisting_evidence_is_not_confirmation(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str], page: str) -> None:
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg, f"{form_server}/{page}")
+    await run_submit(factory, cfg, app_id, _quick(cfg, factory))
+    assert form_posts == ["/submit_noop"]
+    app, _task, events = _state(factory, app_id)
+    assert app.status == "SUBMISSION_UNCERTAIN" and _clicks(events) == 1
+    assert app.confirmation_reference is None
+
+
+@pytest.mark.parametrize(("page", "post", "status"), [
+    ("greenhouse_submit_errbox.html", "/submit_keep", "SUBMISSION_UNCERTAIN"),
+    ("greenhouse_submit_errbox_ok.html", "/submit_thanks", "CONFIRMED"),
+])
+async def test_preexisting_error_box_is_not_failure(
+        factory: sessionmaker[Session], tmp_path: Path, form_server: str,
+        form_posts: list[str], page: str, post: str, status: str) -> None:
+    cfg = live_cfg(tmp_path)
+    app_id = await seed_approved(factory, cfg, f"{form_server}/{page}")
+    await run_submit(factory, cfg, app_id, _quick(cfg, factory))
+    assert form_posts == [post]
+    app, _task, _events = _state(factory, app_id)
+    assert app.status == status

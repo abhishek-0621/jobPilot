@@ -43,11 +43,16 @@ def record_event(
 SUBMIT_CLICKED = "submit_clicked"
 
 
+def click_needle(idempotency_key: str) -> str:
+    """The exact ``"idempotency_key":"<key>"`` fragment of a submit_clicked event."""
+    return canonical_json({"idempotency_key": idempotency_key})[1:-1]
+
+
 def submit_click_recorded(session: Session, idempotency_key: str | None) -> bool:
     """True when a ``submit_clicked`` event was written for ``idempotency_key``."""
     if not idempotency_key:
         return False
-    needle = canonical_json({"idempotency_key": idempotency_key})[1:-1]
     return session.execute(select(AuditEventRow.event_id).where(
         AuditEventRow.action == SUBMIT_CLICKED,
-        AuditEventRow.redacted_details_json.contains(needle)).limit(1)).first() is not None
+        AuditEventRow.redacted_details_json.contains(click_needle(idempotency_key)))
+        .limit(1)).first() is not None

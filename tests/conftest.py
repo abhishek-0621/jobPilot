@@ -92,7 +92,11 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _FORMS = Path(__file__).resolve().parent / "fixtures" / "forms"
 
 
+_REDIRECTS = {"/submit_ok": "/confirmation.html", "/submit_thanks": "/thank-you.html"}
 _POST_PAGES = {
+    "/submit_keep": (
+        '<!doctype html><html><body><form id="application_form"><div class="error"></div>'
+        '<p>Processing.</p></form></body></html>'),
     "/submit_noconfirm": "<!doctype html><html><body><p>Processing.</p></body></html>",
     "/submit_error": (
         '<!doctype html><html><body><form id="application_form" method="post" '
@@ -117,18 +121,32 @@ def form_posts() -> list[str]:
 @pytest.fixture
 def form_server(form_posts: list[str]) -> Iterator[str]:
     """Serve tests/fixtures/forms on 127.0.0.1 (ephemeral port); yields the base URL.
-    Every POST is recorded in ``form_posts``. POST /submit_ok redirects (303) to
-    /confirmation.html, /submit_noconfirm answers a neutral page, /submit_error answers
-    the form again with a visible error; anything else is 405."""
+    Every POST is recorded in ``form_posts``. POST /submit_ok (/submit_thanks) redirects
+    (303) to /confirmation.html (/thank-you.html), /submit_noop redirects back to the
+    Referer (same page), /submit_noconfirm a neutral page, /submit_keep a page keeping an empty
+    ``.error`` box, /submit_error the form again with a visible error; else 405.
+    GET /jobs/submitted-roles/1 serves greenhouse_submit_noop.html."""
     class Recording(_QuietHandler):
+        def do_GET(self) -> None:
+            parts = urlsplit(self.path)
+            if parts.path == "/jobs/submitted-roles/1":  # confirmation-like words in URL
+                self.path = "/greenhouse_submit_noop.html" + (
+                    "?" + parts.query if parts.query else "")
+            super().do_GET()
+
         def do_POST(self) -> None:
             form_posts.append(self.path)
             length = int(self.headers.get("Content-Length") or 0)
             self.rfile.read(length)
             route = urlsplit(self.path).path
-            if route == "/submit_ok":
+            if route == "/submit_noop":  # back to the same form page (same URL)
                 self.send_response(303)
-                self.send_header("Location", "/confirmation.html")
+                self.send_header("Location", self.headers.get("Referer") or "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif route in _REDIRECTS:
+                self.send_response(303)
+                self.send_header("Location", _REDIRECTS[route])
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             elif route in _POST_PAGES:

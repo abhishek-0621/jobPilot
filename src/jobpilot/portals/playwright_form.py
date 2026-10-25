@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
@@ -187,9 +188,11 @@ _ERRORS_JS = "(sels) => {" + _HELPERS + r"""
 
 
 _SUBMIT_CSS = "button[type=submit], input[type=submit]"
-_SUBMIT_NAME = re.compile(r"^(submit|submit application|apply|apply now|send application)$",
-                          re.I)
-CONFIRM_URL = re.compile(r"confirmation|thank|submitted|success", re.I)
+_SUBMIT_NAME = re.compile(r"^(submit|submit application|apply|send application)$", re.I)
+# Whole path segment only; the query string and host never count.
+CONFIRM_PATH = re.compile(
+    r"/(confirmation|confirm|thank[-_ ]?you|thanks|submitted|application-submitted)(/|$|\.)",
+    re.I)
 CONFIRM_TEXT = re.compile(r"thank you for applying|application (has been )?(received|submitted)"
                           r"|we('ve| have) received your application", re.I)
 _SUCCESS_WORDS = re.compile(r"thank|received|submitted", re.I)
@@ -205,13 +208,26 @@ _PAGE_STATE_JS = "(sels) => {" + _HELPERS + r"""
   for (const s of sels) { root = document.querySelector(s); if (root) break; }
   const visible = el => !!(el.offsetParent || el.getClientRects().length);
   const errors = root ? [...root.querySelectorAll('.error, [aria-invalid="true"]')]
-    .some(visible) : false;
+    .filter(visible).map(e => e.tagName + '#' + e.id + '.' + e.className + '['
+      + (e.getAttribute('name') || '') + ']|' + norm(e.textContent)) : [];
   const success = [...document.querySelectorAll(
     '[class*=success], [class*=confirmation], h1, h2')].filter(visible)
     .map(e => norm(e.textContent)).join(' \n ');
   return { text: document.body ? document.body.innerText : '', form: !!root,
            errors, success };
 }"""
+
+
+@dataclass(frozen=True)
+class PageBaseline:
+    """The form page just before the click; evidence must be new relative to it."""
+    url: str
+    text: str
+    errors: frozenset[str]
+
+
+def _no_fragment(url: str) -> str:
+    return url.split("#", 1)[0]
 
 
 @dataclass(frozen=True)
@@ -451,24 +467,41 @@ class PlaywrightFormAdapter:
         """Exactly one click. Never Enter, never ``form.submit()``, never retried."""
         await control.click(timeout=_ACTION_TIMEOUT_MS, no_wait_after=False)
 
-    async def detect_confirmation(self, timeout_s: float = 30) -> Confirmation:
-        """Poll every 500 ms for evidence of success (URL, page text, or the form gone with
-        a success element) or visible validation errors with the form still present."""
+    async def _page_state(self) -> dict[str, Any]:
+        state = await self.page.evaluate(_PAGE_STATE_JS, list(self.form_roots) + ["form"])
+        return {**state, "url": self.page.url}
+
+    async def capture_baseline(self) -> PageBaseline:
+        state = await self._page_state()
+        return PageBaseline(url=state["url"], text=state["text"] or "",
+                            errors=frozenset(state["errors"]))
+
+    async def detect_confirmation(self, baseline: PageBaseline,
+                                  timeout_s: float = 30) -> Confirmation:
+        """Poll every 500 ms for evidence that is new since ``baseline``:
+        * the URL changed to one whose path has a confirmation segment;
+        * a confirmation phrase absent before the click, with the form gone or the URL
+          changed;
+        * the form gone and a success element saying thank/received/submitted.
+        Error elements that were not there before, with the form still present, mean
+        FAILED. Anything else until the timeout is UNCERTAIN."""
         deadline = time.monotonic() + timeout_s
+        before = baseline.text.casefold()
         while True:
             try:
-                state = await self.page.evaluate(_PAGE_STATE_JS, list(self.form_roots)
-                                                 + ["form"])
-                url = self.page.url
+                state: dict[str, Any] | None = await self._page_state()
             except PlaywrightError:  # navigating: the old document is gone
-                state, url = None, ""
+                state = None
             if state is not None:
-                path = url.split("://", 1)[-1].partition("/")[2]
-                text = state["text"] or ""
-                if (CONFIRM_URL.search(path) or CONFIRM_TEXT.search(text)
-                        or (not state["form"] and _SUCCESS_WORDS.search(state["success"]))):
+                url, text, form = state["url"], state["text"] or "", state["form"]
+                moved = _no_fragment(url) != _no_fragment(baseline.url)
+                new_phrase = any(m.group(0).casefold() not in before
+                                 for m in CONFIRM_TEXT.finditer(text))
+                if ((moved and CONFIRM_PATH.search(urlsplit(url).path))
+                        or (new_phrase and (moved or not form))
+                        or (not form and _SUCCESS_WORDS.search(state["success"]))):
                     return Confirmation(ApplicationStatus.CONFIRMED, parse_reference(text))
-                if state["form"] and state["errors"]:
+                if form and set(state["errors"]) - baseline.errors:
                     return Confirmation(ApplicationStatus.SUBMISSION_FAILED)
             if time.monotonic() >= deadline:
                 return Confirmation(ApplicationStatus.SUBMISSION_UNCERTAIN)

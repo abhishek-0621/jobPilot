@@ -15,15 +15,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from jobpilot.agents.form_prep import ADAPTERS, allowed_hosts, form_url
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import ApplicationStatus, ErrorCode, PortalCapability
 from jobpilot.contracts.models import FieldAnswer, SubmitResult
 from jobpilot.data.tables import AuditEventRow
 from jobpilot.forms.browser import portal_page
 from jobpilot.forms.verify import verify_against_stored, with_bound_files
-from jobpilot.observability.events import SUBMIT_CLICKED, record_event, submit_click_recorded
-from jobpilot.orchestrator.engine import OutputRejected
+from jobpilot.observability.events import (
+    SUBMIT_CLICKED,
+    click_needle,
+    record_event,
+    submit_click_recorded,
+)
 from jobpilot.portals.base import (
     ApprovedApplication,
     FillReport,
@@ -34,6 +37,7 @@ from jobpilot.portals.base import (
     SubmissionEvidence,
     ValidationReport,
 )
+from jobpilot.portals.registry import ADAPTERS, allowed_hosts, form_url
 
 _A = ApplicationStatus
 _SHOT_RE = re.compile(r"^submit_v(\d+)\.png$")
@@ -107,10 +111,7 @@ class LiveSubmitter:
         cls = ADAPTERS.get(self.name)
         if cls is None or ctx.app.get("source") != self.name:
             raise PreSubmitMismatch("PORTAL_MISMATCH")
-        try:
-            url = form_url(ctx.app)
-        except OutputRejected as e:
-            raise PreSubmitMismatch("NO_APPLICATION_URL") from e
+        url = form_url(ctx.app)  # PortalConfigError: mapped by the engine, nothing clicked
         upload_root = self.cfg.storage_path / "artifacts" / app_id
         upload_root.mkdir(parents=True, exist_ok=True)
         answers = with_bound_files(ctx.answers, ctx.app)
@@ -135,10 +136,12 @@ class LiveSubmitter:
             if late:
                 raise ManualHandoff("BLOCKED:" + ",".join(sorted(late)))
             control = await adapter.locate_submit_control()
+            baseline = await adapter.capture_baseline()
             self._before_click(app_id, approved_application.idempotency_key)
             # ---- past this line the application may have been submitted ----
             await adapter.click_submit_once(control)
-            confirmation = await adapter.detect_confirmation(self._confirm_timeout_s)
+            confirmation = await adapter.detect_confirmation(baseline,
+                                                             self._confirm_timeout_s)
             shot: Path | None = upload_root / f"submit_v{_next_shot(upload_root)}.png"
             try:
                 await adapter.screenshot(shot)  # type: ignore[arg-type]
@@ -155,7 +158,7 @@ class LiveSubmitter:
             evidence_path=None if shot is None else str(shot),
             error_code=None if status is _A.CONFIRMED else (
                 ErrorCode.SUBMIT_NO_CONFIRMATION.value if status is _A.SUBMISSION_UNCERTAIN
-                else "SUBMIT_REJECTED"),
+                else ErrorCode.SUBMIT_REJECTED.value),
             retry_allowed=False,
             next_action="none" if status is _A.CONFIRMED else "check_application_history")
 
@@ -172,7 +175,7 @@ class LiveSubmitter:
                 return None
             app_id = s.execute(select(AuditEventRow.entity_id).where(
                 AuditEventRow.action == SUBMIT_CLICKED,
-                AuditEventRow.redacted_details_json.contains(idempotency_key))
+                AuditEventRow.redacted_details_json.contains(click_needle(idempotency_key)))
                 .limit(1)).scalar_one()
         return SubmitResult(task_id=idempotency_key, created_at=datetime.now(UTC),
                             application_id=app_id, status=_A.SUBMISSION_UNCERTAIN,

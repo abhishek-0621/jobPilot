@@ -53,6 +53,7 @@ from jobpilot.portals.base import (
     PreSubmitMismatch,
     idempotency_key,
 )
+from jobpilot.portals.registry import PortalConfigError
 from jobpilot.portals.simulated import SimulatedAdapter
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 8, 32)
 _ACTOR = "orchestrator"
 _PAUSED_KEY = "paused"
+_REREAD_CODES = frozenset({ErrorCode.FORM_LAYOUT_CHANGED.value, "VALUE_MISMATCH"})
 _UNRESOLVED_DECISIONS = (FieldDecision.ASK_USER.value, FieldDecision.BLOCKED.value)
 
 
@@ -440,6 +442,10 @@ class Orchestrator:
         except (PreSubmitMismatch, ManualHandoff) as exc:
             self._presubmit_abort(s, task.task_id, app.application_id, key, exc)
             return
+        except PortalConfigError as exc:  # raised before the browser opened
+            self._presubmit_abort(s, task.task_id, app.application_id, key,
+                                  PreSubmitMismatch(exc.code.upper()))
+            return
         except Exception as exc:
             self._submit_error(s, task.task_id, app.application_id, exc, None)
             return
@@ -482,17 +488,32 @@ class Orchestrator:
         assert task is not None
         svc = ApprovalService(s)
         svc.invalidate_application(application_id, reason=exc.code)
-        if isinstance(exc, PreSubmitMismatch):
-            if exc.code == ErrorCode.FORM_LAYOUT_CHANGED.value:
-                app.form_snapshot_hash = None
+        follow_ups: list[FollowUp] = []
+        if isinstance(exc, PreSubmitMismatch) and exc.code not in _REREAD_CODES:
+            # HASH_MISMATCH, STALE_DOCUMENTS, ...: the content changed; review it again
             transition(s, app, ApplicationStatus.READY_FOR_REVIEW, actor="presubmit",
                        reason=exc.code)
             app.content_hash = svc.application_hash(application_id)
+            if exc.code == "STALE_DOCUMENTS":
+                from jobpilot.orchestrator.documents_flow import (  # noqa: PLC0415 - cycle
+                    current_artifact_version,
+                    stale_follow_up,
+                )
+                versions = [current_artifact_version(s, a) for a in
+                            (app.resume_artifact_id, app.cover_letter_artifact_id)
+                            if a is not None]
+                follow_ups = stale_follow_up(s, task, application_id, versions,
+                                             "presubmit") or []
         else:
-            if exc.code.startswith("BLOCKED:"):
-                app.form_snapshot_hash = None
+            # the page differs from what was read (layout, values) or needs the user:
+            # the user re-reads the form
+            app.form_snapshot_hash = None
+            reason = exc.code if isinstance(exc, PreSubmitMismatch) \
+                else "manual_handoff:" + exc.code
             transition(s, app, ApplicationStatus.NEEDS_USER_INPUT, actor="presubmit",
-                       reason="manual_handoff:" + exc.code)
+                       reason=reason)
+        for kind, entity_type, entity_id in follow_ups:
+            self._add_task(s, TaskKind(kind), entity_type, entity_id)
         self._fail(s, task, "presubmit_failed", {"code": exc.code, "idempotency_key": key})
         s.commit()
 
