@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Activity{% endblock %}
 {% block content %}
-<h1>Activity</h1>
-<p class="muted">Newest first. Times are local; hover for UTC.</p>
+<div class="page-head"><div><h1>Activity</h1>
+<p class="muted">Newest first. Times are local; hover for UTC.</p></div></div>
 <div class="table-wrap"><table><thead><tr><th>When</th><th>Entity</th><th>Actor</th><th>Action</th><th>Outcome</th><th>Details</th></tr></thead><tbody>
-{% for e in events %}<tr><td title="{{ e.timestamp_utc|utc }}">{{ e.timestamp_utc|local }}</td><td class="mono">{{ e.entity_type }} {{ e.entity_id }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td{% if e.error_code %} class="err"{% endif %}>{{ e.outcome }}{% if e.error_code %} ({{ e.error_code }}){% endif %}</td><td class="mono">{{ e.redacted_details_json }}</td></tr>
+{% for e in events %}<tr><td class="nowrap mono" title="{{ e.timestamp_utc|utc }}">{{ e.timestamp_utc|local }}</td><td class="mono">{{ e.entity_type }} {{ e.entity_id }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td{% if e.error_code %} class="err"{% endif %}>{{ e.outcome }}{% if e.error_code %} ({{ e.error_code }}){% endif %}</td><td class="mono clip">{{ e.redacted_details_json }}</td></tr>
 {% else %}<tr><td colspan="6" class="muted">No activity yet.</td></tr>{% endfor %}
 </tbody></table></div>
 {% endblock %}

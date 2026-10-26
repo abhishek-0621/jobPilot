@@ -36,7 +36,7 @@ async def test_detail_shows_draft_only_label(factory, cfg) -> None:  # noqa: F81
     c = _client(factory, cfg)
     r = c.get(f"/ui/outreach/{oid}")
     assert r.status_code == 200
-    assert "Draft only — not sent" in r.text
+    assert "Draft only - not sent" in r.text
     assert "JobPilot never sends" in r.text
     a = c.get(f"/ui/applications/{app_id}")
     assert "Recruiter contacted: draft only" in a.text

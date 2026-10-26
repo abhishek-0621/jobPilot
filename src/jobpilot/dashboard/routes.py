@@ -30,6 +30,7 @@ from jobpilot.api.actions import (
     add_outreach_contact,
     approve_batch,
     approve_outreach,
+    batch_from_selected,
     choose_outreach_contact,
     edit_outreach_message,
     mark_applied,
@@ -45,6 +46,7 @@ from jobpilot.api.actions import (
     save_user_answers,
     select_job,
     skip_outreach,
+    start_applications,
     start_discovery,
     start_tailor,
     submit_candidates,
@@ -128,8 +130,8 @@ from jobpilot.profile.stories import stored_bank, verify_story
 MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
 NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
-UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
-STALE_MESSAGE = "This batch changed since you viewed it — reload to review the latest version."
+UNVERIFIED_BANNER = "Verify your profile before matching. Unverified facts are never used."
+STALE_MESSAGE = "This batch changed since you viewed it. Reload to review the latest version."
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -236,14 +238,36 @@ def _counts(s: Session) -> dict[str, Any]:
             ("Outreach", counts_by_status(s, OutreachDraftRow)),
         ],
         "pending": pending_batches(s),
+        "needs": _needs(s, apps),
     }
+
+
+def _needs(s: Session, apps: dict[str, int]) -> list[dict[str, Any]]:
+    """The "what needs you" counts on the overview, each with where to act on it."""
+    A = ApplicationStatus
+    n = apps.get
+    return [
+        {"label": "To review", "n": len(pending_batches(s)), "href": "/ui/batches",
+         "hint": "Batches waiting for your approval"},
+        {"label": "Ready to submit", "n": len(ready_unbatched_applications(s)),
+         "href": "/ui/ready", "hint": "Prepared and validated, not yet in a batch"},
+        {"label": "Needs input", "n": n(A.NEEDS_USER_INPUT.value, 0)
+         + n(A.VALIDATION_FAILED.value, 0), "href": "/ui/ready#needs-input",
+         "hint": "Questions only you can answer"},
+        {"label": "Uncertain", "n": n(A.SUBMISSION_UNCERTAIN.value, 0),
+         "href": "/ui/uncertain", "hint": "Submitted without a confirmation"},
+        {"label": "Manual apply ready", "n": n(A.MANUAL_APPLY_READY.value, 0),
+         "href": "/ui/ready#manual", "hint": "Packages for you to apply yourself"},
+    ]
 
 
 @router.get("/", response_class=HTMLResponse)
 def overview(request: Request, s: Db) -> HTMLResponse:
     return _page(request, s, "overview.html", {
-        **_counts(s), "failures": recent_failures(s),
+        **_counts(s), "failures": recent_failures(s, limit=5),
         "ready": ready_unbatched_applications(s),
+        "activity": list_events(s, limit=8),
+        "any_jobs": s.execute(select(JobRow.job_id).limit(1)).first() is not None,
     })
 
 
@@ -279,6 +303,14 @@ def _evidence(m: MatchAssessmentRow | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+_FACT_IDS = re.compile(r"\s*\(\s*fact_[\w-]+(?:\s*,\s*fact_[\w-]+)*\s*\)")
+
+
+def _clean_explanation(text: str) -> str:
+    """Display-only: drop parenthesised internal fact id lists from an explanation."""
+    return _FACT_IDS.sub("", text)
+
+
 def _one_line(text: str, limit: int = 120) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[:limit - 1] + "…"
@@ -310,7 +342,8 @@ def jobs(request: Request, s: Db, deleted: str | None = None) -> HTMLResponse:
                      else job.status, "score": score, "apply_mode": mode,
                      "posted": posted, "board": board_label(job.source),
                      "application_id": selected.get(job.job_id),
-                     "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
+                     "explanation": _one_line(_clean_explanation(
+                         str(_evidence(m).get("explanation") or ""))),
                      "selectable": job.status == JobStatus.MATCHED.value
                      and job.job_id not in selected})
     if f.sort == "score":
@@ -400,7 +433,7 @@ def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
         "requirements": extracted.get("requirements") if isinstance(extracted, dict)
         else None,
         "missing": ev.get("missing_requirements") or [], "concerns": ev.get("concerns") or [],
-        "explanation": ev.get("explanation") or "",
+        "explanation": _clean_explanation(str(ev.get("explanation") or "")),
         "events": list(reversed(list_events(s, job_id))),
         "application_id": app_id,
         "selectable": job.status == JobStatus.MATCHED.value and app_id is None})
@@ -414,7 +447,56 @@ def select_ui(request: Request, job_id: str, s: Db, orch: Orch) -> HTMLResponse:
         return _message(request, str(e), 404)
     except ActionConflict as e:
         return _message(request, str(e), 409)
-    return _message(request, "Selected — application created.", 200, ok=True)
+    return _message(request, "Selected. Application created.", 200, ok=True)
+
+
+@router.post("/ui/jobs/apply", response_class=HTMLResponse)
+def apply_selected_ui(request: Request, s: Db, orch: Orch,
+                      job_ids: Annotated[list[str] | None, Form()] = None) -> HTMLResponse:
+    """Start applications for the selected jobs. Preparation only: nothing is approved
+    or submitted here."""
+    try:
+        res = start_applications(s, orch, job_ids or [])
+    except ValueError as e:
+        return _message(request, str(e), 422)
+    titles = {j.job_id: f"{j.title} at {j.company}" for j in s.execute(
+        select(JobRow).where(JobRow.job_id.in_(
+            res.started + [i for i, _ in res.skipped + res.failed]))).scalars()}
+    ctx = {"res": res, "titles": titles}
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(request, "_apply_result.html", ctx)
+    return _page(request, s, "apply_result.html", ctx)
+
+
+@router.get("/ui/ready", response_class=HTMLResponse)
+def ready_page(request: Request, s: Db) -> HTMLResponse:
+    manual = s.execute(select(ApplicationRow, JobRow).join(
+        JobRow, JobRow.job_id == ApplicationRow.job_id).where(
+        ApplicationRow.status == ApplicationStatus.MANUAL_APPLY_READY.value)
+        .order_by(ApplicationRow.application_id)).all()
+    needs_input = s.execute(select(ApplicationRow, JobRow).join(
+        JobRow, JobRow.job_id == ApplicationRow.job_id).where(
+        ApplicationRow.status.in_((ApplicationStatus.NEEDS_USER_INPUT.value,
+                                   ApplicationStatus.VALIDATION_FAILED.value)))
+        .order_by(ApplicationRow.application_id)).all()
+    return _page(request, s, "ready.html", {
+        "ready": ready_unbatched_applications(s), "manual": manual,
+        "needs_input": needs_input,
+        "pending": pending_batches(s), "error": None})
+
+
+@router.post("/ui/ready/batch", response_model=None)
+def ready_batch_ui(request: Request, s: Db,
+                   application_ids: Annotated[list[str] | None, Form()] = None
+                   ) -> HTMLResponse | RedirectResponse:
+    """Build a review batch from the selected applications and open its review page.
+    Approval and submission stay separate, explicit steps on that page."""
+    try:
+        batch_id = batch_from_selected(s, application_ids or [])
+    except ValueError as e:
+        s.rollback()
+        return _message(request, str(e), 422)
+    return RedirectResponse(f"/ui/batches/{batch_id}", status_code=303)
 
 
 @router.post("/ui/applications/{application_id}/tailor", response_class=HTMLResponse)
@@ -541,7 +623,7 @@ def delete_application_ui(request: Request, application_id: str, s: Db,
 
 def _display(value: Any) -> str:
     if value is None or value == "" or value == []:
-        return "—"
+        return "-"
     if isinstance(value, bool):
         return "Yes" if value else "No"
     if isinstance(value, list):
@@ -878,7 +960,7 @@ def approve(
         return _message(request, f"Could not approve: {e}", 422)
     n = len(res.approved_ids)
     return _message(request, f"Approved {n} application{'s' if n != 1 else ''}. "
-                             "Nothing is submitted until you press Submit — reload to "
+                             "Nothing is submitted until you press Submit. Reload to "
                              "see the Submit button.", 200, ok=True)
 
 

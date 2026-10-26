@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Companies{% endblock %}
 {% block content %}
-<h1>Companies</h1>
-<p class="muted">Boards watched on each discovery run. Add a company by name: JobPilot checks its public Greenhouse, Lever, Ashby and SmartRecruiters boards (no login). Workday tenants and anything behind a login are added by hand; see the README.</p>
-{% if error %}<p class="err">{{ error }}</p>{% endif %}
-<form method="post" action="/ui/companies">
-<p><label>Company name <input type="text" name="name" required maxlength="100"></label> <button type="submit">Add company</button></p>
+<div class="page-head"><div><h1>Companies</h1>
+<p class="muted prose">Boards watched on each discovery run. Add a company by name: JobPilot checks its public Greenhouse, Lever, Ashby and SmartRecruiters boards (no login). Workday tenants and anything behind a login are added by hand; see the README.</p></div></div>
+<form method="post" action="/ui/companies" class="narrow panel">
+{% if error %}<div class="form-error" role="alert"><span class="err">{{ error }}</span></div>{% endif %}
+<label class="field"><span>Company name</span><input type="text" name="name" required maxlength="100"></label>
+<button type="submit" class="primary">Add company</button>
 </form>
 {% if summary %}
 <div class="msg" role="status">
@@ -18,5 +19,5 @@
 <div class="table-wrap"><table><thead><tr><th>Name</th><th>Source</th><th>Token</th></tr></thead><tbody>
 {% for b in boards %}<tr><td>{{ b.name }}</td><td>{{ b.source }}</td><td class="mono">{{ b.token }}</td></tr>{% endfor %}
 </tbody></table></div>
-{% else %}<p class="muted">No boards configured.</p>{% endif %}
+{% else %}<div class="empty"><strong>No boards configured.</strong><p>Add a company above to watch its public job board.</p></div>{% endif %}
 {% endblock %}

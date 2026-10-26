@@ -3,55 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true,"error":false},{"code":"422","swap":true,"error":false},{"code":"[45]..","swap":false,"error":true}]}'>
 <title>{% block title %}JobPilot{% endblock %} · JobPilot</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f6f68'/%3E%3Ctext x='16' y='22' font-family='system-ui,sans-serif' font-size='17' font-weight='600' text-anchor='middle' fill='%23f7fbfa'%3EJ%3C/text%3E%3C/svg%3E">
+<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js"></script>
-<style>
-:root{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--line:#e7e5e4;--card:#fff;--accent:#2563eb;--ok:#15803d;--bad:#b91c1c;--warn-bg:#fef3c7;--warn-fg:#92400e}
-@media (prefers-color-scheme:dark){:root{--bg:#0c0a09;--fg:#e7e5e4;--muted:#a8a29e;--line:#292524;--card:#1c1917;--accent:#60a5fa;--ok:#4ade80;--bad:#f87171;--warn-bg:#422006;--warn-fg:#fde68a}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-header{border-bottom:1px solid var(--line);background:var(--card)}
-.wrap{max-width:1080px;margin:0 auto;padding:0 16px}
-header .wrap{display:flex;gap:24px;align-items:center;height:52px;flex-wrap:wrap}
-header strong{font-size:16px}
-nav a{color:var(--muted);text-decoration:none;margin-right:16px}
-nav a:hover{color:var(--fg)}
-.live-bar{background:var(--bad);color:#fff;font-weight:700;text-align:center;padding:8px 16px}
-.badge{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--warn-bg);color:var(--warn-fg);margin-left:auto}
-main{padding:24px 16px}
-h1{font-size:22px;margin:0 0 16px}
-h2{font-size:16px;margin:24px 0 8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-.filters{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:flex-end;margin:8px 0}
-.filters label{display:flex;flex-direction:column;font-size:13px}
-.chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 10px;text-decoration:none}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px}
-.card h3{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.kv{display:flex;justify-content:space-between;font-variant-numeric:tabular-nums}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-a{color:var(--accent)}
-code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-all}
-.muted{color:var(--muted)}
-button{font:inherit;padding:8px 16px;border-radius:6px;border:0;background:var(--accent);color:#fff;cursor:pointer}
-.msg{padding:10px 12px;border-radius:6px;margin-top:12px;border:1px solid var(--line)}
-.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
-.err{color:var(--bad)}
-.live{color:var(--bad);font-weight:700}
-.warn{background:var(--warn-bg);color:var(--warn-fg);padding:1px 6px;border-radius:4px;font-size:12px;margin-right:4px}
-details summary{cursor:pointer}
-</style>
+<script src="/static/app.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 {% if live_portals %}<div class="live-bar" role="alert">LIVE SUBMISSION ON for: {{ live_portals | join(", ") }}</div>{% endif %}
-<header><div class="wrap">
-<strong>JobPilot</strong>
-<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/batches">Batches</a><a href="/ui/outreach">Outreach</a>{% if uncertain_count %}<a href="/ui/uncertain" class="err">Uncertain ({{ uncertain_count }})</a>{% endif %}<a href="/ui/companies">Companies</a><a href="/ui/events">Activity</a><a href="/ui/profile">Profile</a><a href="/ui/settings">Settings</a></nav>
-{% if not live_portals %}<span class="badge">Dry run — nothing is submitted</span>{% endif %}
+{% set path = request.url.path %}
+{% macro nav_link(href, label, prefix=None, cls="") -%}
+{%- set active = (path == href) if prefix is none else (path == href or path.startswith(prefix)) -%}
+<li><a href="{{ href }}"{% if cls %} class="{{ cls }}"{% endif %}{% if active %} aria-current="page"{% endif %}>{{ label }}</a></li>
+{%- endmacro %}
+<header class="site-header"><div class="wrap">
+<a class="brand" href="/"><span class="brand-mark" aria-hidden="true">J</span>JobPilot</a>
+<nav class="site-nav" aria-label="Primary"><ul>
+{{ nav_link("/", "Overview") }}
+{{ nav_link("/ui/jobs", "Jobs", "/ui/jobs") }}
+{{ nav_link("/ui/ready", "Ready to submit", "/ui/ready") }}
+{{ nav_link("/ui/batches", "Batches", "/ui/batches") }}
+{{ nav_link("/ui/outreach", "Outreach", "/ui/outreach") }}
+{% if uncertain_count %}{{ nav_link("/ui/uncertain", "Uncertain (" ~ uncertain_count ~ ")", "/ui/uncertain", "err") }}{% endif %}
+{{ nav_link("/ui/companies", "Companies", "/ui/companies") }}
+{{ nav_link("/ui/events", "Activity", "/ui/events") }}
+{{ nav_link("/ui/profile", "Profile", "/ui/profile") }}
+{{ nav_link("/ui/settings", "Settings", "/ui/settings") }}
+</ul></nav>
+{% if not live_portals %}<span class="badge mode">Dry run - nothing is submitted</span>{% endif %}
 </div></header>
-<main class="wrap">{% if profile_banner %}<div class="msg bad" role="status">{{ profile_banner }}</div>{% endif %}{% block content %}{% endblock %}</main>
+<main id="main" class="wrap" tabindex="-1">{% if profile_banner %}<div class="msg bad banner" role="status">{{ profile_banner }}{% if "Verify" in profile_banner %} <a href="/ui/profile">Open profile</a>{% endif %}</div>{% endif %}{% block content %}{% endblock %}</main>
 </body>
 </html>

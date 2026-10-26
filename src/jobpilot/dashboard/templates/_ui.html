@@ -1,0 +1,19 @@
+{# Shared presentation macros. Import with: {% import "_ui.html" as ui %} #}
+{% macro status(value) -%}
+{%- set v = value|string -%}
+{%- if v in ("CONFIRMED", "SUBMITTED", "SUBMITTED_BY_USER", "SENT", "APPROVED", "COMPLETED", "MATCHED", "Applied (manual)") -%}{% set kind = "success" %}
+{%- elif v in ("READY_FOR_REVIEW", "MANUAL_APPLY_READY", "NEEDS_REVIEW", "DRAFT_READY", "PARTIALLY_APPROVED") -%}{% set kind = "accent" %}
+{%- elif v in ("NEEDS_USER_INPUT", "VALIDATION_FAILED", "SUBMISSION_UNCERTAIN", "DELIVERY_UNKNOWN", "COMPLETED_WITH_ERRORS", "STALE") -%}{% set kind = "warn" %}
+{%- elif v in ("SUBMISSION_FAILED", "FAILED", "REJECTED", "REJECTED_BY_USER", "CLOSED", "CANCELLED", "EXPIRED", "DELETED") -%}{% set kind = "danger" %}
+{%- elif v in ("DOCUMENTS_PENDING", "FORM_IN_PROGRESS", "VALIDATING", "SUBMISSION_IN_PROGRESS", "SEND_IN_PROGRESS", "CONTACT_RESEARCH", "PROCESSING", "BUILDING") -%}{% set kind = "info" %}
+{%- else -%}{% set kind = "" %}{%- endif -%}
+<span class="pill status{% if kind %} pill-{{ kind }}{% endif %}">{{ v }}</span>
+{%- endmacro %}
+
+{% macro skeleton(rows=6) -%}
+<div class="skeleton table-wrap" aria-hidden="true">{% for _ in range(rows) %}<div class="skeleton-row"></div>{% endfor %}</div>
+{%- endmacro %}
+
+{% macro timeline(events) -%}
+{% if events %}<ol class="timeline">{% for e in events %}<li><time title="{{ e.timestamp_utc|utc }}">{{ e.timestamp_utc|local }}</time>{{ e.actor }} · {{ e.action }} · {{ e.outcome }}</li>{% endfor %}</ol>{% else %}<p class="muted">No events.</p>{% endif %}
+{%- endmacro %}

@@ -1,24 +1,39 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Jobs{% endblock %}
 {% block content %}
-<h1>Jobs</h1>
-{% if flash %}<p class="card" role="status">{{ flash }}</p>{% endif %}
-<p><button type="button" hx-post="/ui/runs/discovery" hx-target="#discover-result" hx-swap="innerHTML">Discover</button> <a href="/ui/jobs/new">Add a job</a></p>
+{% macro source_text(o) %}{{ board_label(o) or o }}{% endmacro %}
+<div class="page-head"><div><h1>Jobs</h1><p class="muted">Select matched jobs to start applications. Starting only prepares documents and answers; you approve before anything is submitted.</p></div>
+<div class="page-actions"><a class="button" href="/ui/jobs/new">Add a job</a><button type="button" class="primary" hx-post="/ui/runs/discovery" hx-target="#discover-result" hx-swap="innerHTML">Discover</button></div></div>
+{% if flash %}<p class="msg" role="status">{{ flash }}</p>{% endif %}
 <div id="discover-result"></div>
-<form id="job-filters" class="card filters" method="get" action="/ui/jobs" hx-get="/ui/jobs" hx-target="#jobs-results" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change, input changed delay:400ms from:input[type=search], submit">
-<label>Search <input type="search" name="q" value="{{ f.q }}" maxlength="200" placeholder="title, company, description"></label>
-<label>Location <input type="search" name="location" id="f-location" value="{{ f.location }}" maxlength="200"></label>
-<span class="quick">{% for chip in ("India", "Remote") %}<a href="/ui/jobs?location={{ chip|urlencode }}" hx-get="/ui/jobs?location={{ chip|urlencode }}" hx-target="#jobs-results" hx-swap="outerHTML" hx-push-url="true">{{ chip }}</a> {% endfor %}</span>
-<label>Company <select name="company" multiple size="4">{% for c in companies %}<option value="{{ c }}"{% if c in f.company %} selected{% endif %}>{{ c }}</option>{% endfor %}</select></label>
-<label>Source <select name="source" multiple size="4">{% for src in sources %}<option value="{{ src }}"{% if src in f.source %} selected{% endif %}>{{ board_label(src) or src }}</option>{% endfor %}</select></label>
-<label>Status <select name="status" multiple size="4">{% for st in statuses %}<option value="{{ st }}"{% if st in f.status %} selected{% endif %}>{{ st }}</option>{% endfor %}</select></label>
-<label>Work mode <select name="work_mode"><option value="">Any</option>{% for wm in work_modes %}<option value="{{ wm }}"{% if wm == f.work_mode %} selected{% endif %}>{{ wm }}</option>{% endfor %}</select></label>
-<label>Apply <select name="apply_mode"><option value="">Any</option>{% for am in ("automated", "manual") %}<option value="{{ am }}"{% if am == f.apply_mode %} selected{% endif %}>{{ am }}</option>{% endfor %}</select></label>
-<label>Min score <input type="number" name="min_score" min="0" max="100" step="1" value="{{ "%g"|format(f.min_score) if f.min_score is not none else "" }}"></label>
-<label>Posted within <select name="posted_within"><option value="">Any time</option>{% for d in posted_options %}<option value="{{ d }}"{% if d == f.posted_within %} selected{% endif %}>{{ d }} days</option>{% endfor %}</select></label>
-<label>Sort <select name="sort">{% for so in sorts %}<option value="{{ so }}"{% if so == f.sort %} selected{% endif %}>{{ {"score": "Score", "posted": "Posted date", "company": "Company"}[so] }}</option>{% endfor %}</select></label>
-<label><input type="checkbox" name="show_duplicates" value="1"{% if f.show_duplicates %} checked{% endif %}> Show duplicates</label>
-<button type="submit">Filter</button> <a href="/ui/jobs">Clear all</a>
+{% macro multi(name, label, options, selected, text=None) -%}
+<div class="ff"><span class="ff-label" id="lbl-{{ name }}">{{ label }}</span>
+<details class="multi" data-multi>
+<summary aria-labelledby="lbl-{{ name }}"><span data-multi-label data-none="Any">{% if selected %}{{ selected|length }} selected{% else %}Any{% endif %}</span></summary>
+<div class="multi-pop" role="group" aria-labelledby="lbl-{{ name }}">{% for o in options %}<label><input type="checkbox" name="{{ name }}" value="{{ o }}"{% if o in selected %} checked{% endif %}> {{ text(o) if text else o }}</label>{% else %}<span class="muted">None yet</span>{% endfor %}</div>
+</details></div>
+{%- endmacro %}
+<form id="job-filters" class="filters" method="get" action="/ui/jobs" hx-get="/ui/jobs" hx-target="#jobs-results" hx-swap="outerHTML" hx-push-url="true" hx-indicator="#jobs-area" hx-trigger="change, input changed delay:400ms from:input[type=search], submit">
+<label class="ff wide"><span class="ff-label">Search</span><input type="search" name="q" value="{{ f.q }}" maxlength="200" placeholder="Title, company, description"></label>
+<div class="ff"><label class="ff-label" for="f-location">Location</label><input type="search" name="location" id="f-location" value="{{ f.location }}" maxlength="200">
+<span class="quick">{% for chip in ("India", "Remote") %}<a href="/ui/jobs?location={{ chip|urlencode }}" hx-get="/ui/jobs?location={{ chip|urlencode }}" hx-target="#jobs-results" hx-swap="outerHTML" hx-push-url="true" hx-indicator="#jobs-area">{{ chip }}</a> {% endfor %}</span></div>
+{{ multi("company", "Company", companies, f.company) }}
+{{ multi("source", "Source", sources, f.source, source_text) }}
+{{ multi("status", "Status", statuses, f.status) }}
+<label class="ff"><span class="ff-label">Work mode</span><select name="work_mode"><option value="">Any</option>{% for wm in work_modes %}<option value="{{ wm }}"{% if wm == f.work_mode %} selected{% endif %}>{{ wm }}</option>{% endfor %}</select></label>
+<label class="ff"><span class="ff-label">Apply</span><select name="apply_mode"><option value="">Any</option>{% for am in ("automated", "manual") %}<option value="{{ am }}"{% if am == f.apply_mode %} selected{% endif %}>{{ am }}</option>{% endfor %}</select></label>
+<label class="ff"><span class="ff-label">Min score</span><input type="number" name="min_score" min="0" max="100" step="1" value="{{ "%g"|format(f.min_score) if f.min_score is not none else "" }}"></label>
+<label class="ff"><span class="ff-label">Posted within</span><select name="posted_within"><option value="">Any time</option>{% for d in posted_options %}<option value="{{ d }}"{% if d == f.posted_within %} selected{% endif %}>{{ d }} days</option>{% endfor %}</select></label>
+<label class="ff"><span class="ff-label">Sort</span><select name="sort">{% for so in sorts %}<option value="{{ so }}"{% if so == f.sort %} selected{% endif %}>{{ {"score": "Score", "posted": "Posted date", "company": "Company"}[so] }}</option>{% endfor %}</select></label>
+<div class="filter-actions"><label class="check-label"><input type="checkbox" name="show_duplicates" value="1"{% if f.show_duplicates %} checked{% endif %}> Show duplicates</label><button type="submit">Filter</button><a href="/ui/jobs">Clear all</a></div>
 </form>
-{% include "_jobs_results.html" %}
+<form id="apply-form" method="post" action="/ui/jobs/apply" hx-post="/ui/jobs/apply" hx-target="#apply-result" hx-swap="innerHTML">
+<div class="action-bar" data-action-bar="job_ids" hidden><span class="action-count"><span class="num" data-count>0</span> selected</span><span class="row"><button type="button" class="quiet" data-clear-selection="job_ids">Clear selection</button><button type="submit" class="primary">Start applications</button></span></div>
+</form>
+<div id="apply-result" aria-live="polite"></div>
+<div id="jobs-area">
+{{ ui.skeleton(8) }}
+<div class="results-dim">{% include "_jobs_results.html" %}</div>
+</div>
 {% endblock %}

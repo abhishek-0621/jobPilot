@@ -93,7 +93,7 @@ def test_banner_shown_when_live(factory: sessionmaker[Session], tmp_path: Path) 
     assert "LIVE SUBMISSION ON for: greenhouse, lever" in live.text
     off = _client(factory, make_cfg(tmp_path, True, ["greenhouse"])).get("/")
     assert "LIVE SUBMISSION" not in off.text
-    assert "Dry run — nothing is submitted" in off.text
+    assert "Dry run - nothing is submitted" in off.text
 
 
 def test_health_reports_live_portals(factory: sessionmaker[Session], tmp_path: Path) -> None:

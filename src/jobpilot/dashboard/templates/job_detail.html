@@ -1,39 +1,50 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}{{ job.title }}{% endblock %}
 {% block content %}
-<h1>{{ job.title }}</h1>
-<p>{{ job.company }} · {{ job.location or "location unknown" }}{% if job.work_mode %} · {{ job.work_mode }}{% endif %} · <strong>{{ job.status }}</strong></p>
-<p>Source: {{ board or job.source }}{% if board %} · via <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ board }}</a> (manual apply){% endif %} · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}</p>
-{% if application_id %}<p><a href="/ui/applications/{{ application_id }}">View application documents</a></p>{% endif %}
-{% if selectable %}<p><button type="button" hx-post="/ui/jobs/{{ job.job_id }}/select" hx-target="#select-result" hx-swap="innerHTML">Select</button></p><div id="select-result"></div>{% endif %}
+<div class="page-head"><div><h1>{{ job.title }}</h1>
+<p class="meta"><span>{{ job.company }}</span><span>{{ job.location or "location unknown" }}</span>{% if job.work_mode %}<span>{{ job.work_mode }}</span>{% endif %}{{ ui.status(job.status) }}</p></div>
+<div class="page-actions">{% if application_id %}<a class="button" href="/ui/applications/{{ application_id }}">View application documents</a>{% endif %}
+{% if selectable %}<form method="post" action="/ui/jobs/apply" hx-post="/ui/jobs/apply" hx-target="#select-result" hx-swap="innerHTML"><input type="hidden" name="job_ids" value="{{ job.job_id }}"><button type="submit" class="primary">Start application</button></form>{% endif %}</div></div>
+<div id="select-result" aria-live="polite"></div>
+<p class="meta">Source: {{ board or job.source }}{% if board %} · via <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ board }}</a> (manual apply){% endif %} · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}</p>
+<div class="split">
+<div>
 <h2>Requirements</h2>
-{% if requirements %}<ul>
+{% if requirements %}<div class="panel"><ul>
 <li>Required skills: {{ requirements.required_skills|join(", ") }}</li>
 <li>Preferred skills: {{ requirements.preferred_skills|join(", ") }}</li>
-<li>Experience: {{ requirements.experience_min_years if requirements.experience_min_years is not none else "?" }}–{{ requirements.experience_max_years if requirements.experience_max_years is not none else "?" }} years</li>
+<li>Experience: <span class="num">{{ requirements.experience_min_years if requirements.experience_min_years is not none else "?" }}-{{ requirements.experience_max_years if requirements.experience_max_years is not none else "?" }}</span> years</li>
 <li>Seniority: {{ requirements.seniority }} · Work mode: {{ requirements.work_mode }} · Role family: {{ requirements.role_family }}</li>
 <li>Summary: {{ requirements.summary }}</li>
-</ul>{% else %}<p class="muted">Not extracted yet.</p>{% endif %}
-<h2>Match</h2>
+</ul></div>{% else %}<p class="muted">Not extracted yet.</p>{% endif %}
 {% if m %}
-<div class="table-wrap"><table><tbody>
-<tr><th>Skill fit</th><td>{{ "%.1f"|format(m.skill_fit) }}</td></tr>
-<tr><th>Experience fit</th><td>{{ "%.1f"|format(m.experience_fit) }}</td></tr>
-<tr><th>Project fit</th><td>{{ "%.1f"|format(m.project_fit) }}</td></tr>
-<tr><th>Role/seniority fit</th><td>{{ "%.1f"|format(m.role_seniority_fit) }}</td></tr>
-<tr><th>Location fit</th><td>{{ "%.1f"|format(m.location_fit) }}</td></tr>
-<tr><th>Total</th><td><strong>{{ "%.1f"|format(m.total_score) }}</strong></td></tr>
-<tr><th>Hard filters</th><td>{{ "passed" if m.hard_filter_passed else "failed" }}</td></tr>
-<tr><th>Confidence</th><td>{{ "%.2f"|format(m.confidence) }}</td></tr>
-</tbody></table></div>
-<p>{{ explanation }}</p>
+<h2>Why it matches</h2>
+<p class="prose">{{ explanation }}</p>
 <h3>Matched evidence</h3>
 {% if evidence %}<ul>{% for f in evidence %}<li><span class="mono">{{ f.fact_id }}</span>: {{ f.value }}</li>{% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}
 <h3>Missing requirements</h3>
 {% if missing %}<ul>{% for x in missing %}<li>{{ x }}</li>{% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}
 <h3>Concerns</h3>
 {% if concerns %}<ul>{% for x in concerns %}<li>{{ x }}</li>{% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}
+{% endif %}
+</div>
+<div>
+<h2>Match</h2>
+{% if m %}
+<div class="table-wrap"><table><tbody>
+<tr><th>Skill fit</th><td class="n">{{ "%.1f"|format(m.skill_fit) }}</td></tr>
+<tr><th>Experience fit</th><td class="n">{{ "%.1f"|format(m.experience_fit) }}</td></tr>
+<tr><th>Project fit</th><td class="n">{{ "%.1f"|format(m.project_fit) }}</td></tr>
+<tr><th>Role/seniority fit</th><td class="n">{{ "%.1f"|format(m.role_seniority_fit) }}</td></tr>
+<tr><th>Location fit</th><td class="n">{{ "%.1f"|format(m.location_fit) }}</td></tr>
+<tr><th>Total</th><td class="n"><strong>{{ "%.1f"|format(m.total_score) }}</strong></td></tr>
+<tr><th>Hard filters</th><td class="n">{{ "passed" if m.hard_filter_passed else "failed" }}</td></tr>
+<tr><th>Confidence</th><td class="n">{{ "%.2f"|format(m.confidence) }}</td></tr>
+</tbody></table></div>
 {% else %}<p class="muted">Not matched yet.</p>{% endif %}
 <h2>Status timeline</h2>
-{% if events %}<ul>{% for e in events %}<li>{{ e.timestamp_utc|local }} · {{ e.actor }} · {{ e.action }} · {{ e.outcome }}</li>{% endfor %}</ul>{% else %}<p class="muted">No events.</p>{% endif %}
+{{ ui.timeline(events) }}
+</div>
+</div>
 {% endblock %}

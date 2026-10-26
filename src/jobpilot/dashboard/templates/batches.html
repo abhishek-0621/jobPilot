@@ -1,10 +1,12 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Batches{% endblock %}
 {% block content %}
-<h1>Batches awaiting approval</h1>
+<div class="page-head"><div><h1>Batches awaiting approval</h1><p class="muted">Each batch is a frozen snapshot of applications to approve together.</p></div>
+<div class="page-actions"><a class="button" href="/ui/ready">Choose applications</a></div></div>
 {% if rows %}
-<div class="table-wrap"><table><thead><tr><th>Batch</th><th>Version</th><th>Status</th><th>Applications</th><th>Approved</th></tr></thead><tbody>
-{% for r in rows %}<tr><td><a href="/ui/batches/{{ r.batch.batch_id }}" class="mono">{{ r.batch.batch_id }}</a></td><td>{{ r.batch.version }}</td><td>{{ r.batch.status }}</td><td>{{ r.total }}</td><td>{{ r.approved }}</td></tr>{% endfor %}
+<div class="table-wrap"><table class="batches-table"><thead><tr><th>Batch</th><th class="n">Version</th><th>Status</th><th class="n">Applications</th><th class="n">Approved</th></tr></thead><tbody>
+{% for r in rows %}<tr><td><a href="/ui/batches/{{ r.batch.batch_id }}" class="mono">{{ r.batch.batch_id }}</a></td><td>{{ r.batch.version }}</td><td>{{ ui.status(r.batch.status) }}</td><td>{{ r.total }}</td><td>{{ r.approved }}</td></tr>{% endfor %}
 </tbody></table></div>
-{% else %}<p class="muted">No batches are waiting for review.</p>{% endif %}
+{% else %}<div class="empty"><strong>No batches are waiting for review.</strong><p>Pick ready applications to build one.</p><a class="button primary" href="/ui/ready">Ready to submit</a></div>{% endif %}
 {% endblock %}
