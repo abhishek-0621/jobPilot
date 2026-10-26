@@ -9,7 +9,7 @@
 <div class="table-wrap"><table><thead><tr><th class="check"><input type="checkbox" id="select-all" data-select-all="application_ids" aria-label="Select all"></th><th>Company</th><th>Role</th><th>Application</th></tr></thead><tbody>
 {% for app, job in ready %}<tr><td class="check"><input type="checkbox" name="application_ids" value="{{ app.application_id }}" aria-label="Select {{ job.company }} {{ job.title }}"></td><td>{{ job.company }}</td><td><a href="/ui/applications/{{ app.application_id }}">{{ job.title }}</a></td><td class="mono">{{ app.application_id }}</td></tr>{% endfor %}
 </tbody></table></div>
-<div class="action-bar" data-action-bar="application_ids" hidden><span><span class="num" data-count>0</span> selected</span><button type="submit" class="primary">Review and approve selected</button></div>
+<div class="action-bar" data-action-bar="application_ids" hidden><span class="action-count"><span class="num" data-count>0</span> selected</span><span class="row"><button type="button" class="quiet" data-clear-selection="application_ids">Clear selection</button><button type="submit" class="primary">Review and approve selected</button></span></div>
 </form>
 {% else %}<div class="empty"><strong>Nothing is ready for review yet.</strong><p>Applications land here after their documents and answers pass validation.</p><a class="button" href="/ui/jobs">Start applications from Jobs</a></div>{% endif %}
 {% if pending %}<h2>Batches awaiting approval ({{ pending|length }})</h2>

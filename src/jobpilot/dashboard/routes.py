@@ -303,6 +303,14 @@ def _evidence(m: MatchAssessmentRow | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+_FACT_IDS = re.compile(r"\s*\(\s*fact_[\w-]+(?:\s*,\s*fact_[\w-]+)*\s*\)")
+
+
+def _clean_explanation(text: str) -> str:
+    """Display-only: drop parenthesised internal fact id lists from an explanation."""
+    return _FACT_IDS.sub("", text)
+
+
 def _one_line(text: str, limit: int = 120) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[:limit - 1] + "…"
@@ -334,7 +342,8 @@ def jobs(request: Request, s: Db, deleted: str | None = None) -> HTMLResponse:
                      else job.status, "score": score, "apply_mode": mode,
                      "posted": posted, "board": board_label(job.source),
                      "application_id": selected.get(job.job_id),
-                     "explanation": _one_line(str(_evidence(m).get("explanation") or "")),
+                     "explanation": _one_line(_clean_explanation(
+                         str(_evidence(m).get("explanation") or ""))),
                      "selectable": job.status == JobStatus.MATCHED.value
                      and job.job_id not in selected})
     if f.sort == "score":
@@ -424,7 +433,7 @@ def job_detail(request: Request, job_id: str, s: Db) -> HTMLResponse:
         "requirements": extracted.get("requirements") if isinstance(extracted, dict)
         else None,
         "missing": ev.get("missing_requirements") or [], "concerns": ev.get("concerns") or [],
-        "explanation": ev.get("explanation") or "",
+        "explanation": _clean_explanation(str(ev.get("explanation") or "")),
         "events": list(reversed(list_events(s, job_id))),
         "application_id": app_id,
         "selectable": job.status == JobStatus.MATCHED.value and app_id is None})

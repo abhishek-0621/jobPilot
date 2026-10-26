@@ -257,3 +257,22 @@ def test_job_rows_unchanged_by_failed_start(client: TestClient,
         job = s.get(JobRow, jid)
         assert job is not None and job.status != "MATCHED"
     assert _apps(factory) == {}
+
+
+def test_explanation_hides_fact_ids() -> None:
+    from jobpilot.dashboard.routes import _clean_explanation
+
+    assert _clean_explanation("Strong RAG fit (fact_exp_001, fact_proj_02). Good.") \
+        == "Strong RAG fit. Good."
+    assert _clean_explanation("Uses (Python) daily") == "Uses (Python) daily"
+
+
+def test_jobs_rows_keep_checkbox_column_aligned(
+        client: TestClient, factory: sessionmaker[Session]) -> None:
+    with factory() as s:
+        row, _ = upsert_job(s, make_listing(job_id="d", source_job_id="d",
+                                            canonical_url="https://example.com/d"))
+        s.commit()
+    page = client.get("/ui/jobs").text
+    assert 'name="job_ids" value="' not in page
+    assert "disabled" in page and 'title="Only matched jobs' in page

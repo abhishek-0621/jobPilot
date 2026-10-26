@@ -30,6 +30,36 @@
       refresh(t.name);
     }
   });
+  document.addEventListener("click", function (e) {
+    var t = e.target instanceof Element ? e.target.closest("[data-clear-selection]") : null;
+    if (t) {
+      var name = t.getAttribute("data-clear-selection");
+      boxes(name).forEach(function (b) { b.checked = false; });
+      refresh(name);
+      return;
+    }
+    // Close open filter dropdowns when clicking elsewhere.
+    document.querySelectorAll("details[data-multi][open]").forEach(function (d) {
+      if (!(e.target instanceof Node) || !d.contains(e.target)) { d.open = false; }
+    });
+  });
+  // Selected-count label on dropdown checkbox groups.
+  document.addEventListener("change", function (e) {
+    var t = e.target;
+    var d = t instanceof Element ? t.closest("details[data-multi]") : null;
+    if (!d) { return; }
+    var n = d.querySelectorAll('input[type="checkbox"]:checked').length;
+    var lbl = d.querySelector("[data-multi-label]");
+    if (lbl) { lbl.textContent = n ? n + " selected" : lbl.getAttribute("data-none"); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") { return; }
+    document.querySelectorAll("details[data-multi][open]").forEach(function (d) {
+      d.open = false;
+      var s = d.querySelector("summary");
+      if (s) { s.focus(); }
+    });
+  });
   function refreshAll() {
     document.querySelectorAll("[data-action-bar]").forEach(function (bar) {
       refresh(bar.getAttribute("data-action-bar"));
