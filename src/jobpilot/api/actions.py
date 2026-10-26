@@ -1,6 +1,8 @@
 """State-changing user actions shared by the JSON API and the dashboard."""
 
 import json
+import logging
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -55,6 +57,7 @@ from jobpilot.outreach.contacts import company_domain
 from jobpilot.outreach.state import research_blocker
 from jobpilot.util.hashing import content_hash
 
+log = logging.getLogger(__name__)
 DISCOVERY_RUNNING = "A discovery run is already queued or running."
 
 
@@ -143,6 +146,86 @@ def select_job(s: Session, orch: Orchestrator, job_id: str) -> ApplicationRow:
     orch.enqueue_in(s, TaskKind.TAILOR, "application", app.application_id)
     s.commit()
     return app
+
+
+MAX_BULK = 50
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
+
+
+def valid_ids(ids: list[str]) -> list[str]:
+    """De-duplicated ids in order; ValueError if empty, more than MAX_BULK or malformed."""
+    out = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
+    if not out:
+        raise ValueError("Select at least one item.")
+    if len(out) > MAX_BULK:
+        raise ValueError(f"Select at most {MAX_BULK} items at a time.")
+    if any(_ID_RE.fullmatch(i) is None for i in out):
+        raise ValueError("Some selected ids are not valid.")
+    return out
+
+
+@dataclass
+class BulkStartResult:
+    started: list[str]
+    skipped: list[tuple[str, str]]
+    failed: list[tuple[str, str]]
+
+
+def start_applications(s: Session, orch: Orchestrator, job_ids: list[str]) -> BulkStartResult:
+    """Start preparation for each job: one transaction per job, so a failure never
+    blocks the others. Only creates applications and queues TAILOR (via select_job);
+    it never approves or submits anything. Deny-listed / manual jobs start too and end
+    as a manual-apply package.
+
+    Raises ValueError for an invalid id list (nothing is started)."""
+    from jobpilot.orchestrator.state_machine import TERMINAL_APPLICATION
+
+    terminal = {st.value for st in TERMINAL_APPLICATION}
+    res = BulkStartResult([], [], [])
+    for job_id in valid_ids(job_ids):
+        existing = s.execute(select(ApplicationRow.status)
+                             .where(ApplicationRow.job_id == job_id)).scalar()
+        if existing is not None:
+            res.skipped.append((job_id, "already finished" if existing in terminal
+                                else "already in progress"))
+            continue
+        try:
+            select_job(s, orch, job_id)
+        except LookupError:
+            s.rollback()
+            res.failed.append((job_id, "job not found"))
+        except ActionConflict as e:
+            s.rollback()
+            res.failed.append((job_id, str(e)))
+        except Exception:
+            s.rollback()
+            log.exception("start_applications: job %s failed", job_id)
+            res.failed.append((job_id, "unexpected error, see the logs"))
+        else:
+            res.started.append(job_id)
+    return res
+
+
+def batch_from_selected(s: Session, application_ids: list[str]) -> str:
+    """Freeze a review batch from the selected READY_FOR_REVIEW applications that are
+    not already in a batch awaiting approval. Nothing is approved. Commits.
+
+    Raises ValueError (invalid ids, or an application that is not eligible)."""
+    from jobpilot.data.repositories import ready_unbatched_applications
+
+    ids = valid_ids(application_ids)
+    eligible = {a.application_id for a, _ in ready_unbatched_applications(s)}
+    if any(i not in eligible for i in ids):
+        raise ValueError("Only applications ready for review and not already in a "
+                         "batch can be selected.")
+    try:
+        batch = ApprovalService(s).build_batch(ids)
+    except ValueError:
+        s.rollback()
+        raise
+    batch_id = batch.batch_id
+    s.commit()
+    return batch_id
 
 
 TAILOR_RUNNING = "Tailoring is already queued or running for this application."

@@ -5,7 +5,7 @@
 <p>{{ job.company }} · {{ job.location or "location unknown" }}{% if job.work_mode %} · {{ job.work_mode }}{% endif %} · <strong>{{ job.status }}</strong></p>
 <p>Source: {{ board or job.source }}{% if board %} · via <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">{{ board }}</a> (manual apply){% endif %} · <a href="{{ job.canonical_url|safe_href }}" target="_blank" rel="noopener noreferrer">Original listing</a>{% if job.application_url %} · <a href="{{ job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">Apply page</a>{% endif %}</p>
 {% if application_id %}<p><a href="/ui/applications/{{ application_id }}">View application documents</a></p>{% endif %}
-{% if selectable %}<p><button type="button" hx-post="/ui/jobs/{{ job.job_id }}/select" hx-target="#select-result" hx-swap="innerHTML">Select</button></p><div id="select-result"></div>{% endif %}
+{% if selectable %}<form method="post" action="/ui/jobs/apply" hx-post="/ui/jobs/apply" hx-target="#select-result" hx-swap="innerHTML"><input type="hidden" name="job_ids" value="{{ job.job_id }}"><button type="submit" class="primary">Start application</button></form><div id="select-result"></div>{% endif %}
 <h2>Requirements</h2>
 {% if requirements %}<ul>
 <li>Required skills: {{ requirements.required_skills|join(", ") }}</li>

@@ -6,6 +6,7 @@
 <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true,"error":false},{"code":"422","swap":true,"error":false},{"code":"[45]..","swap":false,"error":true}]}'>
 <title>{% block title %}JobPilot{% endblock %} · JobPilot</title>
 <script src="/static/htmx.min.js"></script>
+<script src="/static/app.js" defer></script>
 <style>
 :root{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--line:#e7e5e4;--card:#fff;--accent:#2563eb;--ok:#15803d;--bad:#b91c1c;--warn-bg:#fef3c7;--warn-fg:#92400e}
 @media (prefers-color-scheme:dark){:root{--bg:#0c0a09;--fg:#e7e5e4;--muted:#a8a29e;--line:#292524;--card:#1c1917;--accent:#60a5fa;--ok:#4ade80;--bad:#f87171;--warn-bg:#422006;--warn-fg:#fde68a}}
@@ -43,13 +44,15 @@ button{font:inherit;padding:8px 16px;border-radius:6px;border:0;background:var(-
 .live{color:var(--bad);font-weight:700}
 .warn{background:var(--warn-bg);color:var(--warn-fg);padding:1px 6px;border-radius:4px;font-size:12px;margin-right:4px}
 details summary{cursor:pointer}
+.action-bar{position:sticky;bottom:16px;display:flex;gap:16px;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin:12px 0}
+.action-bar[hidden]{display:none}
 </style>
 </head>
 <body>
 {% if live_portals %}<div class="live-bar" role="alert">LIVE SUBMISSION ON for: {{ live_portals | join(", ") }}</div>{% endif %}
 <header><div class="wrap">
 <strong>JobPilot</strong>
-<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/batches">Batches</a><a href="/ui/outreach">Outreach</a>{% if uncertain_count %}<a href="/ui/uncertain" class="err">Uncertain ({{ uncertain_count }})</a>{% endif %}<a href="/ui/companies">Companies</a><a href="/ui/events">Activity</a><a href="/ui/profile">Profile</a><a href="/ui/settings">Settings</a></nav>
+<nav><a href="/">Overview</a><a href="/ui/jobs">Jobs</a><a href="/ui/ready">Ready to submit</a><a href="/ui/batches">Batches</a><a href="/ui/outreach">Outreach</a>{% if uncertain_count %}<a href="/ui/uncertain" class="err">Uncertain ({{ uncertain_count }})</a>{% endif %}<a href="/ui/companies">Companies</a><a href="/ui/events">Activity</a><a href="/ui/profile">Profile</a><a href="/ui/settings">Settings</a></nav>
 {% if not live_portals %}<span class="badge">Dry run — nothing is submitted</span>{% endif %}
 </div></header>
 <main class="wrap">{% if profile_banner %}<div class="msg bad" role="status">{{ profile_banner }}</div>{% endif %}{% block content %}{% endblock %}</main>

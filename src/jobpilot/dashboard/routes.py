@@ -30,6 +30,7 @@ from jobpilot.api.actions import (
     add_outreach_contact,
     approve_batch,
     approve_outreach,
+    batch_from_selected,
     choose_outreach_contact,
     edit_outreach_message,
     mark_applied,
@@ -45,6 +46,7 @@ from jobpilot.api.actions import (
     save_user_answers,
     select_job,
     skip_outreach,
+    start_applications,
     start_discovery,
     start_tailor,
     submit_candidates,
@@ -415,6 +417,49 @@ def select_ui(request: Request, job_id: str, s: Db, orch: Orch) -> HTMLResponse:
     except ActionConflict as e:
         return _message(request, str(e), 409)
     return _message(request, "Selected — application created.", 200, ok=True)
+
+
+@router.post("/ui/jobs/apply", response_class=HTMLResponse)
+def apply_selected_ui(request: Request, s: Db, orch: Orch,
+                      job_ids: Annotated[list[str] | None, Form()] = None) -> HTMLResponse:
+    """Start applications for the selected jobs. Preparation only: nothing is approved
+    or submitted here."""
+    try:
+        res = start_applications(s, orch, job_ids or [])
+    except ValueError as e:
+        return _message(request, str(e), 422)
+    titles = {j.job_id: f"{j.title} at {j.company}" for j in s.execute(
+        select(JobRow).where(JobRow.job_id.in_(
+            res.started + [i for i, _ in res.skipped + res.failed]))).scalars()}
+    ctx = {"res": res, "titles": titles}
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(request, "_apply_result.html", ctx)
+    return _page(request, s, "apply_result.html", ctx)
+
+
+@router.get("/ui/ready", response_class=HTMLResponse)
+def ready_page(request: Request, s: Db) -> HTMLResponse:
+    manual = s.execute(select(ApplicationRow, JobRow).join(
+        JobRow, JobRow.job_id == ApplicationRow.job_id).where(
+        ApplicationRow.status == ApplicationStatus.MANUAL_APPLY_READY.value)
+        .order_by(ApplicationRow.application_id)).all()
+    return _page(request, s, "ready.html", {
+        "ready": ready_unbatched_applications(s), "manual": manual,
+        "pending": pending_batches(s), "error": None})
+
+
+@router.post("/ui/ready/batch", response_model=None)
+def ready_batch_ui(request: Request, s: Db,
+                   application_ids: Annotated[list[str] | None, Form()] = None
+                   ) -> HTMLResponse | RedirectResponse:
+    """Build a review batch from the selected applications and open its review page.
+    Approval and submission stay separate, explicit steps on that page."""
+    try:
+        batch_id = batch_from_selected(s, application_ids or [])
+    except ValueError as e:
+        s.rollback()
+        return _message(request, str(e), 422)
+    return RedirectResponse(f"/ui/batches/{batch_id}", status_code=303)
 
 
 @router.post("/ui/applications/{application_id}/tailor", response_class=HTMLResponse)

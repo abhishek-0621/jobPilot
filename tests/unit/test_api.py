@@ -381,7 +381,7 @@ def test_job_detail_renders_scores_and_evidence(
     for text in ("GenAI Engineer", "Example AI", "81.5", "90.0", "100.0",
                  "Built a RAG pipeline for Example Corp", "Kubernetes", "short tenure",
                  "Strong GenAI overlap", 'href="https://example.com/job_m1"',
-                 "/ui/jobs/job_m1/select"):
+                 'hx-post="/ui/jobs/apply"', 'name="job_ids" value="job_m1"'):
         assert text in page.text, text
     assert client.get("/ui/jobs/nope").status_code == 404
     listing = client.get("/ui/jobs").text

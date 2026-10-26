@@ -1,0 +1,8 @@
+<div class="result" role="status">
+<p class="result-summary"><span class="pill pill-success">Started {{ res.started|length }}</span> <span class="pill pill-warn">Skipped {{ res.skipped|length }}</span> <span class="pill pill-danger">Failed {{ res.failed|length }}</span></p>
+{% if res.started %}<p class="muted">Preparing documents now. Applications appear on <a href="/ui/ready">Ready to submit</a> once they pass validation. Nothing is submitted without your approval.</p>{% endif %}
+{% if res.skipped or res.failed %}<ul class="result-list">
+{% for jid, why in res.skipped %}<li><a href="/ui/jobs/{{ jid }}">{{ titles.get(jid, jid) }}</a> <span class="muted">skipped: {{ why }}</span></li>{% endfor %}
+{% for jid, why in res.failed %}<li>{% if jid in titles %}<a href="/ui/jobs/{{ jid }}">{{ titles[jid] }}</a>{% else %}<span class="mono">{{ jid }}</span>{% endif %} <span class="err">failed: {{ why }}</span></li>{% endfor %}
+</ul>{% endif %}
+</div>

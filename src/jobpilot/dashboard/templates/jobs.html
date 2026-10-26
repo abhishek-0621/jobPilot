@@ -20,5 +20,9 @@
 <label><input type="checkbox" name="show_duplicates" value="1"{% if f.show_duplicates %} checked{% endif %}> Show duplicates</label>
 <button type="submit">Filter</button> <a href="/ui/jobs">Clear all</a>
 </form>
+<form id="apply-form" method="post" action="/ui/jobs/apply" hx-post="/ui/jobs/apply" hx-target="#apply-result" hx-swap="innerHTML">
+<div class="action-bar" data-action-bar="job_ids" hidden><span><span class="num" data-count>0</span> selected</span><button type="submit" class="primary">Start applications</button></div>
+</form>
+<div id="apply-result"></div>
 {% include "_jobs_results.html" %}
 {% endblock %}
