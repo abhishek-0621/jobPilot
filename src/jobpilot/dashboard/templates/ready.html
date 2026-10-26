@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Ready to submit{% endblock %}
 {% block content %}
-<h1>Ready to submit</h1>
-<p class="muted prose">Pick the applications you want to review together. This builds a review batch; you approve and submit on the batch page. Nothing is submitted from here.</p>
+<div class="page-head"><div><h1>Ready to submit</h1>
+<p class="muted prose">Pick the applications you want to review together. This builds a review batch; you approve and submit on the batch page. Nothing is submitted from here.</p></div></div>
 <h2>Ready for review ({{ ready|length }})</h2>
 {% if ready %}
 <form id="ready-form" method="post" action="/ui/ready/batch">
@@ -11,10 +11,15 @@
 </tbody></table></div>
 <div class="action-bar" data-action-bar="application_ids" hidden><span><span class="num" data-count>0</span> selected</span><button type="submit" class="primary">Review and approve selected</button></div>
 </form>
-{% else %}<p class="muted">Nothing is ready for review yet. Start applications from <a href="/ui/jobs">Jobs</a>.</p>{% endif %}
+{% else %}<div class="empty"><strong>Nothing is ready for review yet.</strong><p>Applications land here after their documents and answers pass validation.</p><a class="button" href="/ui/jobs">Start applications from Jobs</a></div>{% endif %}
 {% if pending %}<h2>Batches awaiting approval ({{ pending|length }})</h2>
 <ul>{% for b in pending %}<li><a href="/ui/batches/{{ b.batch_id }}" class="mono">{{ b.batch_id }}</a> <span class="muted">version {{ b.version }}</span></li>{% endfor %}</ul>{% endif %}
-<h2>Manual apply ready ({{ manual|length }})</h2>
+<h2 id="needs-input">Needs your input ({{ needs_input|length }})</h2>
+{% if needs_input %}<div class="table-wrap"><table><thead><tr><th>Company</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
+{% for app, job in needs_input %}<tr><td>{{ job.company }}</td><td>{{ job.title }}</td><td><span class="pill status pill-warn">{{ app.status }}</span></td><td><a href="/ui/applications/{{ app.application_id }}/answers">Answer questions</a></td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">No questions waiting for you.</p>{% endif %}
+<h2 id="manual">Manual apply ready ({{ manual|length }})</h2>
 <p class="muted prose">These need you to apply on the employer's site yourself. Each has a package of documents and drafted answers.</p>
 {% if manual %}<div class="table-wrap"><table><thead><tr><th>Company</th><th>Role</th><th></th></tr></thead><tbody>
 {% for app, job in manual %}<tr><td>{{ job.company }}</td><td>{{ job.title }}</td><td><a href="/ui/applications/{{ app.application_id }}/apply">Open apply page</a></td></tr>{% endfor %}

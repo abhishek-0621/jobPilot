@@ -130,8 +130,8 @@ from jobpilot.profile.stories import stored_bank, verify_story
 MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
 NO_PROFILE_BANNER = "Import your profile: uv run jobpilot profile import"
-UNVERIFIED_BANNER = "Verify your profile before matching — unverified facts are never used."
-STALE_MESSAGE = "This batch changed since you viewed it — reload to review the latest version."
+UNVERIFIED_BANNER = "Verify your profile before matching. Unverified facts are never used."
+STALE_MESSAGE = "This batch changed since you viewed it. Reload to review the latest version."
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -238,14 +238,36 @@ def _counts(s: Session) -> dict[str, Any]:
             ("Outreach", counts_by_status(s, OutreachDraftRow)),
         ],
         "pending": pending_batches(s),
+        "needs": _needs(s, apps),
     }
+
+
+def _needs(s: Session, apps: dict[str, int]) -> list[dict[str, Any]]:
+    """The "what needs you" counts on the overview, each with where to act on it."""
+    A = ApplicationStatus
+    n = apps.get
+    return [
+        {"label": "To review", "n": len(pending_batches(s)), "href": "/ui/batches",
+         "hint": "Batches waiting for your approval"},
+        {"label": "Ready to submit", "n": len(ready_unbatched_applications(s)),
+         "href": "/ui/ready", "hint": "Prepared and validated, not yet in a batch"},
+        {"label": "Needs input", "n": n(A.NEEDS_USER_INPUT.value, 0)
+         + n(A.VALIDATION_FAILED.value, 0), "href": "/ui/ready#needs-input",
+         "hint": "Questions only you can answer"},
+        {"label": "Uncertain", "n": n(A.SUBMISSION_UNCERTAIN.value, 0),
+         "href": "/ui/uncertain", "hint": "Submitted without a confirmation"},
+        {"label": "Manual apply ready", "n": n(A.MANUAL_APPLY_READY.value, 0),
+         "href": "/ui/ready#manual", "hint": "Packages for you to apply yourself"},
+    ]
 
 
 @router.get("/", response_class=HTMLResponse)
 def overview(request: Request, s: Db) -> HTMLResponse:
     return _page(request, s, "overview.html", {
-        **_counts(s), "failures": recent_failures(s),
+        **_counts(s), "failures": recent_failures(s, limit=5),
         "ready": ready_unbatched_applications(s),
+        "activity": list_events(s, limit=8),
+        "any_jobs": s.execute(select(JobRow.job_id).limit(1)).first() is not None,
     })
 
 
@@ -416,7 +438,7 @@ def select_ui(request: Request, job_id: str, s: Db, orch: Orch) -> HTMLResponse:
         return _message(request, str(e), 404)
     except ActionConflict as e:
         return _message(request, str(e), 409)
-    return _message(request, "Selected — application created.", 200, ok=True)
+    return _message(request, "Selected. Application created.", 200, ok=True)
 
 
 @router.post("/ui/jobs/apply", response_class=HTMLResponse)
@@ -443,8 +465,14 @@ def ready_page(request: Request, s: Db) -> HTMLResponse:
         JobRow, JobRow.job_id == ApplicationRow.job_id).where(
         ApplicationRow.status == ApplicationStatus.MANUAL_APPLY_READY.value)
         .order_by(ApplicationRow.application_id)).all()
+    needs_input = s.execute(select(ApplicationRow, JobRow).join(
+        JobRow, JobRow.job_id == ApplicationRow.job_id).where(
+        ApplicationRow.status.in_((ApplicationStatus.NEEDS_USER_INPUT.value,
+                                   ApplicationStatus.VALIDATION_FAILED.value)))
+        .order_by(ApplicationRow.application_id)).all()
     return _page(request, s, "ready.html", {
         "ready": ready_unbatched_applications(s), "manual": manual,
+        "needs_input": needs_input,
         "pending": pending_batches(s), "error": None})
 
 
@@ -586,7 +614,7 @@ def delete_application_ui(request: Request, application_id: str, s: Db,
 
 def _display(value: Any) -> str:
     if value is None or value == "" or value == []:
-        return "—"
+        return "-"
     if isinstance(value, bool):
         return "Yes" if value else "No"
     if isinstance(value, list):
@@ -923,7 +951,7 @@ def approve(
         return _message(request, f"Could not approve: {e}", 422)
     n = len(res.approved_ids)
     return _message(request, f"Approved {n} application{'s' if n != 1 else ''}. "
-                             "Nothing is submitted until you press Submit — reload to "
+                             "Nothing is submitted until you press Submit. Reload to "
                              "see the Submit button.", 200, ok=True)
 
 

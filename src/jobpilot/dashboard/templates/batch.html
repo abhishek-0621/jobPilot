@@ -1,30 +1,32 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Batch {{ batch.batch_id }}{% endblock %}
 {% block content %}
-<h1>Review batch</h1>
-<p><span class="mono">{{ batch.batch_id }}</span> · version {{ batch.version }} · {{ batch.status }}</p>
+<div class="page-head"><div><h1>Review batch</h1>
+<p class="meta"><span class="mono">{{ batch.batch_id }}</span><span>version {{ batch.version }}</span>{{ ui.status(batch.status) }}</p></div></div>
+<p class="muted prose">Approve exactly what you see. Approving does not submit: submitting is a separate step below, after approval.</p>
 <p class="muted">Content hash: <code>{{ batch.content_hash }}</code></p>
 <form hx-post="/ui/batches/{{ batch.batch_id }}/approve" hx-target="#approve-result" hx-swap="innerHTML" method="post" action="/ui/batches/{{ batch.batch_id }}/approve">
 <input type="hidden" name="content_hash" value="{{ batch.content_hash }}">
 <input type="hidden" name="version" value="{{ batch.version }}">
-<div class="table-wrap"><table><thead><tr><th></th><th>Company / role</th><th>Status</th><th>Documents</th><th>Answers</th><th>Warnings</th><th>Evidence</th><th>Item hash</th></tr></thead><tbody>
+<div class="table-wrap"><table><thead><tr><th></th><th>Company / role</th><th>Status</th><th>Documents</th><th>Answers</th><th>Warnings</th><th>Evidence</th><th class="n">Item hash</th></tr></thead><tbody>
 {% for r in rows %}<tr>
-<td>{% if r.item.selected and not r.changed %}✓{% elif r.app %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" {% if r.changed or r.app.status != "READY_FOR_REVIEW" %}disabled{% else %}checked{% endif %} aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
+<td class="check">{% if r.item.selected and not r.changed %}✓{% elif r.app %}<input type="checkbox" name="ids" value="{{ r.item.application_id }}" {% if r.changed or r.app.status != "READY_FOR_REVIEW" %}disabled{% else %}checked{% endif %} aria-label="Approve {{ r.job.company if r.job else r.item.application_id }}">{% endif %}</td>
 <td>{% if r.job %}{{ r.job.company }}<br><a href="/ui/jobs/{{ r.job.job_id }}">{{ r.job.title }}</a> · <a href="{{ r.job.application_url|safe_href }}" target="_blank" rel="noopener noreferrer">portal</a>{% endif %}
-{% if r.changed %}<br><span class="warn">Changed since batch was built — rebuild batch</span>{% endif %}</td>
-<td>{{ r.app.status if r.app else "" }}{% if r.app %}<br>{% if r.live %}<span class="live">will submit LIVE to {{ r.app.portal }}</span>{% else %}<span class="muted">dry run (simulated)</span>{% endif %}{% endif %}</td>
+{% if r.changed %}<br><span class="warn">Changed since batch was built. Rebuild batch</span>{% endif %}</td>
+<td>{% if r.app %}{{ ui.status(r.app.status) }}{% endif %}{% if r.app %}<br>{% if r.live %}<span class="live">will submit LIVE to {{ r.app.portal }}</span>{% else %}<span class="muted">dry run (simulated)</span>{% endif %}{% endif %}</td>
 <td>{% if r.app and r.app.resume_artifact_id %}<a href="/artifacts/{{ r.app.resume_artifact_id }}" target="_blank" rel="noopener noreferrer">Resume</a>{% else %}<span class="muted">No resume</span>{% endif %}<br>{% if r.app and r.app.cover_letter_artifact_id %}<a href="/artifacts/{{ r.app.cover_letter_artifact_id }}" target="_blank" rel="noopener noreferrer">Cover letter</a>{% else %}<span class="muted">No cover letter</span>{% endif %}</td>
 <td><details><summary>{% for d, n in r.summary %}{{ d }} {{ n }}{% if not loop.last %} · {% endif %}{% else %}No answers{% endfor %}</summary>
 <table><thead><tr><th>Field</th><th>Decision</th><th>Value</th><th>Source</th></tr></thead><tbody>
-{% for a in r.answers %}<tr><td>{{ a.label }}</td><td>{{ a.decision }}</td><td>{{ a.display }}</td><td class="mono">{{ a.source or "—" }}</td></tr>{% endfor %}
+{% for a in r.answers %}<tr><td>{{ a.label }}</td><td>{{ a.decision }}</td><td>{{ a.display }}</td><td class="mono">{{ a.source or "-" }}</td></tr>{% endfor %}
 </tbody></table></details></td>
 <td>{% if r.review_count %}<span class="warn">{{ r.review_count }} to review</span>{% endif %}{% if r.suggested_count %}<span class="warn">{{ r.suggested_count }} model-suggested</span>{% endif %}</td>
 <td>{% if r.shot %}<a href="/artifacts/{{ r.shot.artifact_id }}" target="_blank" rel="noopener noreferrer">Screenshot</a>{% else %}<span class="muted">None</span>{% endif %}</td>
-<td class="mono" title="{{ r.item.item_hash }}">{{ r.item.item_hash[:16] }}</td></tr>{% endfor %}
+<td class="mono n" title="{{ r.item.item_hash }}">{{ r.item.item_hash[:16] }}</td></tr>{% endfor %}
 </tbody></table></div>
-{% if batch.status in ("READY_FOR_REVIEW", "PARTIALLY_APPROVED") %}<p><button type="submit">Approve selected</button></p>{% endif %}
+{% if batch.status in ("READY_FOR_REVIEW", "PARTIALLY_APPROVED") %}<p class="mt-4"><button type="submit" class="primary">Approve selected</button></p>{% endif %}
 </form>
-{% if pending or any_changed %}<form method="post" action="/ui/batches/{{ batch.batch_id }}/rebuild"><button type="submit">Rebuild batch</button> <span class="muted">Re-freezes the applications that are still ready for review.</span></form>{% endif %}
+{% if pending or any_changed %}<form method="post" action="/ui/batches/{{ batch.batch_id }}/rebuild" class="row"><button type="submit">Rebuild batch</button> <span class="muted">Re-freezes the applications that are still ready for review.</span></form>{% endif %}
 <div id="approve-result"></div>
 {% if submittable %}<h2>Submit</h2>
 <p>{{ submittable|length }} approved application{{ "s" if submittable|length != 1 }} not yet submitted:
@@ -32,7 +34,7 @@
 <form hx-post="/ui/batches/{{ batch.batch_id }}/submit" hx-target="#submit-result" hx-swap="innerHTML" method="post" action="/ui/batches/{{ batch.batch_id }}/submit">
 {% if submit_live %}<p class="live">This sends real applications to employers. One click per application; it cannot be undone.</p>
 <label>Type SUBMIT to confirm: <input name="confirm" autocomplete="off" required pattern="SUBMIT" aria-label="Type SUBMIT to confirm live submission"></label>{% endif %}
-<button type="submit">Submit approved applications</button>
+<button type="submit" class="primary">Submit approved applications</button>
 </form>
 <div id="submit-result"></div>{% endif %}
 {% endblock %}

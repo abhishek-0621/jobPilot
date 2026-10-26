@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Apply manually{% endblock %}
 {% block content %}
-<h1>Apply manually{% if job %} · {{ job.title }} · {{ job.company }}{% endif %}</h1>
-<p><strong>{% if ready %}{{ app.status }}{% else %}Applied (manual){% endif %}</strong> · <a href="/ui/applications/{{ app.application_id }}">Application</a>{% if job %} · <a href="{{ (job.application_url or job.canonical_url)|safe_href }}" target="_blank" rel="noopener noreferrer">Open the job to apply</a>{% endif %}</p>
+<div class="page-head"><div><h1>Apply manually{% if job %} · {{ job.title }} · {{ job.company }}{% endif %}</h1>
+<p class="meta"><strong class="pill status{{ ' pill-accent' if ready else ' pill-success' }}">{% if ready %}{{ app.status }}{% else %}Applied (manual){% endif %}</strong><a href="/ui/applications/{{ app.application_id }}">Application</a></p></div>
+{% if job %}<div class="page-actions"><a class="button primary" href="{{ (job.application_url or job.canonical_url)|safe_href }}" target="_blank" rel="noopener noreferrer">Open the job to apply</a></div>{% endif %}</div>
 {% if not ready %}<p class="muted">You marked this application as applied{% if app.confirmation_reference %} · Reference: <span class="mono">{{ app.confirmation_reference }}</span>{% endif %}. This page is read-only now.</p>{% endif %}
 <h2>Documents</h2>
 <ul>
@@ -11,7 +12,7 @@
 </ul>
 {% if letter %}
 <h3>Cover letter text</h3>
-<textarea readonly id="cover-text" rows="12" style="width:100%" aria-label="Cover letter text">{{ letter }}</textarea>
+<textarea readonly id="cover-text" rows="12" aria-label="Cover letter text">{{ letter }}</textarea>
 <p><button type="button" data-copy="cover-text">Copy</button></p>
 {% endif %}
 <h2>Drafted answers</h2>
@@ -19,25 +20,25 @@
 <form method="post" action="/ui/applications/{{ app.application_id }}/apply/answers">
 <div class="table-wrap"><table><thead><tr><th>Question</th><th>Decision</th><th>Answer</th><th></th></tr></thead><tbody>
 {% for r in rows %}<tr>
-<td>{{ r.label }}</td>
-<td><span class="badge">{{ r.decision }}</span></td>
-<td>{% if r.editable and ready %}<textarea id="ans-{{ loop.index }}" name="v:{{ r.field_id }}" rows="3" style="width:100%" aria-label="{{ r.label }}">{{ r.value }}</textarea>{% else %}<textarea readonly id="ans-{{ loop.index }}" rows="2" style="width:100%" aria-label="{{ r.label }}">{{ r.value }}</textarea>{% endif %}
+<td class="top">{{ r.label }}</td>
+<td class="top"><span class="badge">{{ r.decision }}</span></td>
+<td>{% if r.editable and ready %}<textarea id="ans-{{ loop.index }}" name="v:{{ r.field_id }}" rows="3" aria-label="{{ r.label }}">{{ r.value }}</textarea>{% else %}<textarea readonly id="ans-{{ loop.index }}" rows="2" aria-label="{{ r.label }}">{{ r.value }}</textarea>{% endif %}
 {% if r.decision == "ASK_USER" or r.decision == "USER_ONLY" %}<br><span class="muted">Answer this yourself</span>{% endif %}
-{% if r.stories %}<br><span class="muted">Drafted from: {{ r.stories|join(", ") }} — review before pasting</span>{% elif r.rationale %}<br><span class="muted">{{ r.rationale }}</span>{% endif %}</td>
-<td><button type="button" data-copy="ans-{{ loop.index }}">Copy</button></td>
+{% if r.stories %}<br><span class="muted">Drafted from: {{ r.stories|join(", ") }}, review before pasting</span>{% elif r.rationale %}<br><span class="muted">{{ r.rationale }}</span>{% endif %}</td>
+<td class="top"><button type="button" class="quiet" data-copy="ans-{{ loop.index }}">Copy</button></td>
 </tr>{% endfor %}
 </tbody></table></div>
-{% if ready %}<p><button type="submit">Save answers</button></p>{% endif %}
+{% if ready %}<p class="mt-4"><button type="submit" class="primary">Save answers</button></p>{% endif %}
 </form>
 {% else %}<p class="muted">No drafted answers.</p>{% endif %}
 {% if ready %}
 <h2>Mark as applied</h2>
-<form method="post" action="/ui/applications/{{ app.application_id }}/mark-applied">
-<p><label>Confirmation reference (optional) <input type="text" name="reference" maxlength="100"></label></p>
-<p><label>Applied on (optional) <input type="date" name="applied_on" max="{{ today }}"></label></p>
-<button type="submit">Mark as applied</button>
+<form method="post" action="/ui/applications/{{ app.application_id }}/mark-applied" class="narrow panel">
+<label class="field"><span>Confirmation reference (optional)</span><input type="text" name="reference" maxlength="100"></label>
+<label class="field"><span>Applied on (optional)</span><input type="date" name="applied_on" max="{{ today }}"></label>
+<button type="submit" class="primary">Mark as applied</button>
 </form>
-<form method="post" action="/ui/applications/{{ app.application_id }}/not-applying" style="margin-top:12px"><button type="submit">Not applying</button></form>
+<form method="post" action="/ui/applications/{{ app.application_id }}/not-applying" class="mt-3"><button type="submit">Not applying</button></form>
 {% endif %}
 <script>
 document.querySelectorAll("[data-copy]").forEach(function (b) {
@@ -49,7 +50,7 @@ document.querySelectorAll("[data-copy]").forEach(function (b) {
       b.textContent = text;
       setTimeout(function () { b.textContent = label; }, 2000);
     }
-    function fallback() { el.focus(); el.select(); done("Copy failed \u2014 select and copy manually"); }
+    function fallback() { el.focus(); el.select(); done("Copy failed - select and copy manually"); }
     if (!navigator.clipboard) { fallback(); return; }
     navigator.clipboard.writeText(el.value).then(function () { done("Copied"); }, fallback);
   });

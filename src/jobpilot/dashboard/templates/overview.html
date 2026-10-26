@@ -1,19 +1,23 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Overview{% endblock %}
 {% block content %}
-<h1>Overview</h1>
+<div class="page-head"><div><h1>Overview</h1><p class="muted">What needs you first, then how the pipeline is moving.</p></div>
+<div class="page-actions"><a class="button" href="/ui/jobs">Browse jobs</a><a class="button primary" href="/ui/ready">Ready to submit</a></div></div>
+{% if profile_banner %}<div class="empty"><strong>Verify your facts to start scoring jobs</strong><p>JobPilot only matches and writes from facts you have verified.</p><a class="button primary" href="/ui/profile">Open profile</a></div>
+{% elif not any_jobs %}<div class="empty"><strong>No jobs yet, run discovery</strong><p>Discovery reads the boards you follow and scores each job against your verified profile.</p><a class="button primary" href="/ui/jobs">Go to jobs</a></div>{% endif %}
 {% include "_counts.html" %}
 <h2>Ready for review, not yet batched ({{ ready|length }})</h2>
 {% if ready %}
 <div class="table-wrap"><table><thead><tr><th>Company</th><th>Role</th><th>Application</th></tr></thead><tbody>
-{% for app, job in ready %}<tr><td>{{ job.company }}</td><td>{{ job.title }}</td><td class="mono">{{ app.application_id }}</td></tr>{% endfor %}
+{% for app, job in ready %}<tr><td>{{ job.company }}</td><td><a href="/ui/applications/{{ app.application_id }}">{{ job.title }}</a></td><td class="mono">{{ app.application_id }}</td></tr>{% endfor %}
 </tbody></table></div>
-<form method="post" action="/ui/batches" style="margin-top:12px"><button type="submit">Build review batch</button></form>
+<div class="mt-3 row"><form method="post" action="/ui/batches"><button type="submit" class="primary">Build review batch</button></form><a href="/ui/ready">Choose which ones</a></div>
 {% else %}<p class="muted">No unbatched applications are ready.</p>{% endif %}
-<h2>Recent failures</h2>
-{% if failures %}
-<div class="table-wrap"><table><thead><tr><th>When</th><th>Entity</th><th>Action</th><th>Error</th></tr></thead><tbody>
-{% for e in failures %}<tr><td title="{{ e.timestamp_utc|utc }}">{{ e.timestamp_utc|local }}</td><td class="mono">{{ e.entity_type }} {{ e.entity_id }}</td><td>{{ e.action }}</td><td class="err">{{ e.error_code }}</td></tr>{% endfor %}
-</tbody></table></div>
-{% else %}<p class="muted">No failures.</p>{% endif %}
+<div class="split">
+<section><h2>Recent activity</h2>{{ ui.timeline(activity) }}<p><a href="/ui/events">All activity</a></p></section>
+<section><h2>Recent failures</h2>
+{% if failures %}<ol class="timeline">{% for e in failures %}<li><time title="{{ e.timestamp_utc|utc }}">{{ e.timestamp_utc|local }}</time><span class="mono">{{ e.entity_type }} {{ e.entity_id }}</span> · {{ e.action }} <span class="err">{{ e.error_code }}</span></li>{% endfor %}</ol>
+{% else %}<p class="muted">No failures.</p>{% endif %}</section>
+</div>
 {% endblock %}

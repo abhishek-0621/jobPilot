@@ -1,15 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Add a job{% endblock %}
 {% block content %}
-<h1>Add a job</h1>
-<p class="muted">Paste a job from any site (LinkedIn, Naukri, a company page). JobPilot never opens that site: it prepares your documents and answers, and you apply yourself.</p>
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
-<form method="post" action="/ui/jobs/new">
-<p><label>URL <input type="url" name="url" required value="{{ form.url or '' }}"></label></p>
-<p><label>Title <input type="text" name="title" required value="{{ form.title or '' }}"></label></p>
-<p><label>Company <input type="text" name="company" required value="{{ form.company or '' }}"></label></p>
-<p><label>Location <input type="text" name="location" value="{{ form.location or '' }}"></label></p>
-<p><label>Description<br><textarea name="description" rows="14" cols="80">{{ form.description or '' }}</textarea></label></p>
-<p><button type="submit">Add job</button></p>
+<div class="page-head"><div><h1>Add a job</h1><p class="muted prose">Paste a job from any site (LinkedIn, Naukri, a company page). JobPilot never opens that site: it prepares your documents and answers, and you apply yourself.</p></div></div>
+<form method="post" action="/ui/jobs/new" class="narrow-lg panel">
+{% if error %}<p class="error form-error" role="alert">{{ error }}</p>{% endif %}
+<label class="field"><span>URL</span><input type="url" name="url" required value="{{ form.url or '' }}"></label>
+<label class="field"><span>Title</span><input type="text" name="title" required value="{{ form.title or '' }}"></label>
+<label class="field"><span>Company</span><input type="text" name="company" required value="{{ form.company or '' }}"></label>
+<label class="field"><span>Location</span><input type="text" name="location" value="{{ form.location or '' }}"></label>
+<label class="field"><span>Description</span><textarea name="description" rows="14" cols="80">{{ form.description or '' }}</textarea></label>
+<button type="submit" class="primary">Add job</button>
 </form>
 {% endblock %}

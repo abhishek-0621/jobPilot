@@ -1,14 +1,20 @@
-<section id="counts" hx-get="/ui/overview/counts" hx-trigger="every 5s" hx-swap="outerHTML">
+<section id="counts" hx-get="/ui/overview/counts" hx-trigger="every 5s" hx-swap="outerHTML" aria-labelledby="needs-title">
+<h2 id="needs-title" class="sr-only">What needs you</h2>
+<div class="needs">
+{% for x in needs %}<a class="need{{ ' hot' if x.n else ' zero' }}" href="{{ x.href }}"><span class="n">{{ x.n }}</span><span class="label">{{ x.label }}</span><span class="hint">{{ x.hint }}</span></a>
+{% endfor %}
+</div>
+<h2>Pipeline</h2>
 <div class="grid">
 <div class="card"><h3>Applied</h3><div class="kv"><span>Applied</span><span>{{ applied.total }}</span></div><div class="muted">(automated {{ applied.automated }}, manual {{ applied.manual }})</div></div>
 {% for name, counts in sections %}
 <div class="card"><h3>{{ name }}</h3>
-{% for status, n in counts|dictsort %}<div class="kv"><span>{{ status }}</span><span>{{ n }}</span></div>
+{% for status, n in counts|dictsort %}<div class="kv"><span class="status">{{ status }}</span><span>{{ n }}</span></div>
 {% else %}<div class="muted">None yet</div>{% endfor %}
 </div>
 {% endfor %}
 </div>
 <h2>Pending approvals ({{ pending|length }})</h2>
-{% if pending %}<ul>{% for b in pending %}<li><a href="/ui/batches/{{ b.batch_id }}">{{ b.batch_id }}</a> v{{ b.version }} · {{ b.status }}</li>{% endfor %}</ul>
+{% if pending %}<ul>{% for b in pending %}<li><a href="/ui/batches/{{ b.batch_id }}" class="mono">{{ b.batch_id }}</a> <span class="muted">version {{ b.version }}</span> <span class="pill status pill-accent">{{ b.status }}</span></li>{% endfor %}</ul>
 {% else %}<p class="muted">Nothing waiting for review.</p>{% endif %}
 </section>

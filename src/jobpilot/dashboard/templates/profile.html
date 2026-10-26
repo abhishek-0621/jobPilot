@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Profile{% endblock %}
 {% block content %}
-<h1>Profile</h1>
-<p><a href="/ui/profile/stories">Story bank</a> · stories for essay questions</p>
+<div class="page-head"><div><h1>Profile</h1>
+{% if version is not none %}<p class="muted">Active profile version <span class="num">{{ version }}</span>. Only verified facts are ever used.</p>{% endif %}</div>
+<div class="page-actions"><a class="button" href="/ui/profile/stories">Story bank</a><span class="muted">Stories for essay questions</span></div></div>
 {% if version is none %}
-<p class="muted">No profile imported yet.</p>
+<div class="empty"><strong>No profile imported yet.</strong><p>Run <code>uv run jobpilot profile import</code> in a terminal, then verify your facts here.</p></div>
 {% else %}
-<p class="muted">Active profile version {{ version }}. Only verified facts are ever used.</p>
 {% for category, facts in sections.items() %}
 <h2>{{ category }}</h2>
-<form method="post" action="/ui/profile/sections/{{ category|urlencode }}/verify"><button type="submit">Verify all in section</button></form>
+<form method="post" action="/ui/profile/sections/{{ category|urlencode }}/verify" class="mb-3"><button type="submit">Verify all in section</button></form>
 <div class="table-wrap"><table><thead><tr><th>Verified</th><th>Field</th><th>Value</th></tr></thead><tbody>
-{% for f in facts %}<tr><td><input type="checkbox" aria-label="Verify {{ f.fact_id }}" name="verified" value="true" {% if f.verified_by_user %}checked{% endif %}
+{% for f in facts %}<tr><td class="check"><input type="checkbox" aria-label="Verify {{ f.fact_id }}" name="verified" value="true" {% if f.verified_by_user %}checked{% endif %}
  hx-post="/ui/profile/facts/{{ f.fact_id }}/verify" hx-vals='js:{"verified": event.target.checked ? "true" : "false"}' hx-target="#fact-msg-{{ loop.index0 }}-{{ category }}" hx-swap="innerHTML">
  <span id="fact-msg-{{ loop.index0 }}-{{ category }}"></span></td><td>{{ f.field }}</td><td>{{ f.value }}</td></tr>{% endfor %}
 </tbody></table></div>
@@ -20,12 +20,12 @@
 <h2>Answer library</h2>
 <form method="post" action="/ui/profile/answers">
 <div class="table-wrap"><table><thead><tr><th>Question</th><th>Current</th><th>New value</th><th>Clear</th></tr></thead><tbody>
-{% for f in fields if f.editable %}<tr><td>{{ f.name }} <span class="muted">({{ f.decision }})</span></td><td>{{ f.value if f.value is not none else "—" }}</td>
+{% for f in fields if f.editable %}<tr><td>{{ f.name }} <span class="muted">({{ f.decision }})</span></td><td>{{ f.value if f.value is not none else "-" }}</td>
 <td><input type="text" name="{{ f.key }}" aria-label="{{ f.name }}"></td><td><input type="checkbox" name="clear_{{ f.key }}" aria-label="Clear {{ f.name }}"></td></tr>{% endfor %}
 </tbody></table></div>
-<button type="submit">Save answers</button>
+<p class="mt-4"><button type="submit" class="primary">Save answers</button></p>
 </form>
-<h3 class="muted">User-only</h3>
+<h3>User-only</h3>
 <p class="muted">You answer these yourself on each form.</p>
 <ul>{% for f in fields if not f.editable %}<li>{{ f.name }}</li>{% endfor %}</ul>
 

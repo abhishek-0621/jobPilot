@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Outreach draft{% endblock %}
 {% block content %}
-<h1>Outreach{% if job %} · {{ job.title }} · {{ job.company }}{% endif %}</h1>
-<p><strong>{{ draft.status }}</strong>{% if app %} · <a href="/ui/applications/{{ app.application_id }}">Application</a>{% endif %}</p>
-<p class="msg">{% if draft.status == "SENT" %}You marked this as sent{% if draft.sent_at %} on {{ draft.sent_at|local }}{% endif %}.{% else %}Draft only — not sent.{% endif %} JobPilot never sends messages: copy it, send it yourself, then click Mark as sent.</p>
+<div class="page-head"><div><h1>Outreach{% if job %} · {{ job.title }} · {{ job.company }}{% endif %}</h1>
+<p class="meta"><strong class="pill status">{{ draft.status }}</strong>{% if app %}<a href="/ui/applications/{{ app.application_id }}">Application</a>{% endif %}</p></div></div>
+<p class="msg">{% if draft.status == "SENT" %}You marked this as sent{% if draft.sent_at %} on {{ draft.sent_at|local }}{% endif %}.{% else %}Draft only - not sent.{% endif %} JobPilot never sends messages: copy it, send it yourself, then click Mark as sent.</p>
 {% if draft.skip_reason == "no_public_contact" %}<p class="msg bad">No suitable public contact found. Add one you found yourself below.</p>{% elif draft.skip_reason %}<p class="muted">Skipped ({{ draft.skip_reason }}).</p>{% endif %}
 <h2>Contact</h2>
 {% if contact %}<p>{{ contact.name }}{% if contact.professional_title %}, {{ contact.professional_title }}{% endif %} · {{ draft.channel }} · confidence {{ contact.confidence }}{% if contact.address %} · <span class="mono">{{ contact.address }}</span>{% endif %} · <a href="{{ contact.public_source_url|safe_href }}" target="_blank" rel="noopener noreferrer">source</a></p>
@@ -12,11 +12,11 @@
 {% else %}<p class="muted">No contact chosen.</p>{% endif %}
 <h2>Message</h2>
 <form method="post" action="/ui/outreach/{{ draft.outreach_id }}/message">
-<textarea id="outreach-message" name="message" rows="10" style="width:100%"{% if not editable %} readonly{% endif %}>{{ draft.message_text }}</textarea>
-<p><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('outreach-message').value)">Copy</button>{% if editable %} <button type="submit">Save edits</button> <span class="muted">Saving revokes any approval.</span>{% endif %}</p>
+<textarea id="outreach-message" name="message" rows="10"{% if not editable %} readonly{% endif %}>{{ draft.message_text }}</textarea>
+<p class="mt-2 row"><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('outreach-message').value)">Copy</button>{% if editable %} <button type="submit" class="primary">Save edits</button> <span class="muted">Saving revokes any approval.</span>{% endif %}</p>
 </form>
 {% if draft.status == "NEEDS_REVIEW" and contact %}
-<form method="post" action="/ui/outreach/{{ draft.outreach_id }}/approve"><input type="hidden" name="hash" value="{{ hash }}"><button type="submit">Approve this message</button></form>
+<form method="post" action="/ui/outreach/{{ draft.outreach_id }}/approve"><input type="hidden" name="hash" value="{{ hash }}"><button type="submit" class="primary">Approve this message</button></form>
 {% endif %}
 {% if draft.status == "APPROVED" and approved %}
 <h2>Mark as sent</h2>
@@ -24,18 +24,18 @@
 {% endif %}
 {% if editable %}
 <h2>Alternates</h2>
-{% if alternates %}<ul>{% for c in alternates %}<li>{{ c.name }} · {{ c.channel }} · {{ c.confidence }}{% if c.address %} · <span class="mono">{{ c.address }}</span>{% endif %} <form method="post" action="/ui/outreach/{{ draft.outreach_id }}/contact" style="display:inline"><input type="hidden" name="contact_id" value="{{ c.contact_id }}"><button type="submit">Use this contact</button></form></li>{% endfor %}</ul>{% else %}<p class="muted">No other contacts.</p>{% endif %}
+{% if alternates %}<ul>{% for c in alternates %}<li>{{ c.name }} · {{ c.channel }} · {{ c.confidence }}{% if c.address %} · <span class="mono">{{ c.address }}</span>{% endif %} <form method="post" action="/ui/outreach/{{ draft.outreach_id }}/contact" class="inline"><input type="hidden" name="contact_id" value="{{ c.contact_id }}"><button type="submit">Use this contact</button></form></li>{% endfor %}</ul>{% else %}<p class="muted">No other contacts.</p>{% endif %}
 {% endif %}
 {% if editable or draft.skip_reason == "no_public_contact" %}
 <h2>Add a contact you found</h2>
-<form method="post" action="/ui/outreach/{{ draft.outreach_id }}/contacts">
-<label>Name <input type="text" name="name" required></label>
-<label>Title <input type="text" name="title"></label>
-<label>Channel <select name="channel"><option value="email">email</option><option value="linkedin">linkedin</option></select></label>
-<label>Email or profile URL <input type="text" name="address" required></label>
-<label>Where you found it (URL) <input type="url" name="source_url" required></label>
+<form method="post" action="/ui/outreach/{{ draft.outreach_id }}/contacts" class="narrow panel">
+<label class="field"><span>Name</span><input type="text" name="name" required></label>
+<label class="field"><span>Title</span><input type="text" name="title"></label>
+<label class="field"><span>Channel</span><select name="channel"><option value="email">email</option><option value="linkedin">linkedin</option></select></label>
+<label class="field"><span>Email or profile URL</span><input type="text" name="address" required></label>
+<label class="field"><span>Where you found it (URL)</span><input type="url" name="source_url" required></label>
 <button type="submit">Add contact</button>
 </form>
 {% endif %}
-{% if editable %}<form method="post" action="/ui/outreach/{{ draft.outreach_id }}/skip"><button type="submit">Skip outreach</button></form>{% endif %}
+{% if editable %}<form method="post" action="/ui/outreach/{{ draft.outreach_id }}/skip" class="mt-5"><button type="submit" class="danger">Skip outreach</button></form>{% endif %}
 {% endblock %}

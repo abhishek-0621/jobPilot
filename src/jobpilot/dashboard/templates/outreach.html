@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Outreach{% endblock %}
 {% block content %}
-<h1>Outreach</h1>
-<p class="muted">Drafts only. JobPilot never sends a message: you send it yourself, then click Mark as sent.</p>
+<div class="page-head"><div><h1>Outreach</h1>
+<p class="muted prose">Drafts only. JobPilot never sends a message: you send it yourself, then click Mark as sent.</p></div></div>
 {% if rows %}
-<div class="table-wrap"><table><thead><tr><th>Status</th><th>Company</th><th>Role</th><th>Contact</th><th>Confidence</th><th>Channel</th></tr></thead><tbody>
+<div class="table-wrap"><table><thead><tr><th>Status</th><th>Company</th><th>Role</th><th>Contact</th><th class="n">Confidence</th><th>Channel</th></tr></thead><tbody>
 {% for r in rows %}<tr><td><a href="/ui/outreach/{{ r.draft.outreach_id }}">{{ r.draft.status }}</a>{% if r.draft.skip_reason == "no_public_contact" %}<br><span class="muted">No suitable public contact found</span>{% endif %}</td>
-<td>{{ r.job.company if r.job else "—" }}</td><td>{{ r.job.title if r.job else "—" }}</td>
-<td>{% if r.contact %}{{ r.contact.name }}{% if r.contact.address %}<br><span class="mono">{{ r.contact.address }}</span>{% endif %}<br><a href="{{ r.contact.public_source_url|safe_href }}" target="_blank" rel="noopener noreferrer">source</a>{% else %}—{% endif %}</td>
-<td>{{ r.contact.confidence if r.contact else "—" }}</td><td>{{ r.draft.channel or "—" }}</td></tr>{% endfor %}
+<td>{{ r.job.company if r.job else "-" }}</td><td>{{ r.job.title if r.job else "-" }}</td>
+<td>{% if r.contact %}{{ r.contact.name }}{% if r.contact.address %}<br><span class="mono">{{ r.contact.address }}</span>{% endif %}<br><a href="{{ r.contact.public_source_url|safe_href }}" target="_blank" rel="noopener noreferrer">source</a>{% else %}-{% endif %}</td>
+<td class="n">{{ r.contact.confidence if r.contact else "-" }}</td><td>{{ r.draft.channel or "-" }}</td></tr>{% endfor %}
 </tbody></table></div>
-{% else %}<p class="muted">No outreach drafts yet.</p>{% endif %}
+{% else %}<div class="empty"><strong>No outreach drafts yet.</strong><p>Open an application and choose Draft outreach to find a public recruiting contact.</p></div>{% endif %}
 {% endblock %}
