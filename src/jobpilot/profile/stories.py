@@ -65,6 +65,8 @@ class QuestionKey(StrEnum):
     SWOT = "swot"
     WHY_AI = "why_ai"
     OVERALL_EXPERTISE = "overall_expertise"
+    WHY_COMPANY = "why_company"
+    WHY_ROLE = "why_role"
 
 
 # Themes a story needs to answer each question type (any one of them).
@@ -86,6 +88,10 @@ KEY_THEMES: dict[QuestionKey, tuple[Theme, ...]] = {
     QuestionKey.SWOT: (Theme.STRENGTHS, Theme.WEAKNESSES),
     QuestionKey.WHY_AI: (Theme.WHY_AI,),
     QuestionKey.OVERALL_EXPERTISE: (Theme.STRENGTHS, Theme.BUILT_EXPLAIN, Theme.ACHIEVEMENT),
+    # why-company answers are written from the company brief; stories only add detail
+    QuestionKey.WHY_COMPANY: (Theme.BUILT_EXPLAIN, Theme.ACHIEVEMENT, Theme.PROUD_OF,
+                              Theme.STRENGTHS),
+    QuestionKey.WHY_ROLE: (Theme.BUILT_EXPLAIN, Theme.STRENGTHS, Theme.ACHIEVEMENT),
 }
 
 

@@ -21,6 +21,7 @@
 {% if can_draft_outreach %}<form method="post" action="/ui/applications/{{ app.application_id }}/outreach" class="stack"><button type="submit">Draft outreach</button> <span class="muted">Finds a public recruiting contact and drafts a short note for you to review. JobPilot never sends it.</span></form>{% endif %}
 </section>
 </div>
+{% if brief %}{{ ui.company_brief(brief, "/ui/applications/" ~ app.application_id) }}{% endif %}
 <h2>Resume</h2>
 {% if resume %}
 <p class="muted">Version <span class="num">{{ resume.version }}</span>{% if docx %} · <a href="/artifacts/{{ docx.artifact_id }}" download>Download DOCX</a>{% endif %} · <a href="/artifacts/{{ resume.artifact_id }}" target="_blank" rel="noopener noreferrer">Open PDF</a></p>

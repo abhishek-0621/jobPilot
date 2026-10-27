@@ -143,7 +143,8 @@ async def test_unverify_invalidates_but_user_answer_kept(tmp_path: Path) -> None
 
 def test_manual_package_includes_essays(tmp_path: Path) -> None:
     keys = [k for k, _ in ESSAY_QUESTIONS]
-    assert keys == ["proud_of", "failure", "challenge", "strengths", "weaknesses", "why_ai"]
+    assert keys == ["why_company", "proud_of", "failure", "challenge", "strengths",
+                    "weaknesses", "why_ai"]
     from tests.agent_contracts.test_essay import bank
     ectx = EssayContext(bank=bank(verified={"latency-cut"}), facts={}, skills=[],
                         job={"company": "Example AI", "title": "GenAI Engineer"})
@@ -154,6 +155,10 @@ def test_manual_package_includes_essays(tmp_path: Path) -> None:
     assert out[ESSAY_PREFIX + "weaknesses"].rationale.startswith("Essay (weaknesses): your")
     assert out[ESSAY_PREFIX + "failure"].decision == FieldDecision.ASK_USER  # unverified
     assert "needs_story:failure" in out[ESSAY_PREFIX + "failure"].rationale
+    why = out[ESSAY_PREFIX + "why_company"]  # no company brief: never a generic answer
+    assert why.decision == FieldDecision.ASK_USER and why.proposed_value is None
+    assert "No recent company information found" in why.rationale
+    assert why.label == "Why do you want to work at Example AI?"
     assert all(a.decision != FieldDecision.AUTO_FILL for a in out.values())
 
 

@@ -41,7 +41,8 @@ class DocsGateway(FakeGateway):
                        prompt_version: str, model_tag: str | None = None
                        ) -> tuple[BaseModel, None]:
         docs = {"resume_tailoring": TAILOR, "cover_letter": LETTER,
-                "form_mapping": {"suggestions": []}}  # keys only; none suggested
+                "form_mapping": {"suggestions": []},  # keys only; none suggested
+                "company_research": {"items": []}}  # nothing found about the company
         if route in docs:
             self.calls.append(route)
             return schema.model_validate(docs[route]), None

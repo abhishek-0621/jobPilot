@@ -22,3 +22,6 @@ routes:
   essay:
     model_tag: gemma4:12b
     max_tokens: 2048
+  company_research:
+    model_tag: gemma4:e4b
+    max_tokens: 1024

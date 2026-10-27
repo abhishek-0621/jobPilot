@@ -137,7 +137,7 @@ async def test_essay_draft_receives_field_maxlength(monkeypatch) -> None:
         raise _Stop
     monkeypatch.setattr(essay_mod.EssayAgent, "draft", fake_draft)
     monkeypatch.setattr(essay_mod, "essay_candidates",
-                        lambda fields, answers: [(fields[0], QuestionKey.PROUD_OF)])
+                        lambda fields, answers, company=None: [(fields[0], QuestionKey.PROUD_OF)])
     f = FormField(field_id="q", label="Why us?", field_type="textarea", required=False,
                   maxlength=321)
 

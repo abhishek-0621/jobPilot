@@ -324,8 +324,9 @@ def test_select_enqueues_tailor(factory: sessionmaker[Session], tmp_path: Path) 
     app_id = client.post("/jobs/job_m1/select").json()["application_id"]
     with factory() as s:
         tasks = s.execute(select(TaskRow)).scalars().all()
-    assert [(t.kind, t.entity_type, t.entity_id) for t in tasks] == [
-        ("TAILOR", "application", app_id)]
+    # company research runs alongside (PREPARE_FORM waits for it); nothing else
+    assert sorted((t.kind, t.entity_type, t.entity_id) for t in tasks) == [
+        ("COMPANY_RESEARCH", "application", app_id), ("TAILOR", "application", app_id)]
 
 
 def test_tailor_endpoints_conflict_when_queued(

@@ -1,5 +1,7 @@
 # Example company boards. Real lists go in storage/profiles/companies.yaml (git-ignored),
 # which takes precedence over this file.
+# Optional per company: extra: {research_urls: "https://example.com/blog https://example.com/news"}
+# (up to 6 public http(s) pages JobPilot may read for "Why this company?" answers).
 companies:
   - {name: Example AI, source: greenhouse, token: exampleai}
   - {name: Sample Labs, source: lever, token: samplelabs}

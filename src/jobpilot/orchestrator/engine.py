@@ -92,6 +92,7 @@ class TaskKind(StrEnum):
     SUBMIT = "SUBMIT"
     OUTREACH_RESEARCH = "OUTREACH_RESEARCH"
     OUTREACH_SEND = "OUTREACH_SEND"
+    COMPANY_RESEARCH = "COMPANY_RESEARCH"
 
 
 SIDE_EFFECT_KINDS = frozenset({TaskKind.SUBMIT, TaskKind.OUTREACH_SEND})
@@ -150,6 +151,17 @@ Handler = Callable[[Session, TaskRow, BaseModel], list[FollowUp]]
 
 class OutputRejected(Exception):
     """Raised by a handler when agent output fails business validation."""
+
+
+class Deferred(Exception):
+    """Raised by an agent that must wait for another task (e.g. company research) before
+    it can run: the task is re-queued ``delay_s`` later. Agents cap how often they defer
+    (by ``TaskInput.attempt``), so a wait can never last forever."""
+
+    def __init__(self, reason: str, delay_s: float = 15.0) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.delay_s = delay_s
 
 
 def noop_handler(session: Session, task: TaskRow, output: BaseModel) -> list[FollowUp]:
@@ -378,6 +390,15 @@ class Orchestrator:
             code = e.code if isinstance(e, ModelError) else ErrorCode.MODEL_TIMEOUT
             self._record_run(s, task, agent, AgentRunStatus.FAILED, started, code)
             self._handle_model_error(s, task, code)
+            s.commit()
+            return
+        except Deferred as e:
+            task.status = TaskStatus.QUEUED.value
+            task.lease_until = None
+            task.not_before = self._clock() + timedelta(seconds=e.delay_s)
+            record_event(s, entity_type="task", entity_id=task.task_id, actor=_ACTOR,
+                         action="task_deferred", outcome="retry",
+                         details={"reason": e.reason, "attempt": task.attempts})
             s.commit()
             return
         except OutputRejected as e:

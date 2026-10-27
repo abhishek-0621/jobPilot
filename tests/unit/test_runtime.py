@@ -46,7 +46,7 @@ def test_build_runtime_registers_kinds(factory: sessionmaker[Session], tmp_path:
     rt = build_runtime(_cfg(tmp_path), factory, client=_client())
     kinds = {TaskKind.DISCOVER, TaskKind.EXTRACT, TaskKind.MATCH, TaskKind.TAILOR,
              TaskKind.COVER_LETTER, TaskKind.PREPARE_FORM, TaskKind.VALIDATE,
-                 TaskKind.MANUAL_PACKAGE, TaskKind.OUTREACH_RESEARCH}
+                 TaskKind.MANUAL_PACKAGE, TaskKind.OUTREACH_RESEARCH, TaskKind.COMPANY_RESEARCH}
     assert set(rt.agents) == kinds == set(rt.handlers)
     assert set(rt.adapters) == {"simulated"}
     assert set(rt.tools["sources"]) == {"greenhouse", "lever", "ashby", "smartrecruiters",

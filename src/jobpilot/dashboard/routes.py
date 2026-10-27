@@ -20,6 +20,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from jobpilot.agents.company_research import (
+    brief_items,
+    brief_sources,
+    load_brief,
+    request_refresh,
+    research_pending,
+)
 from jobpilot.agents.form_prep import answer_rows, unresolved_required
 from jobpilot.api.actions import (
     ANSWERABLE_STATUSES,
@@ -99,6 +106,7 @@ from jobpilot.data.tables import (
     BatchItemRow,
     CandidateFactRow,
     CandidateProfileRow,
+    CompanyBriefRow,
     ContactCandidateRow,
     DocumentArtifactRow,
     FormFieldAnswerRow,
@@ -126,6 +134,7 @@ from jobpilot.profile.preferences import (
     load_search_preferences,
 )
 from jobpilot.profile.stories import stored_bank, verify_story
+from jobpilot.research.brief import company_key
 
 MANUAL_APPLIED_LABEL = "Applied (manual)"
 EDITABLE_DECISIONS = ("FILL_AND_REVIEW", "ASK_USER")
@@ -535,6 +544,32 @@ def _diff_rows(raw: str | None) -> list[dict[str, Any]]:
     return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
 
 
+def _brief_view(s: Session, company: str | None,
+                application_id: str | None = None) -> dict[str, Any] | None:
+    """A company brief for display (items are untrusted-derived: autoescaped, links via
+    safe_href only)."""
+    key = company_key(company)
+    if key is None:
+        return None
+    row = load_brief(s, key)
+    return {"key": key, "company": row.company if row else company,
+            "fetched_at": row.fetched_at if row else None,
+            "entries": brief_items(row), "sources": brief_sources(row),
+            "pending": research_pending(s, application_id, key)}
+
+
+@router.post("/ui/companies/{key}/research")
+def refresh_brief_ui(key: str, s: Db, back: Annotated[str, Form()] = "") -> RedirectResponse:
+    """User "Refresh": queue company research again (public pages only)."""
+    if not re.fullmatch(r"[a-z0-9]{1,64}", key):
+        raise HTTPException(404, "unknown company")
+    request_refresh(s, key)
+    s.commit()
+    target = back if re.fullmatch(r"/ui/applications/[A-Za-z0-9_-]{1,80}", back) \
+        else "/ui/companies"
+    return RedirectResponse(target, status_code=303)
+
+
 @router.get("/ui/applications/{application_id}", response_class=HTMLResponse)
 def application_page(request: Request, application_id: str, s: Db) -> HTMLResponse:
     app = s.get(ApplicationRow, application_id)
@@ -553,7 +588,8 @@ def application_page(request: Request, application_id: str, s: Db) -> HTMLRespon
     evidence = [{"fact_id": fid, "value": facts.get(fid, "(removed)")}
                 for fid in (cited if isinstance(cited, list) else []) if isinstance(fid, str)]
     return _page(request, s, "application.html", {
-        "app": app, "job": job,
+        "app": app, "job": job, "brief": _brief_view(s, job.company if job else None,
+                                                     application_id),
         "resume": _latest_artifact(s, application_id, "resume"),
         "docx": _latest_artifact(s, application_id, "resume_docx"),
         "cover": _latest_artifact(s, application_id, "cover_letter"),
@@ -1140,8 +1176,10 @@ def _companies_page(request: Request, s: Session, ctx: dict[str, Any],
         boards = []  # keep the page up, but say why the list is empty
         error = (f"{cfg.storage_path / 'profiles' / 'companies.yaml'} could not be read "
                  f"({type(e).__name__}); fix or remove it. Discovery cannot use it either.")
+    briefs = [_brief_view(s, r.company) for r in s.execute(
+        select(CompanyBriefRow).order_by(CompanyBriefRow.company)).scalars()]
     resp = _page(request, s, "companies.html", {
-        "boards": boards, "error": error, "summary": None,
+        "boards": boards, "error": error, "summary": None, "briefs": briefs,
         **ctx})
     resp.status_code = status
     return resp

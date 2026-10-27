@@ -161,12 +161,18 @@ async def test_manual_job_full_flow_to_package(pipe: Pipeline) -> None:  # noqa:
         rows = {r.field_id: r for r in s.execute(select(FormFieldAnswerRow).where(
             FormFieldAnswerRow.application_id == app_id)).scalars()}
     assert all(fid.startswith("manual:") for fid in rows)
-    why = rows["manual:why_company"]
-    assert why.decision == "FILL_AND_REVIEW"
-    assert why.source_fact_id == "artifact:cover_letter_text"
+    # research ran (job text only: naukri.com is never fetched) and found nothing, so the
+    # why-company question goes to the user instead of reusing generic cover-letter text
+    why = rows["manual:essay_why_company"]
+    assert why.decision == "ASK_USER" and why.proposed_value_json == "null"
+    assert "No recent company information found" in why.rationale
     assert why.label == "Why do you want to work at Example AI?"
-    assert "GenAI Engineer role at Example AI" in why.proposed_value_json
-    assert "Dear" not in why.proposed_value_json
+    assert "manual:why_company" not in rows
+    why_role = rows["manual:why_role"]
+    assert why_role.decision == "FILL_AND_REVIEW"
+    assert why_role.source_fact_id == "artifact:cover_letter_text"
+    assert "GenAI Engineer role at Example AI" in why_role.proposed_value_json
+    assert "Dear" not in why_role.proposed_value_json
     assert rows["manual:work_authorization"].decision == "USER_ONLY"
     assert rows["manual:notice_period"].decision == "FILL_AND_REVIEW"
     assert "30 days" in rows["manual:notice_period"].proposed_value_json

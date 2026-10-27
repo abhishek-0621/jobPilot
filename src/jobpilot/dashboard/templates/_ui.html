@@ -17,3 +17,14 @@
 {% macro timeline(events) -%}
 {% if events %}<ol class="timeline">{% for e in events %}<li><time title="{{ e.timestamp_utc|utc }}">{{ e.timestamp_utc|local }}</time>{{ e.actor }} · {{ e.action }} · {{ e.outcome }}</li>{% endfor %}</ol>{% else %}<p class="muted">No events.</p>{% endif %}
 {%- endmacro %}
+
+{# A company brief: items are untrusted-derived (autoescaped), links only via safe_href. #}
+{% macro company_brief(brief, back="") -%}
+<section class="panel brief"><h2>What JobPilot found about {{ brief.company }}</h2>
+{% if brief.entries %}<ul class="stack">{% for i in brief.entries %}<li><strong>{{ i.name }}</strong> <span class="badge">{{ i.kind }}</span>{% if i.date_if_stated %} <span class="muted">{{ i.date_if_stated }}</span>{% endif %}<br>{{ i.one_line }} <a href="{{ i.source_url|safe_href }}" target="_blank" rel="noopener noreferrer nofollow">source</a></li>{% endfor %}</ul>
+{% elif brief.fetched_at %}<p class="muted">No recent company information found. Add public pages for this company as <span class="mono">extra.research_urls</span> in Companies, then refresh.</p>
+{% else %}<p class="muted">Not researched yet.</p>{% endif %}
+<p class="muted">{% if brief.fetched_at %}Fetched {{ brief.fetched_at|local }} from {{ brief.sources|length }} public page(s){% endif %}{% if brief.pending %} · research queued{% endif %}</p>
+<form method="post" action="/ui/companies/{{ brief.key }}/research"><input type="hidden" name="back" value="{{ back }}"><button type="submit"{% if brief.pending %} disabled{% endif %}>Refresh</button></form>
+</section>
+{%- endmacro %}

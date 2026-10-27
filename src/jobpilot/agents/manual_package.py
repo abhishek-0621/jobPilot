@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from jobpilot.agents.essay import draft_essay_answers, guard_essay_answers
-from jobpilot.agents.form_prep import USER_SOURCE, answer_rows
+from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, wait_for_research
 from jobpilot.contracts.enums import ApplicationStatus, FieldDecision
 from jobpilot.contracts.models import AgentOutput, FieldAnswer
 from jobpilot.data import mutations
@@ -32,8 +32,6 @@ FIELD_PREFIX = "manual:"
 # Matching on the canonical alias keeps every mapping rule (sensitive, compensation,
 # user-only, answer library) in force; the display label is restored afterwards.
 QUESTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("why_company", "Why do you want to work at {company}?", "why do you want to work here",
-     "textarea"),
     ("why_role", "Why are you interested in the {role} role?", "why this role", "textarea"),
     ("notice_period", "What is your notice period?", "notice period", "text"),
     ("expected_ctc", "What is your expected CTC?", "expected ctc", "text"),
@@ -52,6 +50,8 @@ QUESTIONS: tuple[tuple[str, str, str, str], ...] = (
 # Common open-ended questions, drafted from verified stories (FILL_AND_REVIEW) or left
 # to the user with a note naming the missing story (ASK_USER).
 ESSAY_QUESTIONS: tuple[tuple[str, str], ...] = (
+    # written from the company brief (recent company items) and verified facts
+    ("why_company", "Why do you want to work at {company}?"),
     ("proud_of", "What are you most proud of?"),
     ("failure", "Tell us about a time you failed."),
     ("challenge", "Describe the most challenging project you worked on."),
@@ -94,14 +94,15 @@ def package_answers(company: str, role: str, mctx: MappingContext) -> list[Field
     return out
 
 
-def essay_fields() -> list[FormField]:
-    return [FormField(field_id=ESSAY_PREFIX + key, label=label, field_type="textarea",
-                      required=True) for key, label in ESSAY_QUESTIONS]
+def essay_fields(company: str = "this company") -> list[FormField]:
+    return [FormField(field_id=ESSAY_PREFIX + key, label=label.format(company=company),
+                      field_type="textarea", required=True)
+            for key, label in ESSAY_QUESTIONS]
 
 
 async def essay_answers(gateway: Any, ectx: Any,
                         terms: set[str] | None = None) -> list[FieldAnswer]:
-    fields = essay_fields()
+    fields = essay_fields(str(ectx.job.get("company") or "") or "this company")
     pending = [FieldAnswer(field_id=f.field_id, label=f.label, field_type=f.field_type,
                            decision=FieldDecision.ASK_USER, confidence=0.0,
                            rationale="Essay question") for f in fields]
@@ -113,7 +114,7 @@ class ManualPackageAgent:
     prompt_version = PROMPT_VERSION
     output_model = ManualPackage
     tools = ("application_loader", "mapping_context", "active_profile_version",
-             "essay_context", "tech_terms")
+             "essay_context", "tech_terms", "research_pending")
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> ManualPackage:
         load_app: Callable[[str], dict | None] = ctx.tools["application_loader"]
@@ -127,6 +128,7 @@ class ManualPackageAgent:
         version = active_version()
         if version is None:
             raise OutputRejected("no_profile")
+        wait_for_research(ctx, inp)
         fields = package_answers(app["company"], app["title"], mapping_context(inp.entity_id))
         load_essay = ctx.tools.get("essay_context")
         if load_essay is not None:
@@ -155,7 +157,7 @@ def manual_package_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp
     if stale is not None:
         return stale
     existing = {r.field_id: r for r in answer_rows(s, app.application_id)}
-    for a in guard_essay_answers(s, out.fields):
+    for a in guard_essay_answers(s, out.fields, out.application_id):
         row = existing.get(a.field_id)
         if row is None:
             mutations.upsert_answer_initial(s, app.application_id, a, required=True,

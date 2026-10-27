@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from jobpilot.agents.company_research import queue_company_research
 from jobpilot.agents.form_prep import USER_SOURCE, answer_rows, unresolved_required
 from jobpilot.config import AppConfig
 from jobpilot.contracts.enums import (
@@ -144,6 +145,7 @@ def select_job(s: Session, orch: Orchestrator, job_id: str) -> ApplicationRow:
     record_event(s, entity_type="job", entity_id=job_id, actor="user", action="job_selected",
                  outcome="ok", details={"application_id": app.application_id})
     orch.enqueue_in(s, TaskKind.TAILOR, "application", app.application_id)
+    queue_company_research(s, app.application_id)  # PREPARE_FORM waits for it
     s.commit()
     return app
 

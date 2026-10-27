@@ -52,6 +52,27 @@ USER_SOURCE = "user"
 
 LIBRARY_ESSAY_PREFIX = "library:essay_"
 CANNED_PREFIX = ESSAY_PREFIX + "canned:"
+WHY_COMPANY_PREFIX = ESSAY_PREFIX + "why_company:"
+
+
+def why_brief_hash(source: str | None) -> str | None:
+    """The company-brief hash a why-company draft (``essay:why_company:<hash>[:<ids>]``)
+    was written from, else None."""
+    if not source or not source.startswith(WHY_COMPANY_PREFIX):
+        return None
+    return source[len(WHY_COMPANY_PREFIX):].split(":", 1)[0] or None
+
+
+def current_brief_hash(s: Session, application_id: str) -> str | None:
+    """Content hash of the stored brief for the application's company (None: none)."""
+    from jobpilot.data.tables import CompanyBriefRow
+    from jobpilot.research.brief import company_key
+
+    app = s.get(ApplicationRow, application_id)
+    job = None if app is None else s.get(JobRow, app.job_id)
+    key = None if job is None else company_key(job.company)
+    row = None if key is None else s.get(CompanyBriefRow, key)
+    return None if row is None else row.content_hash
 
 
 def essay_refs(source: str | None) -> tuple[list[str], str | None] | None:
@@ -62,6 +83,9 @@ def essay_refs(source: str | None) -> tuple[list[str], str | None] | None:
         return None
     if source.startswith(CANNED_PREFIX):
         return [], source[len(CANNED_PREFIX):] or None
+    if source.startswith(WHY_COMPANY_PREFIX):
+        _hash, _, ids = source[len(WHY_COMPANY_PREFIX):].partition(":")
+        return [i for i in ids.split(",") if i], None
     if source.startswith(ESSAY_PREFIX):
         return [i for i in source[len(ESSAY_PREFIX):].split(",") if i], None
     if source.startswith(LIBRARY_ESSAY_PREFIX):
@@ -202,6 +226,48 @@ def invalidate_story_answers(s: Session, story_ids: list[str], *, reason: str,
     return n
 
 
+BRIEF_CHANGED_PREFIX = "brief_changed"
+
+
+def invalidate_brief_answers(s: Session, company_key: str, new_hash: str, *,
+                             actor: str = "system") -> int:
+    """Why-company drafts written from an older brief of this company go back to the user
+    (ASK_USER, draft kept for reference); approvals are revoked and a reviewed application
+    returns to NEEDS_USER_INPUT. The user's own answers are never touched."""
+    from jobpilot.research.brief import company_key as key_of
+
+    rows = s.execute(select(FormFieldAnswerRow).join(
+        ApplicationRow, ApplicationRow.application_id == FormFieldAnswerRow.application_id
+    ).where(ApplicationRow.status.in_(_STORY_STALE_STATUSES),
+            FormFieldAnswerRow.source_fact_id.like(WHY_COMPANY_PREFIX + "%"))).scalars().all()
+    apps: set[str] = set()
+    for r in rows:
+        old = why_brief_hash(r.source_fact_id)
+        if old is None or old == new_hash or r.decision == FieldDecision.ASK_USER.value:
+            continue
+        app = s.get(ApplicationRow, r.application_id)
+        job = None if app is None else s.get(JobRow, app.job_id)
+        if job is None or key_of(job.company) != company_key:
+            continue
+        set_answer(s, r.application_id, r.field_id, json.loads(r.proposed_value_json),
+                   actor=actor, decision=FieldDecision.ASK_USER,
+                   rationale=f"{BRIEF_CHANGED_PREFIX}: the company brief this draft used "
+                             "was refreshed; review or re-draft it")
+        apps.add(r.application_id)
+    for app_id in sorted(apps):
+        app = get_application(s, app_id)
+        if app.status == ApplicationStatus.READY_FOR_REVIEW.value:
+            transition(s, app, ApplicationStatus.FORM_IN_PROGRESS, actor=actor,
+                       reason="brief_changed")
+            transition(s, app, ApplicationStatus.NEEDS_USER_INPUT, actor=actor,
+                       reason="brief_changed")
+        record_event(s, entity_type="application", entity_id=app_id, actor=actor,
+                     action="essay_answers_stale", outcome="ok",
+                     details={"reason": "brief_changed"})
+    s.flush()
+    return len(apps)
+
+
 def remove_answer(s: Session, application_id: str, field_id: str, *, actor: str) -> None:
     """Drop the answer of a field that no longer exists on the form."""
     row = _answer_row(s, application_id, field_id)
@@ -294,6 +360,9 @@ def save_essay_to_library(s: Session, application_id: str, field_id: str,
     key = classify_essay(row.label, "", field_type=row.field_type)
     if key is None:
         raise ValueError("not an essay question")
+    if row.source_fact_id and row.source_fact_id.startswith(WHY_COMPANY_PREFIX) \
+            or key.value == "why_company":
+        raise ValueError("company-specific answers are not saved to the library")
     stored = json.loads(row.proposed_value_json)
     text = value.strip() if isinstance(value, str) and value.strip() else stored
     if not isinstance(text, str) or not text.strip():
