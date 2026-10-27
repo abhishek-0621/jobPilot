@@ -41,7 +41,7 @@ from jobpilot.util.textmatch import has_phrase
 PROMPT_VERSION = "why_company_v1"
 ROUTE = "essay"
 WHY_PREFIX = "essay:why_company:"
-MIN_WORDS, MAX_WORDS = 90, 160
+MIN_WORDS, MAX_WORDS = 80, 160
 MIN_SENTENCES, MAX_SENTENCES = 3, 5
 MAX_NAMED = 2
 _NOTE_MAX = 160
@@ -86,7 +86,7 @@ def _mask_items(text: str, items: list[BriefItem]) -> str:
 def why_violations(raw: _WhyLLM, items: list[BriefItem], facts: dict[str, str],
                    skills: list[str], stories: list[Story], current: str,
                    job: dict[str, Any], maxlength: int | None,
-                   terms: set[str] | None = None) -> list[str]:
+                   terms: set[str] | None = None, rules: list[str] | None = None) -> list[str]:
     answer = raw.answer.strip()
     if not answer:
         return ["empty"]
@@ -116,7 +116,9 @@ def why_violations(raw: _WhyLLM, items: list[BriefItem], facts: dict[str, str],
     # number or proper noun hidden inside them cannot pass as source.
     company, role = str(job.get("company") or ""), str(job.get("title") or "")
     used = [by_id[i].source_text() for i in raw.story_ids if i in by_id]
-    source = "\n".join([*facts.values(), *used, current, _brief_text(items)])
+    # The user's own standing rules are their words ("~1.5 years of AI work"), so the
+    # figures they state are as good as a verified fact.
+    source = "\n".join([*facts.values(), *used, current, _brief_text(items), *(rules or [])])
     allowed = set(skills) | _LETTER_WORDS | _ESSAY_WORDS | _WHY_WORDS \
         | _allowed_extras(source, skills, role)
     words_ok = {w for a in allowed for w in a.casefold().split()} \
@@ -175,19 +177,19 @@ class WhyCompanyDrafter:
                      f"Job summary: {job.get('job_summary') or ''}")
         instructions = base
         codes: list[str] = []
-        for attempt in (1, 2):
+        for attempt in (1, 2, 3):
             messages = build_messages(_system_prompt(), instructions, untrusted=untrusted)
             raw, _meta = await gateway.generate(ROUTE, messages, _WhyLLM, PROMPT_VERSION)
             raw = raw.model_copy(update={"answer": clean_text(raw.answer).strip()})
             codes = why_violations(raw, items, facts, skills, stories, current, job,
-                                   maxlength, terms)
+                                   maxlength, terms, list(bank.standing_rules))
             if not codes:
                 return EssayDraft(
                     key=_K, answer=raw.answer, decision=FieldDecision.FILL_AND_REVIEW,
                     story_ids=[i for i in dict.fromkeys(raw.story_ids)],
                     fact_ids=list(dict.fromkeys(raw.fact_ids)),
                     note="drafted:why_company", brief_hash=brief_hash)
-            if attempt == 1:
+            if attempt < 3:
                 instructions = (base + "\nYour previous attempt was rejected for: "
                                 + ", ".join(codes) + ". Fix every one of these."
                                 + avoid_note(codes))

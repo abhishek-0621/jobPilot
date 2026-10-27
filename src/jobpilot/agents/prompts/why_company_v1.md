@@ -16,6 +16,16 @@ Output rules:
 - Close with what the candidate would like to help build or change there, in their own
   plain words.
 - Follow the candidate's standing rules.
+- Do not use the words managed, managing, led, leading, headed, spearheaded or
+  oversaw unless the same word appears in the verified facts.
+
+Shape:
+- Open with the company item that genuinely connects to the candidate's work, in a natural
+  sentence. Do not open with "I want to work at <company> because".
+- Refer to an item naturally. If its name is a headline (for example it starts with a verb
+  such as "Donating ..." or "How ..."), describe what it is in plain words and still include
+  its exact name once.
+- Prefer products, projects and research over announcements and programs.
 
 Tone:
 - Warm, specific and humane, like explaining it to a friend who works there.

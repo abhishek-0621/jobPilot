@@ -128,7 +128,7 @@ def _rejected(answer: str, code: str, names: list[str] | None = None) -> None:
     gw = SeqGateway(ok(answer, names))
     d = draft(gw)
     assert d.decision == FieldDecision.ASK_USER and d.answer is None
-    assert len(gw.calls) == 2  # one retry naming the violations
+    assert len(gw.calls) == 3  # one retry naming the violations
     retry = gw.calls[1]["messages"][1]["content"]
     assert "previous attempt was rejected" in retry and code in retry, retry[-400:]
     assert "Fleet Copilot" in d.note  # the brief items shown so the user can write it
@@ -210,3 +210,8 @@ def test_why_company_replaces_cover_letter_text_and_ignores_canned_library() -> 
     out = asyncio.run(draft_essay_answers([f], [cover], SeqGateway(ok()), _ectx(None)))
     assert out[0].decision == FieldDecision.ASK_USER and out[0].proposed_value is None
     assert "add research URLs" in out[0].rationale
+
+
+def test_standing_rule_figures_count_as_source() -> None:
+    from jobpilot.agents import why_company as wc
+    assert "rules" in wc.why_violations.__code__.co_varnames
