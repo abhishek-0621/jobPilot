@@ -39,6 +39,9 @@ class GreenhouseSource:
             raise SourceError(ErrorCode.SOURCE_CHANGED, type(e).__name__) from e
 
 
+HOSTED_FORM = "https://job-boards.greenhouse.io/embed/job_app"
+
+
 def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting | None:
     raw_url = require_http(j["absolute_url"])
     if raw_url is None:
@@ -54,6 +57,9 @@ def _parse(j: dict[str, Any], board: CompanyBoard) -> RawPosting | None:
         location=loc.get("name") or None,
         description_html=html.unescape(j.get("content") or ""),
         canonical_url=url,
-        application_url=url,
+        # Companies may list jobs on their own careers site (absolute_url); the form we
+        # prepare and submit is always Greenhouse's hosted one for the same job.
+        # The embed form works even when a company turns its hosted board page off.
+        application_url=f"{HOSTED_FORM}?for={board.token}&token={int(j['id'])}",
         posted_at=datetime.fromisoformat(updated).astimezone(UTC) if updated else None,
     )
