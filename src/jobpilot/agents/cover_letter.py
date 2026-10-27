@@ -35,6 +35,7 @@ from jobpilot.orchestrator.state_machine import transition
 from jobpilot.portals.registry import apply_mode
 from jobpilot.profile.schema import ProfileFile
 from jobpilot.util.hashing import canonical_json
+from jobpilot.util.textmatch import has_phrase
 
 PROMPT_VERSION = "cover_letter_v1"
 _ROUTE = "cover_letter"
@@ -89,9 +90,57 @@ def _mask(paragraph: str, company: str, role: str) -> str:
     return paragraph
 
 
+# Spelled-out forms of abbreviations a verified fact may use; allowed only when the
+# abbreviation itself appears in the facts or skills.
+_SPELLED_OUT = {
+    "ai": ("artificial intelligence",), "ml": ("machine learning",),
+    "genai": ("generative ai",), "nlp": ("natural language processing",),
+    "llm": ("large language model", "large language models"),
+    "llms": ("large language models",), "it": ("information technology",),
+}
+# Generic job-title words: a letter may say "Senior Engineer" for "Senior GenAI Engineer".
+# Anything else from the untrusted title (names, numbers) still has to be in the facts.
+_TITLE_WORDS = frozenset({
+    "senior", "sr", "junior", "staff", "lead", "principal", "head", "chief", "founding",
+    "engineer", "engineering", "developer", "scientist", "architect", "manager", "analyst",
+    "specialist", "consultant", "researcher", "associate", "intern", "applied", "software",
+    "machine", "learning", "full", "stack", "platform", "data", "research", "product",
+    "forward", "deployed", "solutions", "backend", "frontend", "infrastructure", "member",
+    "technical", "team", "agentic", "generative", "ai", "ml", "genai", "llm", "nlp",
+    "mlops",
+})
+_JOIN_WORDS = frozenset({"for", "and", "of", "the", "in", "on", "at", "to", "with", "&"})
+
+
+def _with_opening(paragraphs: list[str], company: str, role: str) -> list[str]:
+    """Name the exact role and company in the first paragraph when the model left them out;
+    the wording is fixed, so this cannot introduce a claim."""
+    text = " ".join(paragraphs)
+    if not paragraphs or (has_phrase(text, role) and has_phrase(text, company)):
+        return paragraphs
+    return [f"I am applying for the {role} role at {company}. {paragraphs[0]}".strip(),
+            *paragraphs[1:]]
+
+
+def _made_of_allowed_words(code: str, words_ok: set[str]) -> bool:
+    """A multi-word proper noun passes when every word comes from the verified facts or the
+    allowed vocabulary: "Senior Engineer", or a reworded award name built from a fact."""
+    kind, _, noun = code.partition(":")
+    words = [w for w in noun.split() if w not in _JOIN_WORDS]
+    return kind == "new_proper_noun" and len(noun.split()) > 1 and bool(words) \
+        and all(w in words_ok for w in words)
+
+
+def _allowed_extras(source: str, skills: list[str], role: str) -> set[str]:
+    words = set(re.findall(r"[a-z]+", " ".join([source, *skills]).casefold()))
+    extra = {full for abbr, forms in _SPELLED_OUT.items() if abbr in words for full in forms}
+    extra |= {w for w in re.findall(r"[a-z]+", role.casefold()) if w in _TITLE_WORDS}
+    return extra
+
+
 def _violations(raw: _CoverLLM, verified: dict[str, str], company: str, role: str,
                 full_name: str, banned: list[str], others: list[str], skills: list[str],
-                terms: set[str]) -> list[str]:
+                terms: set[str], extra_source: str = "") -> list[str]:
     ids = list(dict.fromkeys(raw.evidence_fact_ids))
     codes = [f"unverified_evidence:{i}" for i in ids if i not in verified]
     if not 2 <= len(ids) <= 3:
@@ -104,13 +153,17 @@ def _violations(raw: _CoverLLM, verified: dict[str, str], company: str, role: st
                                    others)
     # The job's company/role strings are untrusted: they never widen the source text. Their
     # exact occurrences are masked so a number or proper noun inside them cannot pass.
-    source = " ".join(verified[i] for i in ids if i in verified)
-    allowed = set(skills) | _LETTER_WORDS
+    # Every verified fact is true, so any of them may be named; evidence ids still have
+    # to be 2-3 verified facts (checked above).
+    source = " ".join([*verified.values(), extra_source])
+    allowed = set(skills) | _LETTER_WORDS | _allowed_extras(source, skills, role)
+    words_ok = {w for a in allowed for w in a.casefold().split()} \
+        | set(re.findall(r"[a-z0-9.]+", source.casefold()))
     for n, p in enumerate(paragraphs):
         p = _mask(p, company, role)
         # Paragraph length is governed by the word limit, not the per-bullet ratio.
         codes += [f"p{n + 1}:{c}" for c in validate_rewrite(source, p, allowed, terms)
-                  if c != "length"]
+                  if c != "length" and not _made_of_allowed_words(c, words_ok)]
     return list(dict.fromkeys(codes))
 
 
@@ -151,7 +204,10 @@ class CoverLetterAgent:
         verified = {f["fact_id"]: f["value"] for f in evidence_facts}
         skills = [s for f in facts if f["category"] == "skill" for s in split_skills(f["value"])]
         preferred = [i for i in app.get("resume_fact_ids") or [] if i in verified]
-        full_name = profile_file().identity.full_name
+        pf = profile_file()
+        full_name = pf.identity.full_name
+        # The candidate's own current title and employer are profile data, not claims.
+        current = f"{pf.current_employment.title} {pf.current_employment.employer}"
         terms, banned = tech_terms(), load_banned()
         others = list(app.get("other_companies") or [])
 
@@ -172,9 +228,10 @@ class CoverLetterAgent:
             messages = build_messages(_system_prompt(), instructions, untrusted=job_block)
             raw, _meta = await ctx.gateway.generate(_ROUTE, messages, _CoverLLM,
                                                     PROMPT_VERSION)
-            raw = raw.model_copy(update={"paragraphs": [clean_text(p) for p in raw.paragraphs]})
+            raw = raw.model_copy(update={"paragraphs": _with_opening(
+                [clean_text(p) for p in raw.paragraphs], company, role)})
             codes = _violations(raw, verified, company, role, full_name, banned, others,
-                                skills, terms)
+                                skills, terms, current)
             if not codes:
                 break
             if attempt == 2:

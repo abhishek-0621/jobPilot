@@ -343,3 +343,75 @@ def test_loader_job_fields_give_the_job_apply_mode(
             loaded = make_application_loader(factory)(APP)
             assert loaded is not None
             assert apply_mode(loaded) == apply_mode(job)
+
+
+async def test_names_from_any_verified_fact_are_allowed(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    """A verified fact the letter doesn't cite as evidence is still true: naming its
+    institution or award must not be treated as an invented proper noun."""
+    seed_cl(factory)
+    p3 = "I completed an M.Tech at Example Institute of Technology."
+    good = {**GOOD, "paragraphs": [*GOOD["paragraphs"], p3]}
+    out = await run_agent(factory, cfg, SeqGateway(good))
+    assert "Example Institute of Technology" in out.text
+
+
+async def test_spelled_out_ai_ml_and_role_words_allowed(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    _retitle(factory, "Senior GenAI Engineer")
+    p1 = "I am applying for the Senior GenAI Engineer role at Example AI as a Senior Engineer."
+    p3 = "My work focuses on Large Language Models for search."
+    good = {**GOOD, "paragraphs": [p1, GOOD["paragraphs"][1], p3]}
+    gw = SeqGateway(good, good)
+    try:
+        out = await run_agent(factory, cfg, gw)
+    except OutputRejected:
+        msg = gw.calls[-1]["messages"][1]["content"]
+        raise AssertionError(msg[msg.find("rejected for"):][:300]) from None
+    assert out.role == "Senior GenAI Engineer"
+
+
+async def test_unknown_names_still_rejected_with_all_facts_as_source(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    bad = {**GOOD, "paragraphs": [*GOOD["paragraphs"], "I studied at Stanford University."]}
+    with pytest.raises(OutputRejected, match="cover_letter_invalid"):
+        await run_agent(factory, cfg, SeqGateway(bad, bad))
+
+
+async def test_spelled_out_form_needs_the_abbreviation_in_facts(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)  # the fixture facts mention AI and LLM but never ML
+    bad = {**GOOD, "paragraphs": [*GOOD["paragraphs"], "I work on Machine Learning products."]}
+    with pytest.raises(OutputRejected, match="cover_letter_invalid"):
+        await run_agent(factory, cfg, SeqGateway(bad, bad))
+
+
+async def test_missing_role_line_is_added_not_rejected(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    letter = {**GOOD, "paragraphs": ["I would like to join your team.", GOOD["paragraphs"][1]]}
+    out = await run_agent(factory, cfg, SeqGateway(letter))
+    assert "GenAI Engineer role at Example AI" in out.text
+
+
+async def test_reworded_names_from_fact_words_and_current_title_allowed(
+    factory: sessionmaker[Session], cfg: AppConfig, fake_pdf: list[str],  # noqa: F811
+) -> None:
+    seed_cl(factory)
+    p1 = "I am applying for the GenAI Engineer role at Example AI. I work as an AI Engineer."
+    p3 = "I hold an M.Tech in Computer Science from Example Institute."
+    letter = {**GOOD, "paragraphs": [p1, GOOD["paragraphs"][1], p3]}
+    gw = SeqGateway(letter, letter)
+    try:
+        out = await run_agent(factory, cfg, gw)
+    except OutputRejected:
+        msg = gw.calls[-1]["messages"][1]["content"]
+        raise AssertionError(msg[msg.find("rejected for"):][:300]) from None
+    assert "Example Institute" in out.text

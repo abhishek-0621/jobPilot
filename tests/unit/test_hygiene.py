@@ -72,3 +72,9 @@ def test_phrase_file_is_editable(tmp_path) -> None:
     p = tmp_path / "p.txt"
     p.write_text("# comment\nwidget magic\n", encoding="utf-8")
     assert stock_phrases("pure Widget  Magic here", path=p) == ["widget magic"]
+
+
+def test_job_title_with_ai_is_not_a_stock_phrase() -> None:
+    from jobpilot.documents.hygiene import stock_phrases
+    assert stock_phrases("I work as an AI Engineer at Example Corp.") == []
+    assert stock_phrases("As an AI language model, I cannot do that.") != []
