@@ -56,7 +56,7 @@ async def test_greenhouse_parses_fixture() -> None:
     assert p.location == "Bengaluru, India"
     assert p.description_html.startswith("<p>Build <strong>LLM</strong>")
     assert p.canonical_url == "https://boards.greenhouse.io/exampleai/jobs/1001"
-    assert p.application_url == "https://boards.greenhouse.io/exampleai/jobs/1001"
+    assert p.application_url == "https://job-boards.greenhouse.io/embed/job_app?for=exampleai&token=1001"
     assert p.posted_at == datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
 
 

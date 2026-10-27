@@ -54,6 +54,11 @@ def _by_source_id(s: Session, listing: JobListing) -> JobRow | None:
 
 def _seen_again(s: Session, existing: JobRow, listing: JobListing) -> tuple[JobRow, bool]:
     existing.last_seen_at = listing.last_seen_at
+    if listing.application_url and listing.application_url != existing.application_url:
+        record_event(s, entity_type="job", entity_id=existing.job_id, actor="discovery",
+                     action="job_application_url_updated", outcome="ok",
+                     details={"source": listing.source})
+        existing.application_url = listing.application_url
     s.flush()
     return existing, False
 

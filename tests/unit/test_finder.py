@@ -279,3 +279,34 @@ async def test_discover_shares_the_cap_fairly_across_boards() -> None:
 
 def test_discover_agent_declares_a_long_timeout() -> None:
     assert DiscoverAgent.timeout_s >= 1800
+
+
+async def test_greenhouse_application_url_is_the_hosted_form(
+        factory: sessionmaker[Session]) -> None:
+    """A company may list its Greenhouse jobs on its own careers site (absolute_url);
+    the application form JobPilot opens is always Greenhouse's hosted one."""
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 4242, "title": "AI Engineer", "absolute_url": "https://example.com/careers/4242",
+            "location": {"name": "Bengaluru"}, "content": "<p>x</p>",
+            "updated_at": "2026-10-20T10:00:00Z"}]})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        [p] = await GreenhouseSource(c, min_interval_s=0).list_postings(GH)
+    assert p.canonical_url == "https://example.com/careers/4242"
+    assert p.application_url == "https://job-boards.greenhouse.io/embed/job_app?for=exampleai&token=4242"
+
+
+async def test_reseen_job_takes_the_new_application_url(factory: sessionmaker[Session]) -> None:
+    out = await _discover([GH])
+    task = TaskRow(task_id="task_1", kind="DISCOVER", entity_type="run", entity_id="run_1",
+                   status="RUNNING", attempts=1)
+    with factory() as s:
+        discover_handler(s, task, out)
+        job = s.execute(select(JobRow)).scalars().first()
+        assert job is not None
+        job.application_url = "https://example.com/old-custom-page"
+        s.commit()
+        discover_handler(s, task, out)
+        s.commit()
+        s.refresh(job)
+        assert job.application_url == out.listings[0].application_url
