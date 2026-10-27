@@ -77,3 +77,26 @@ async def test_real_pdfs_have_clean_metadata(tmp_path: Path) -> None:
     assert (PdfReader(tmp_path / "r.pdf").metadata or {}).get("/Author") == doc.name
     await html_to_pdf("<p>Hello</p>", tmp_path / "c.pdf", author="Asha Example")
     _assert_clean(_pdf_meta_text(tmp_path / "c.pdf"))
+
+
+
+def test_rendered_resume_text_is_punctuation_clean(tmp_path) -> None:
+    from docx import Document
+
+    from jobpilot.documents.model import Bullet, ResumeDoc, RoleBlock
+    from jobpilot.documents.render import render_resume_docx, render_resume_html
+    bad = "\u2013\u2014\u200b\u201c\u201d"
+    doc = ResumeDoc(
+        name="Sam Example", headline="Engineer \u2013 Applied AI", contact_line="sam@example.com",
+        summary="Built search \u2014 fast.", skills=[("AI", ["RAG\u200b"])],
+        roles=[RoleBlock(employer="Example Corp", title="Engineer \u2013 AI", start="2022",
+                         end="2024", location=None,
+                         bullets=[Bullet(fact_id="f1", text="Shipped \u201cthings\u201d",
+                                         priority=1)])],
+        projects=[], education=[], achievements=[])
+    html = render_resume_html(doc)
+    assert not any(c in html for c in bad)
+    out = tmp_path / "r.docx"
+    render_resume_docx(doc, out)
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert not any(c in text for c in bad)

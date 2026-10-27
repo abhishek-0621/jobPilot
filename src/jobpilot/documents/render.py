@@ -14,6 +14,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject
 
 from jobpilot.contracts.enums import ErrorCode
+from jobpilot.documents.hygiene import clean_text
 from jobpilot.documents.model import ResumeDoc, RoleBlock
 
 _TEMPLATES = Path(__file__).resolve().parent / "templates"
@@ -40,8 +41,26 @@ def chromium_available() -> bool:
         return False
 
 
+def _clean(v: Any) -> Any:
+    if isinstance(v, str):
+        return clean_text(v)
+    if isinstance(v, list):
+        return [_clean(x) for x in v]
+    if isinstance(v, tuple):
+        return tuple(_clean(x) for x in v)
+    if isinstance(v, dict):
+        return {k: _clean(x) for k, x in v.items()}
+    return v
+
+
+def clean_doc(doc: ResumeDoc) -> ResumeDoc:
+    """Punctuation and invisible-character hygiene on every rendered string, including
+    text taken verbatim from verified facts (wording is never changed, only marks)."""
+    return ResumeDoc.model_validate(_clean(doc.model_dump()))
+
+
 def render_resume_html(doc: ResumeDoc) -> str:
-    return _env.get_template("resume.html.j2").render(doc=doc)
+    return _env.get_template("resume.html.j2").render(doc=clean_doc(doc))
 
 
 def render_cover_letter_html(name: str, greeting: str, paragraphs: list[str],
@@ -152,6 +171,7 @@ def _blocks_docx(d: Document, items: list[RoleBlock]) -> None:
 
 
 def render_resume_docx(doc: ResumeDoc, out: Path) -> None:
+    doc = clean_doc(doc)
     d = Document()
     d.add_heading(doc.name, level=1)
     d.add_paragraph(doc.headline)
