@@ -295,3 +295,16 @@ class StoryBankRow(Base):
     canned_json: Mapped[str] = mapped_column(Text, default="{}")
     content_hash: Mapped[str] = mapped_column(String)
     updated_at: Mapped[datetime] = _ts(default=utcnow)
+
+
+class CompanyBriefRow(Base):
+    """What COMPANY_RESEARCH found about one company (public pages only), cached per
+    company key. Items are grounded in the fetched page text; they are untrusted-derived
+    and only ever shown escaped or used as checked source text."""
+    __tablename__ = "company_brief"
+    company_key: Mapped[str] = mapped_column(String, primary_key=True)
+    company: Mapped[str] = mapped_column(String)
+    fetched_at: Mapped[datetime] = _ts(default=utcnow)
+    sources_json: Mapped[str] = mapped_column(Text, default="[]")
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
+    content_hash: Mapped[str] = mapped_column(String)

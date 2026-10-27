@@ -16,6 +16,15 @@ CONFIG_DIR = Path("config")
 _SAFE = r"^[A-Za-z0-9_-]{1,64}$"
 _SAFE_RE = re.compile(_SAFE)
 CAREERS_URL_KEY = "careers_url"  # optional public careers page (outreach inbox lookup)
+# optional public pages about the company (blog, news...) for company research; one
+# string of http(s) URLs separated by spaces or commas
+RESEARCH_URLS_KEY = "research_urls"
+
+
+def research_urls_of(value: str | None) -> list[str]:
+    return [u for u in re.split(r"[\s,]+", value or "") if u]
+
+
 # Public remote-job boards (one feed each, not per company); always the manual apply path.
 RemoteBoardName = Literal["himalayas", "remotive", "weworkremotely", "remoteok", "jobicy",
                           "workingnomads"]
@@ -46,6 +55,13 @@ class CompanyBoard(BaseModel):
     @classmethod
     def _extra_safe(cls, v: dict[str, str]) -> dict[str, str]:
         for k, val in v.items():
+            if k == RESEARCH_URLS_KEY:
+                urls = research_urls_of(val)
+                if not urls or len(urls) > 6 or any(
+                        not is_http_url(u) or len(u) > 500 for u in urls):
+                    raise ValueError("extra.research_urls must be 1-6 http(s) URLs "
+                                     "separated by spaces or commas")
+                continue
             if k == CAREERS_URL_KEY:
                 if not is_http_url(val) or any(c.isspace() for c in val) or len(val) > 500:
                     raise ValueError("extra.careers_url must be an http(s) URL")

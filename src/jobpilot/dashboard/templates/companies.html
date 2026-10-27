@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Companies{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>Companies</h1>
@@ -20,4 +21,7 @@
 {% for b in boards %}<tr><td>{{ b.name }}</td><td>{{ b.source }}</td><td class="mono">{{ b.token }}</td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<div class="empty"><strong>No boards configured.</strong><p>Add a company above to watch its public job board.</p></div>{% endif %}
+<h2>Company research</h2>
+<p class="muted prose">Recent products, projects and initiatives JobPilot read on each company's own public pages, used for "Why this company?" answers. Add more pages per company with <span class="mono">extra: {research_urls: "https://... https://..."}</span> in storage/profiles/companies.yaml.</p>
+{% for b in briefs %}{{ ui.company_brief(b) }}{% else %}<p class="muted">No company researched yet. Research runs when you start an application.</p>{% endfor %}
 {% endblock %}
