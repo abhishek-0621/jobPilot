@@ -30,7 +30,7 @@ p { margin: 0; }
 {% for group, items in doc.skills %}<p><strong>{{ group }}:</strong> {{ items | join(", ") }}</p>{% endfor %}
 </section>{% endif %}
 {% macro blocks(items) %}{% for r in items %}<div class="role">
-<div class="role-head"><span>{{ r.title }}{% if r.employer %} — {{ r.employer }}{% endif %}{% if r.location %} | {{ r.location }}{% endif %}</span><span>{{ r.start }}{% if r.end %} – {{ r.end }}{% endif %}</span></div>
+<div class="role-head"><span>{{ r.title }}{% if r.employer %}, {{ r.employer }}{% endif %}{% if r.location %} | {{ r.location }}{% endif %}</span><span>{{ r.start }}{% if r.end %} - {{ r.end }}{% endif %}</span></div>
 <ul>{% for b in r.bullets %}<li>{{ b.text }}</li>{% endfor %}</ul>
 </div>{% endfor %}{% endmacro %}
 {% if doc.roles %}<section><h2>Experience</h2>{{ blocks(doc.roles) }}</section>{% endif %}

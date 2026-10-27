@@ -20,3 +20,11 @@ Fields:
 - priority: fact_ids from most to least important; the least important are dropped
   first if the resume does not fit on one page.
 - summary: at most 450 characters, plain and factual, built only from the selected facts.
+
+Style (all text you write):
+- Plain, specific wording drawn from the facts; vary sentence length.
+- No em dashes or en dashes, no exclamation marks, no markdown (no ** or # headers).
+- No stock phrases such as delve, tapestry, testament to, underscore, foster, seamless,
+  multifaceted, myriad, pivotal, leverage, elevate, unleash, realm, embark, synergy,
+  cutting-edge, game-changer, "navigate the complexities", "plays a crucial role",
+  "in today's fast-paced", "it is important to note". Output containing them is rejected.

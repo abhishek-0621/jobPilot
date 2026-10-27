@@ -19,3 +19,11 @@ Fields:
 - sentences: 1 to 3 sentences; the whole note must stay under 120 words.
 - evidence_fact_ids: the 1 or 2 fact_ids your sentences are based on. Prefer the
   preferred evidence fact_ids. Cite only fact_id values from the given facts list.
+
+Style (all text you write):
+- Plain, specific wording drawn from the facts; vary sentence length.
+- No em dashes or en dashes, no exclamation marks, no markdown (no ** or # headers).
+- No stock phrases such as delve, tapestry, testament to, underscore, foster, seamless,
+  multifaceted, myriad, pivotal, leverage, elevate, unleash, realm, embark, synergy,
+  cutting-edge, game-changer, "navigate the complexities", "plays a crucial role",
+  "in today's fast-paced", "it is important to note". Output containing them is rejected.

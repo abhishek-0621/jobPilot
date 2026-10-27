@@ -17,6 +17,7 @@ from jobpilot.data import mutations
 from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import CandidateFactRow, JobRow, TaskRow
 from jobpilot.documents import store
+from jobpilot.documents.hygiene import avoid_note, clean_text, text_issues
 from jobpilot.documents.model import split_skills
 from jobpilot.documents.render import DocRenderError, html_to_pdf, render_cover_letter_html
 from jobpilot.documents.validate import validate_cover_letter, validate_rewrite
@@ -98,6 +99,7 @@ def _violations(raw: _CoverLLM, verified: dict[str, str], company: str, role: st
     paragraphs = [p.strip() for p in raw.paragraphs]
     if any(not p for p in paragraphs):
         codes.append("empty_paragraph")
+    codes += [c for p in paragraphs for c in text_issues(p, no_exclamation=True)]
     codes += validate_cover_letter(compose(paragraphs, full_name), company, role, banned,
                                    others)
     # The job's company/role strings are untrusted: they never widen the source text. Their
@@ -170,6 +172,7 @@ class CoverLetterAgent:
             messages = build_messages(_system_prompt(), instructions, untrusted=job_block)
             raw, _meta = await ctx.gateway.generate(_ROUTE, messages, _CoverLLM,
                                                     PROMPT_VERSION)
+            raw = raw.model_copy(update={"paragraphs": [clean_text(p) for p in raw.paragraphs]})
             codes = _violations(raw, verified, company, role, full_name, banned, others,
                                 skills, terms)
             if not codes:
@@ -177,17 +180,18 @@ class CoverLetterAgent:
             if attempt == 2:
                 raise OutputRejected("cover_letter_invalid")
             instructions = (base_instructions + "\nYour previous attempt was rejected for: "
-                            + ", ".join(codes) + ". Fix every one of these.")
+                            + ", ".join(codes) + ". Fix every one of these."
+                            + avoid_note(codes))
 
         paragraphs = [p.strip() for p in raw.paragraphs]
         evidence = list(dict.fromkeys(raw.evidence_fact_ids))
-        text = compose(paragraphs, full_name)
+        text = clean_text(compose(paragraphs, full_name))
         out_dir = artifact_dir(inp.entity_id)
         n = _next_file_version(out_dir)
         pdf_path = out_dir / f"cover_letter_v{n}.pdf"
         txt_path = out_dir / f"cover_letter_v{n}.txt"
         html = render_cover_letter_html(full_name, GREETING, paragraphs, CLOSING)
-        if await html_to_pdf(html, pdf_path) != 1:
+        if await html_to_pdf(html, pdf_path, author=full_name) != 1:
             pdf_path.unlink(missing_ok=True)
             raise DocRenderError("cover letter over one page")
         try:

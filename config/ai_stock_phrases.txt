@@ -1,0 +1,56 @@
+# Stock "AI voice" vocabulary JobPilot rejects in generated text (resume rewrites,
+# cover letters, essay answers, outreach notes). One phrase per line, matched
+# case-insensitively as a whole word/phrase. Lines starting with # are comments.
+# List each inflection you want caught; edit freely.
+delve
+delves
+delving
+tapestry
+testament to
+underscore
+underscores
+underscored
+underscoring
+foster
+fosters
+fostered
+fostering
+seamless
+seamlessly
+multifaceted
+myriad
+paradigm shift
+harness the power
+plays a crucial role
+play a crucial role
+pivotal
+in today's fast-paced
+fast-paced world
+it is important to note
+it's important to note
+i hope this helps
+as an ai
+elevate
+elevates
+elevating
+unleash
+unleashing
+game-changer
+game changer
+navigate the complexities
+navigating the complexities
+realm
+embark
+embarked
+embarking
+synergy
+synergies
+cutting-edge
+leverage
+leverages
+leveraged
+leveraging
+meticulous
+meticulously
+ever-evolving
+in the ever-changing

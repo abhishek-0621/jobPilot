@@ -62,7 +62,7 @@ class SeqGateway:
 def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     seen: list[str] = []
 
-    async def html_to_pdf(html: str, out: Path) -> int:
+    async def html_to_pdf(html: str, out: Path, author: str | None = None) -> int:
         seen.append(html)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"%PDF-fake")
@@ -181,7 +181,7 @@ async def test_cover_letter_multi_page_fails(
 ) -> None:
     seed_cl(factory)
 
-    async def two_pages(html: str, out: Path) -> int:
+    async def two_pages(html: str, out: Path, author: str | None = None) -> int:
         out.write_bytes(b"x")
         return 2
     monkeypatch.setattr(cl_mod, "html_to_pdf", two_pages)

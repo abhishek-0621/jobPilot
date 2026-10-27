@@ -31,6 +31,7 @@ from jobpilot.data.tables import (
     TaskRow,
 )
 from jobpilot.discovery.normalize import html_to_text
+from jobpilot.documents.hygiene import avoid_note, clean_text, text_issues
 from jobpilot.documents.model import split_skills
 from jobpilot.documents.validate import _PLACEHOLDER_RE, validate_rewrite
 from jobpilot.llm.prompts import build_messages
@@ -160,6 +161,7 @@ def violations(raw: _OutreachLLM, verified: dict[str, str], company: str, role: 
     if _CONTACT_RE.search(body):
         codes.append("contact_details")
     codes += [f"banned:{p}" for p in banned if has_phrase(body, p)]
+    codes += text_issues(body, no_exclamation=True)
     # company/role strings are untrusted: masked, never added to the source text
     source = " ".join(verified[i] for i in ids if i in verified)
     allowed = set(skills) | _LETTER_WORDS
@@ -225,7 +227,7 @@ class OutreachAgent:
                                     [verified[i] for i in ids], full_name)
             ids = [i for i in ids if verified[i].strip().rstrip(".") in text]
         return OutreachResearch(**common, profile_version=version, contacts=contacts,
-                                message_text=text, evidence_fact_ids=ids,
+                                message_text=clean_text(text), evidence_fact_ids=ids,
                                 used_fallback=used_fallback)
 
     async def _draft(self, ctx: AgentContext, posting: str, company: str, role: str,
@@ -246,6 +248,7 @@ class OutreachAgent:
             raw, _meta = await ctx.gateway.generate(
                 ROUTE, build_messages(_system_prompt(), instructions, untrusted=job_block),
                 _OutreachLLM, PROMPT_VERSION)
+            raw = raw.model_copy(update={"sentences": [clean_text(x) for x in raw.sentences]})
             codes = violations(raw, verified, company, role, first, full_name, banned,
                                skills, terms)
             if not codes:
@@ -254,7 +257,8 @@ class OutreachAgent:
                         list(dict.fromkeys(raw.evidence_fact_ids)), False)
             if attempt == 1:
                 instructions = (base + "\nYour previous attempt was rejected for: "
-                                + ", ".join(codes) + ". Fix every one of these.")
+                                + ", ".join(codes) + ". Fix every one of these."
+                                + avoid_note(codes))
         return "", [], True
 
 
