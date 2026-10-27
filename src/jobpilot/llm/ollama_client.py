@@ -1,3 +1,4 @@
+import re
 import time
 from typing import Any, TypeVar
 
@@ -10,6 +11,12 @@ from jobpilot.contracts.enums import ErrorCode
 T = TypeVar("T", bound=BaseModel)
 
 _MAX_ATTEMPTS = 2
+_THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def strip_think_blocks(content: str) -> str:
+    """Drop reasoning blocks some models leak into ``content`` despite think=false."""
+    return _THINK_RE.sub("", content).strip()
 
 
 class ModelError(Exception):
@@ -70,13 +77,17 @@ class ModelGateway:
         messages: list[dict],
         schema: type[BaseModel],
     ) -> tuple[str, int | None]:
+        options: dict[str, Any] = {"temperature": route.temperature, "num_ctx": route.num_ctx}
+        if route.max_tokens is not None:
+            options["num_predict"] = route.max_tokens
         body: dict[str, Any] = {
             "model": model_tag,
             "messages": messages,
             "stream": False,
             "format": schema.model_json_schema(),
-            "options": {"temperature": route.temperature, "num_ctx": route.num_ctx},
+            "options": options,
             "keep_alive": route.keep_alive,
+            "think": route.think,
         }
         try:
             resp = await self._client.post(
@@ -102,7 +113,8 @@ class ModelGateway:
             )
         try:
             data = resp.json()
-            content = data["message"]["content"]
+            # A separate message.thinking field, if any, is deliberately ignored.
+            content = strip_think_blocks(data["message"]["content"])
         except (ValueError, KeyError, TypeError) as e:
             raise ModelError(
                 ErrorCode.MODEL_INVALID_SCHEMA, f"malformed response from {model_tag}"

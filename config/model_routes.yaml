@@ -1,15 +1,24 @@
+# think: false (default) stops thinking models emitting hidden reasoning tokens.
+# max_tokens caps output (Ollama num_predict). timeout_s defaults to 300.
 routes:
   job_extraction:
     model_tag: gemma4:e4b
+    max_tokens: 1024
   job_matching:
     model_tag: gemma4:e4b
+    max_tokens: 1024
   resume_tailoring:
     model_tag: gemma4:12b
+    max_tokens: 2048
   cover_letter:
     model_tag: gemma4:12b
+    max_tokens: 2048
   form_mapping:
     model_tag: gemma4:e4b
+    max_tokens: 1024
   outreach_draft:
     model_tag: gemma4:e4b
+    max_tokens: 512
   essay:
     model_tag: gemma4:12b
+    max_tokens: 2048
