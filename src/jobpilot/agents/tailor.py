@@ -18,6 +18,7 @@ from jobpilot.data.repositories import get_application
 from jobpilot.data.tables import CandidateFactRow, TaskRow
 from jobpilot.documents import store
 from jobpilot.documents.diff import DiffRow, bullet_diff
+from jobpilot.documents.hygiene import avoid_note, clean_text, text_issues
 from jobpilot.documents.model import Bullet, ResumeDoc, base_resume, split_skills
 from jobpilot.documents.render import fit_one_page, render_resume_docx
 from jobpilot.documents.validate import validate_rewrite
@@ -140,6 +141,18 @@ def _next_file_version(directory: Path) -> int:
     return max(found, default=0) + 1
 
 
+def _cleaned(raw: _TailorLLM) -> _TailorLLM:
+    return raw.model_copy(update={
+        "summary": clean_text(raw.summary),
+        "bullet_rewrites": [BulletRewrite(fact_id=r.fact_id, text=clean_text(r.text))
+                            for r in raw.bullet_rewrites]})
+
+
+def _hygiene_codes(raw: _TailorLLM) -> list[str]:
+    texts = [raw.summary, *(r.text for r in raw.bullet_rewrites)]
+    return list(dict.fromkeys(c for t in texts for c in text_issues(t)))
+
+
 class TailorAgent:
     name = "resume_tailor"
     prompt_version = PROMPT_VERSION
@@ -184,6 +197,15 @@ class TailorAgent:
         )
         messages = build_messages(_system_prompt(), instructions, untrusted=job_block)
         raw, _meta = await ctx.gateway.generate(_ROUTE, messages, _TailorLLM, PROMPT_VERSION)
+        raw = _cleaned(raw)
+        codes = _hygiene_codes(raw)
+        if codes:  # one retry naming the stock phrasing; per-item fallbacks below
+            retry = (instructions + "\nYour previous attempt was rejected for: "
+                     + ", ".join(codes) + "." + avoid_note(codes))
+            messages = build_messages(_system_prompt(), retry, untrusted=job_block)
+            raw, _meta = await ctx.gateway.generate(_ROUTE, messages, _TailorLLM,
+                                                    PROMPT_VERSION)
+            raw = _cleaned(raw)
 
         cited = raw.selected_fact_ids + raw.priority + [r.fact_id for r in raw.bullet_rewrites]
         if any(fid not in verified for fid in cited):
@@ -198,7 +220,7 @@ class TailorAgent:
         rejected: list[str] = []
         for rw in raw.bullet_rewrites:
             text = rw.text.strip()
-            if rw.fact_id not in bullet_ids or \
+            if rw.fact_id not in bullet_ids or text_issues(text) or \
                     validate_rewrite(verified[rw.fact_id], text, allowed, terms):
                 rejected.append(rw.fact_id)
                 continue
@@ -217,11 +239,12 @@ class TailorAgent:
         summary_ids = _bullet_ids(tailored)
         source = " ".join(verified[f] for f in summary_ids)
         summary = raw.summary.strip()
-        if not summary or validate_rewrite(source, summary, allowed, terms):
+        if not summary or text_issues(summary) or \
+                validate_rewrite(source, summary, allowed, terms):
             summary_ids = []
             summary = fallback_summary(base.headline, years,
                                        list(req.get("required_skills") or []), skills)
-        tailored.summary = summary
+        tailored.summary = clean_text(summary)
 
         out_dir = artifact_dir(inp.entity_id)
         n = _next_file_version(out_dir)

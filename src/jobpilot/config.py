@@ -12,9 +12,13 @@ class ModelRoute(BaseModel):
     model_tag: str
     temperature: float = 0.0
     num_ctx: int = 8192
-    timeout_s: float = 120
+    timeout_s: float = 300
     keep_alive: str = "10m"
     fallback: str | None = None
+    # Thinking models (gemma4, qwen3...) spend thousands of hidden tokens reasoning
+    # unless told not to; that blows every timeout. Off unless a route opts in.
+    think: bool = False
+    max_tokens: int | None = None  # Ollama num_predict cap; None = model default
 
 
 class ScheduleConfig(BaseModel):

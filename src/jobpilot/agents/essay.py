@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from jobpilot.agents.cover_letter import _LETTER_WORDS, _mask
 from jobpilot.contracts.enums import FieldDecision
 from jobpilot.contracts.models import FieldAnswer
+from jobpilot.documents.hygiene import avoid_note, clean_text, text_issues
 from jobpilot.documents.validate import _PLACEHOLDER_RE, _numbers, validate_rewrite
 from jobpilot.forms.essay import classify_essay
 from jobpilot.llm.prompts import build_messages
@@ -181,6 +182,7 @@ def essay_violations(raw: _EssayLLM, key: QuestionKey, chosen: list[Story],
         return ["empty"]
     if len(answer) > maxlength:
         codes.append("too_long")
+    codes += text_issues(answer)
     if _PLACEHOLDER_RE.search(answer) or re.search(r"\bADD\b", answer):
         codes.append("placeholder")
     chosen_ids = {st.story_id for st in chosen}
@@ -220,7 +222,7 @@ def _ask(key: QuestionKey, note: str) -> EssayDraft:
 
 def _canned(key: QuestionKey, bank: StoredBank, facts: dict[str, str],
             maxlength: int) -> EssayDraft:
-    text = bank.canned[key].strip()
+    text = clean_text(bank.canned[key].strip())
     if len(text) > maxlength:
         return _ask(key, "canned_too_long")
     source = "\n".join([st.source_text() for st in bank.verified()] + list(facts.values()))
@@ -278,6 +280,7 @@ class EssayAgent:
         for attempt in (1, 2):
             messages = build_messages(_system_prompt(), instructions, untrusted=untrusted)
             raw, _meta = await gateway.generate(ROUTE, messages, _EssayLLM, PROMPT_VERSION)
+            raw = raw.model_copy(update={"answer": clean_text(raw.answer)})
             codes = essay_violations(raw, key, chosen, bank, facts, skills, job, limit, terms)
             if not codes:
                 return EssayDraft(
@@ -288,7 +291,8 @@ class EssayAgent:
                     note=f"drafted:{key.value}")
             if attempt == 1:
                 instructions = (base + "\nYour previous attempt was rejected for: "
-                                + ", ".join(codes) + ". Fix every one of these.")
+                                + ", ".join(codes) + ". Fix every one of these."
+                                + avoid_note(codes))
         return _ask(key, ("essay_invalid:" + ",".join(codes))[:_NOTE_MAX])
 
 

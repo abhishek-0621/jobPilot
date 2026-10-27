@@ -19,3 +19,11 @@ Fields:
 - answer: the answer text.
 - story_ids: the story_id values the answer is based on (from the given stories only).
 - fact_ids: the fact_id values of any verified facts the answer uses (may be empty).
+
+Style (all text you write):
+- Plain, specific wording drawn from the facts; vary sentence length.
+- No em dashes or en dashes, no exclamation marks, no markdown (no ** or # headers).
+- No stock phrases such as delve, tapestry, testament to, underscore, foster, seamless,
+  multifaceted, myriad, pivotal, leverage, elevate, unleash, realm, embark, synergy,
+  cutting-edge, game-changer, "navigate the complexities", "plays a crucial role",
+  "in today's fast-paced", "it is important to note". Output containing them is rejected.
