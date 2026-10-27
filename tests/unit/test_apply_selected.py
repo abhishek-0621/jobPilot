@@ -63,8 +63,10 @@ def _jobs(factory: sessionmaker[Session], *keys: str, **kw: Any) -> list[str]:
 
 
 def _tasks(factory: sessionmaker[Session]) -> list[tuple[str, str]]:
+    """Queued tasks except company research (queued alongside TAILOR, once per company)."""
     with factory() as s:
-        return [(t.kind, t.entity_id) for t in s.execute(select(TaskRow)).scalars()]
+        return [(t.kind, t.entity_id) for t in s.execute(select(TaskRow)).scalars()
+                if t.kind != "COMPANY_RESEARCH"]
 
 
 def _apps(factory: sessionmaker[Session]) -> dict[str, ApplicationRow]:
@@ -84,6 +86,10 @@ def test_bulk_start_creates_apps_and_enqueues_tailor_only(
     tasks = _tasks(factory)
     assert sorted(tasks) == sorted(("TAILOR", a.application_id) for a in apps.values())
     assert not any(kind == "SUBMIT" for kind, _ in tasks)
+    with factory() as s:
+        research = s.execute(select(TaskRow).where(
+            TaskRow.kind == "COMPANY_RESEARCH")).scalars().all()
+    assert 1 <= len(research) <= len(ids)  # at most one per company
     with factory() as s:
         assert s.execute(select(ApprovalBatchRow)).first() is None
         assert s.execute(select(ApprovalRow)).first() is None

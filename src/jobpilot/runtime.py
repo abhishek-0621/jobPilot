@@ -11,6 +11,14 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session, sessionmaker
 
+from jobpilot.agents.company_research import (
+    CompanyResearchAgent,
+    brief_items,
+    company_research_handler,
+    load_brief,
+    make_research_target,
+    research_pending,
+)
 from jobpilot.agents.cover_letter import CoverLetterAgent, make_cover_letter_handler
 from jobpilot.agents.essay import LIBRARY_PREFIX as ESSAY_LIBRARY_PREFIX
 from jobpilot.agents.essay import EssayContext
@@ -72,6 +80,8 @@ from jobpilot.profile.importer import PROFILE_ID, active_profile, candidate_year
 from jobpilot.profile.preferences import load_companies, load_search_preferences
 from jobpilot.profile.schema import ProfileFile, load_profile_file
 from jobpilot.profile.stories import StoredBank, stored_bank
+from jobpilot.research.brief import company_key
+from jobpilot.research.fetch import ResearchFetcher
 
 
 @dataclass
@@ -311,7 +321,17 @@ def make_essay_context(session_factory: sessionmaker[Session]) -> Callable[[str]
             bank = stored_bank(s)
             bank = StoredBank(stories=[st for st in bank.stories if st.verified],
                               standing_rules=bank.standing_rules, canned=bank.canned)
+            brief = load_brief(s, company_key(job.company))
+            current = ""
+            if version is not None:
+                row = s.get(CandidateProfileRow, (PROFILE_ID, version))
+                prefs = json.loads(row.preferences_json) if row else {}
+                emp = prefs.get("current_employment") or {}
+                current = " ".join(str(emp.get(k) or "") for k in ("title", "employer"))
             return EssayContext(
+                brief_items=None if brief is None else brief_items(brief),
+                brief_hash="" if brief is None else brief.content_hash,
+                current=current.strip(),
                 bank=bank,
                 facts={f.fact_id: f.value for f in facts if f.category != "skill"},
                 skills=[x for f in facts if f.category == "skill"
@@ -320,6 +340,17 @@ def make_essay_context(session_factory: sessionmaker[Session]) -> Callable[[str]
                      "job_summary": req.get("summary") or ""},
                 library=library)
     return essay_context
+
+
+def make_research_pending(session_factory: sessionmaker[Session]) -> Callable[[str], bool]:
+    """True while COMPANY_RESEARCH for the application (or its company) is queued/running."""
+    def pending(application_id: str) -> bool:
+        with session_factory() as s:
+            app = s.get(ApplicationRow, application_id)
+            job = None if app is None else s.get(JobRow, app.job_id)
+            return research_pending(s, application_id,
+                                    None if job is None else company_key(job.company))
+    return pending
 
 
 def make_stored_answers(
@@ -459,6 +490,10 @@ def build_runtime(
         "outreach_context": make_outreach_loader(session_factory, cfg),
         # Careers pages are arbitrary hosts: connect only to the public IP that was checked.
         "careers_inbox": make_careers_inbox(careers_http),
+        # company research: public pages only, same IP-pinned client as careers pages
+        "research_target": make_research_target(session_factory, cfg),
+        "research_fetcher": Provided(lambda: ResearchFetcher(careers_http)),
+        "research_pending": make_research_pending(session_factory),
     }
     agents: dict[TaskKind, Agent[Any, Any]] = {
         TaskKind.DISCOVER: DiscoverAgent(),
@@ -470,6 +505,7 @@ def build_runtime(
         TaskKind.MANUAL_PACKAGE: ManualPackageAgent(),
         TaskKind.VALIDATE: ValidateAgent(),
         TaskKind.OUTREACH_RESEARCH: OutreachAgent(),
+        TaskKind.COMPANY_RESEARCH: CompanyResearchAgent(),
     }
     handlers: dict[TaskKind, Handler] = {
         TaskKind.DISCOVER: discover_handler,
@@ -481,6 +517,7 @@ def build_runtime(
         TaskKind.MANUAL_PACKAGE: manual_package_handler,
         TaskKind.VALIDATE: make_validate_handler(cfg.storage_path),
         TaskKind.OUTREACH_RESEARCH: make_outreach_handler(cfg),
+        TaskKind.COMPANY_RESEARCH: company_research_handler,
     }
     return Runtime(agents=agents, handlers=handlers,
                    adapters={"simulated": SimulatedAdapter()}, tools=tools,

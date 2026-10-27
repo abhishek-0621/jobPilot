@@ -30,6 +30,7 @@ from jobpilot.orchestrator.approval import ApprovalService
 from jobpilot.orchestrator.documents_flow import current_artifact_version, stale_follow_up
 from jobpilot.orchestrator.engine import (
     AgentContext,
+    Deferred,
     FollowUp,
     Handler,
     OutputRejected,
@@ -138,7 +139,7 @@ class PrepareFormAgent:
     prompt_version = PROMPT_VERSION
     output_model = FormPlan
     tools = ("application_loader", "mapping_context", "active_profile_version",
-             "form_opener", "essay_context", "tech_terms")
+             "form_opener", "essay_context", "tech_terms", "research_pending")
 
     async def run(self, inp: TaskInput, ctx: AgentContext) -> FormPlan:
         load_app: Callable[[str], dict | None] = ctx.tools["application_loader"]
@@ -154,6 +155,7 @@ class PrepareFormAgent:
         version = active_version()
         if version is None:
             raise OutputRejected("no_profile")
+        wait_for_research(ctx, inp)
         url = form_url(app)
         mctx = mapping_context(inp.entity_id)
         async with open_form(app.get("source") or "", url, inp.entity_id) as adapter:
@@ -182,7 +184,8 @@ class PrepareFormAgent:
                 better = {a.field_id: a for a in apply_suggestions(snap, unmatched,
                                                                    suggestions, mctx)}
                 answers = [better.get(a.field_id, a) for a in answers]
-        answers = await _with_essays(snap.fields, answers, ctx, inp.entity_id)
+        answers = await _with_essays(snap.fields, answers, ctx, inp.entity_id,
+                                     app.get("company"))
         return FormPlan(
             task_id=ctx.task_id, created_at=datetime.now(UTC), warnings=warnings,
             application_id=inp.entity_id, profile_version=version, fields=answers,
@@ -191,10 +194,23 @@ class PrepareFormAgent:
             snapshot_hash=snap_hash)
 
 
+MAX_RESEARCH_WAITS = 6
+RESEARCH_WAIT_S = 15.0
+
+
+def wait_for_research(ctx: AgentContext, inp: TaskInput) -> None:
+    """Company research for this application is still queued/running: re-queue this task
+    a little later (at most MAX_RESEARCH_WAITS times; then it drafts without it and the
+    why-company question goes to the user)."""
+    pending = ctx.tools.get("research_pending")
+    if pending is not None and inp.attempt <= MAX_RESEARCH_WAITS and pending(inp.entity_id):
+        raise Deferred("company_research_pending", RESEARCH_WAIT_S)
+
+
 async def _with_essays(fields: list[Any], answers: list[FieldAnswer], ctx: AgentContext,
-                       application_id: str) -> list[FieldAnswer]:
+                       application_id: str, company: str | None = None) -> list[FieldAnswer]:
     load = ctx.tools.get("essay_context")
-    if load is None or not essay_candidates(fields, answers):
+    if load is None or not essay_candidates(fields, answers, company):
         return answers
     terms = ctx.tools.get("tech_terms")
     return await draft_essay_answers(fields, answers, ctx.gateway, load(application_id),
@@ -268,7 +284,7 @@ def prepare_form_handler(s: Session, task: TaskRow, out: Any) -> list[FollowUp]:
         return []
     if ApprovalService(s).active_approval_for(app.application_id) is not None:
         raise OutputRejected("approval_active")
-    out = out.model_copy(update={"fields": guard_essay_answers(s, out.fields)})
+    out = out.model_copy(update={"fields": guard_essay_answers(s, out.fields, out.application_id)})
     _store_plan(s, app.application_id, out)
     app.form_snapshot_hash = out.snapshot_hash
     missing = unresolved_required(s, app.application_id)

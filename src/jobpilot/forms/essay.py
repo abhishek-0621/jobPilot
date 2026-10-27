@@ -55,10 +55,27 @@ def is_sensitive_essay(label: str, help_text: str = "",
             or any(has_phrase(text, p) for p in _ESSAY_SENSITIVE))
 
 
+def _names_company(text: str, company: str | None) -> bool:
+    """"why <company>", "what excites you about <company>" and the like."""
+    name = _normalize(company or "")
+    if len(name) < 2:
+        return False
+    return any(has_phrase(text, f"{lead} {name}") for lead in _COMPANY_LEADS)
+
+
+_COMPANY_LEADS = ("why", "why join", "why work at", "why work for", "what excites you about",
+                  "what draws you to", "what attracts you to", "interested in",
+                  "interested in joining", "interested in working at",
+                  "what do you know about", "excited about joining", "join",
+                  "want to work at", "want to work for", "want to join")
+
+
 def classify_essay(label: str, help_text: str = "", *, field_type: str = "textarea",
-                   options: list[str] | None = None) -> QuestionKey | None:
+                   options: list[str] | None = None,
+                   company: str | None = None) -> QuestionKey | None:
     """The essay question key for a long-text field, or None (not an essay, sensitive,
-    or not a long-text field)."""
+    or not a long-text field). ``company`` (the job's company name) also recognises
+    "Why <company>?" questions."""
     if field_type not in ESSAY_FIELD_TYPES:
         return None
     if is_sensitive_essay(label, help_text, options):
@@ -67,6 +84,9 @@ def classify_essay(label: str, help_text: str = "", *, field_type: str = "textar
     for text in (_normalize(label), _normalize(help_text)):
         if not text:
             continue
+        if _names_company(text, company) and not any(
+                has_phrase(text, p) for p in patterns.get(QuestionKey.WHY_ROLE, [])):
+            return QuestionKey.WHY_COMPANY
         for key, phrases in patterns.items():
             if any(has_phrase(text, p) for p in phrases):
                 return key

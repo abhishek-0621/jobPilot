@@ -56,3 +56,9 @@ meticulous
 meticulously
 ever-evolving
 in the ever-changing
+# company-specific answers (why this company)
+i have always admired
+i've always admired
+passionate
+i am excited to leverage
+excited to leverage

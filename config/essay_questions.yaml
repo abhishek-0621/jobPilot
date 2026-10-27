@@ -5,6 +5,49 @@
 # classified first and are never essays.
 version: 1
 keys:
+  # "why <company>" / "what excites you about <company>" are also matched with the
+  # job's company name (code, not this file).
+  why_role:
+    - why this role
+    - why this position
+    - why are you interested in this role
+    - why are you interested in this position
+    - why do you want this role
+    - why do you want this job
+    - interested in this role
+    - what excites you about this role
+    - what excites you about the role
+    - what draws you to this role
+    - what draws you to the role
+  why_company:
+    - why do you want to work here
+    - why do you want to work at
+    - why do you want to work for
+    - why do you want to work with us
+    - why would you like to work here
+    - why would you like to work at
+    - why would you like to work for
+    - want to work at our company
+    - what excites you about us
+    - what excites you about our
+    - what excites you about working here
+    - what excites you about working at
+    - why are you interested in this company
+    - why are you interested in our company
+    - why are you interested in joining
+    - why are you interested in working here
+    - why are you interested in working at
+    - interested in joining
+    - why do you want to join
+    - why join
+    - what draws you to
+    - what attracts you to
+    - why us
+    - why our company
+    - why this company
+    - what do you know about us
+    - what do you know about our company
+    - what do you know about our
   swot:
     - swot
     - strengths and weaknesses

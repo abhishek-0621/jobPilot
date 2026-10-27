@@ -35,6 +35,7 @@ from jobpilot.util.textmatch import has_phrase
 PROMPT_VERSION = "essay_v1"
 ROUTE = "essay"
 ESSAY_PREFIX = "essay:"
+WHY_COMPANY_PREFIX = ESSAY_PREFIX + "why_company:"
 DEFAULT_MAXLENGTH = 1200
 MAX_STORIES = 2
 _NOTE_MAX = 160
@@ -68,9 +69,13 @@ class EssayDraft(BaseModel):
     story_ids: list[str] = []
     fact_ids: list[str] = []
     note: str = ""
+    brief_hash: str = ""  # why_company: the company brief the draft was written from
 
     @property
     def source(self) -> str:
+        if self.key == QuestionKey.WHY_COMPANY:
+            return (WHY_COMPANY_PREFIX + (self.brief_hash or "none")
+                    + (":" + ",".join(self.story_ids) if self.story_ids else ""))
         if self.note.startswith("canned:"):
             return f"{ESSAY_PREFIX}canned:{self.key.value}"
         return ESSAY_PREFIX + ",".join(self.story_ids)
@@ -310,6 +315,11 @@ class EssayContext:
     skills: list[str]
     job: dict[str, Any]
     library: dict[str, Any] = field(default_factory=dict)
+    # why-company answers: the company brief (None: research failed or never ran) and
+    # the candidate's current title/employer (profile data, not a claim)
+    brief_items: list[Any] | None = None
+    brief_hash: str = ""
+    current: str = ""
 
 
 def library_key(key: QuestionKey) -> str:
@@ -320,19 +330,30 @@ def _empty(v: Any) -> bool:
     return v is None or v == "" or v == []
 
 
-def essay_candidates(fields: list[FormField],
-                     answers: list[FieldAnswer]) -> list[tuple[FormField, QuestionKey]]:
-    """Long-text essay questions the deterministic mapper left without a value."""
+_COVER_SOURCE = "artifact:cover_letter"
+
+
+def _from_cover_letter(a: FieldAnswer) -> bool:
+    return (a.source_fact_id or "").startswith(_COVER_SOURCE)
+
+
+def essay_candidates(fields: list[FormField], answers: list[FieldAnswer],
+                     company: str | None = None) -> list[tuple[FormField, QuestionKey]]:
+    """Long-text essay questions the deterministic mapper left without a value. A
+    why-company question is also taken over from the generic cover-letter text."""
     by_id = {a.field_id: a for a in answers}
     out = []
     for f in fields:
         a = by_id.get(f.field_id)
-        if a is None or not _empty(a.proposed_value) or a.decision not in (
-                FieldDecision.ASK_USER, FieldDecision.NOT_APPLICABLE):
+        if a is None:
             continue
         key = classify_essay(f.label, f.help_text, field_type=f.field_type,
-                             options=f.options)
-        if key is not None:
+                             options=f.options, company=company)
+        if key is None:
+            continue
+        empty = _empty(a.proposed_value) and a.decision in (
+            FieldDecision.ASK_USER, FieldDecision.NOT_APPLICABLE)
+        if empty or (key == QuestionKey.WHY_COMPANY and _from_cover_letter(a)):
             out.append((f, key))
     return out
 
@@ -341,6 +362,8 @@ def to_field_answer(f: FormField, d: EssayDraft) -> FieldAnswer:
     if d.decision == FieldDecision.FILL_AND_REVIEW and d.answer:
         n = len(d.story_ids)
         why = (f"Essay ({d.key.value}): your canned answer" if d.note.startswith("canned:")
+               else "Essay (why_company) drafted from the company brief and your verified "
+                    "facts; review before use" if d.key == QuestionKey.WHY_COMPANY
                else f"Essay ({d.key.value}) drafted from {n} verified "
                     f"{'story' if n == 1 else 'stories'}; review before use")
         if d.note.endswith(":check_numbers"):
@@ -360,9 +383,21 @@ async def draft_essay_answers(fields: list[FormField], answers: list[FieldAnswer
                               terms: set[str] | None = None) -> list[FieldAnswer]:
     """Replace the empty answers of essay questions with a draft (or an ASK_USER note).
     An answer saved to the library for that question type is used first."""
+    from jobpilot.agents.why_company import WhyCompanyDrafter
+
     better: dict[str, FieldAnswer] = {}
     agent = EssayAgent()
-    for f, key in essay_candidates(fields, answers):
+    company = str((ectx.job or {}).get("company") or "") or None
+    for f, key in essay_candidates(fields, answers, company):
+        question = f.label + (f"\n{f.help_text}" if f.help_text else "")
+        if key == QuestionKey.WHY_COMPANY:  # company-specific: never canned or library
+            d = await WhyCompanyDrafter().draft(
+                gateway, question=question, items=ectx.brief_items,
+                brief_hash=ectx.brief_hash, bank=ectx.bank, facts=ectx.facts,
+                skills=ectx.skills, current=ectx.current, job=ectx.job,
+                maxlength=f.maxlength, terms=terms)
+            better[f.field_id] = to_field_answer(f, d)
+            continue
         saved = ectx.library.get(library_key(key))
         if isinstance(saved, str):
             saved = {"text": saved, "story_ids": []}
@@ -376,19 +411,21 @@ async def draft_essay_answers(fields: list[FormField], answers: list[FieldAnswer
                 source_fact_id=src, confidence=_DRAFT_CONFIDENCE,
                 rationale=f"Essay ({key.value}): your saved answer for this question type")
             continue
-        d = await agent.draft(gateway, question=f.label + (
-            f"\n{f.help_text}" if f.help_text else ""), key=key, bank=ectx.bank,
+        d = await agent.draft(gateway, question=question, key=key, bank=ectx.bank,
             facts=ectx.facts, skills=ectx.skills, job=ectx.job, maxlength=f.maxlength,
             terms=terms)
         better[f.field_id] = to_field_answer(f, d)
     return [better.get(a.field_id, a) for a in answers]
 
 
-def guard_essay_answers(s: Session, answers: list[FieldAnswer]) -> list[FieldAnswer]:
-    """Handler-side check (single writer): an essay answer is never AUTO_FILL, and a draft
-    whose stories are no longer verified goes back to the user."""
-    from jobpilot.data.mutations import essay_refs
+def guard_essay_answers(s: Session, answers: list[FieldAnswer],
+                        application_id: str | None = None) -> list[FieldAnswer]:
+    """Handler-side check (single writer): an essay answer is never AUTO_FILL, a draft
+    whose stories are no longer verified goes back to the user, and so does a why-company
+    draft written from a company brief that has since changed."""
+    from jobpilot.data.mutations import current_brief_hash, essay_refs, why_brief_hash
 
+    current_hash = None if application_id is None else current_brief_hash(s, application_id)
     bank = stored_bank(s)
     verified = {st.story_id for st in bank.verified()}
     canned = {k.value for k in bank.canned}
@@ -401,7 +438,15 @@ def guard_essay_answers(s: Session, answers: list[FieldAnswer]) -> list[FieldAns
         if a.decision not in (FieldDecision.FILL_AND_REVIEW, FieldDecision.ASK_USER):
             raise OutputRejected("essay_answer_not_reviewed")
         ids, key = refs
-        if any(i not in verified for i in ids) or (key is not None and key not in canned):
+        brief = why_brief_hash(a.source_fact_id)
+        if brief is not None and a.decision == FieldDecision.FILL_AND_REVIEW \
+                and brief != current_hash:
+            a = a.model_copy(update={
+                "proposed_value": None, "decision": FieldDecision.ASK_USER,
+                "source_fact_id": None, "confidence": 0.0,
+                "rationale": "Essay (why_company): brief_changed before the draft was "
+                             "stored"})
+        elif any(i not in verified for i in ids) or (key is not None and key not in canned):
             a = a.model_copy(update={
                 "proposed_value": None, "decision": FieldDecision.ASK_USER,
                 "source_fact_id": None, "confidence": 0.0,
